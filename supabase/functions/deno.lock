@@ -1,0 +1,30 @@
+{
+  "version": "4",
+  "specifiers": {
+    "npm:drizzle-orm@0.45.2": "0.45.2_postgres@3.4.9",
+    "npm:postgres@3.4.9": "3.4.9",
+    "npm:zod@4.4.3": "4.4.3"
+  },
+  "npm": {
+    "drizzle-orm@0.45.2_postgres@3.4.9": {
+      "integrity": "sha512-kY0BSaTNYWnoDMVoyY8uxmyHjpJW1geOmBMdSSicKo9CIIWkSxMIj2rkeSR51b8KAPB7m+qysjuHme5nKP+E5Q==",
+      "dependencies": [
+        "postgres"
+      ]
+    },
+    "postgres@3.4.9": {
+      "integrity": "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="
+    },
+    "zod@4.4.3": {
+      "integrity": "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:@supabase/supabase-js@2.112.3",
+      "npm:drizzle-orm@0.45.2",
+      "npm:postgres@3.4.9",
+      "npm:zod@4.4.3"
+    ]
+  }
+}

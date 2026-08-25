@@ -75,4 +75,198 @@ real, felt problem** — not swapping on architecture-purity grounds alone.
 
 ## Admin UI
 
-PRD §18
+PRD §18 needs sortable/filterable tables, forms with validation, and
+accessible modals/dropdowns — enough real interaction complexity that hand-
+rolling all of it in raw Tailwind isn't worth it. Three additions, each
+justified by a specific need:
+
+- **shadcn/ui** — copy-paste components (not a black-box package), so we own
+  and can edit the code. `Button`, `Badge`, `Card` are already hand-authored
+  in `src/components/ui/` to match the CLI's output exactly (the CLI itself
+  couldn't run in the sandbox that built the scaffold — network-restricted,
+  not a real limitation). Pull more with `npx shadcn@latest add <name>`.
+- **TanStack Table — pinned to v8**, not the newly-released v9. v9 shipped
+  with a restructured API after this project's tooling knowledge was set;
+  rather than build on an unfamiliar, very recent API for code handling real
+  order/payment data, v8 (stable, widely documented) was used instead. Revisit
+  deliberately later if there's a specific reason to.
+- **React Hook Form + Zod** — see `src/components/payment-rejection-form.tsx`
+  for a real (not toy) example: it enforces §8.3's "rejection reason
+  required" rule. Client-side validation is a UX nicety only — the Edge
+  Function that actually performs the rejection must re-validate the same
+  rule server-side, since a browser check alone is never sufficient (§3.5).
+
+## Testing scope
+
+`lib/order-state-machine.ts`, `lib/orders.ts`, and `lib/audit.ts` have
+permanent unit tests (Vitest, 26 cases total as of Milestone 1) — the state
+machine's branches, plus the orchestration/write-sequencing logic in
+`orders.ts`/`audit.ts` tested against a fake transaction rather than a live
+DB. Still deliberately **not** adding component or E2E tests: `OrderPage.tsx`
+now has real behavior (Milestone 1 step 6), which is the trigger condition
+this section used to name — but component testing (React Testing Library +
+mocking `supabase-js`) is its own chunk of setup, not something to fold in
+as a side effect of wiring one page. Worth doing as a deliberate next step,
+not implied-done here.
+
+## What survived the Next.js → Vite pivot untouched
+
+Worth knowing for future decisions: `db/schema.ts` and
+`lib/order-state-machine.ts` are framework-agnostic TypeScript with zero
+dependency on Next.js or Vite. Both copied over with **no changes** when the
+frontend framework changed. If the frontend or hosting changes again later,
+these two files are very unlikely to be affected — a useful signal for how
+much of a "big rewrite" any future stack question actually is.
+
+## Milestone roadmap
+
+See project's `milestone` file for the six numbered milestones. Unaffected by
+the architecture pivot in scope/order — only the implementation vehicle for
+each step changed (Next.js API routes → Supabase Edge Functions, Next.js
+pages → React Router pages + `supabase-js`).
+
+## Milestone 1 decisions
+
+### Order transitions need a real transaction
+
+`lib/orders.ts` (`transitionOrder`) wraps a status change + audit row in one
+DB transaction, per milestone.md step 1 and §20. `supabase-js`/PostgREST
+can't do this — each `.from().insert()` call is its own HTTP request, so
+there's no way to make two of them atomic. Instead, Edge Functions that
+change order state connect **directly to Postgres** via
+`drizzle-orm/postgres-js` (`supabase/functions/_shared/db.ts`), the same
+driver already used for Drizzle Kit migrations. `health/index.ts` still uses
+`supabase-js` — that's fine, it doesn't write anything. The rule going
+forward: if a function needs a multi-statement transaction, it uses
+`_shared/db.ts`; if it only needs a single read/write, `supabase-js` (with
+the service role key) is simpler and fine.
+
+This requires a `DATABASE_URL` secret (`supabase secrets set DATABASE_URL=...`,
+the pooled connection string from Database settings) that doesn't exist yet
+in this project — not deployed/tested against the live Supabase project from
+this environment (see "What's still unverified" below).
+
+### Deno resolves the same bare specifiers as Node
+
+`supabase/functions/deno.json` is an import map (`"drizzle-orm/pg-core":
+"npm:drizzle-orm@0.45.2/pg-core"`, etc., pinned to match `package.json`).
+This lets `db/schema.ts` and `lib/orders.ts`/`lib/audit.ts` import bare
+specifiers exactly like the Node/Vitest side, and run **unmodified** under
+both — no duplicated schema or state-machine logic between the two runtimes.
+The one adjustment needed: relative imports inside those files use explicit
+`.ts` extensions (`"./order-state-machine.ts"`), since Deno requires them;
+`tsconfig.lib.json` sets `allowImportingTsExtensions` so this doesn't break
+the Node/Vitest side.
+
+Verified for real: cloned a Deno 2.1.4 binary into this environment and ran
+`deno check --config supabase/functions/deno.json` against every new file,
+including the structural-typing question of whether a real
+`db.transaction()` callback satisfies `OrdersTransaction`/`AuditWriter` (it
+does). Needed `DENO_CERT=/etc/ssl/certs/ca-certificates.crt` to fetch from
+the npm registry in this sandbox — Deno doesn't pick up the sandbox's CA
+bundle the way `curl`/`npm` do. Not expected to be an issue on Supabase's
+actual Edge Runtime, but flagging since it's an unusual fix.
+
+### Guest order page: header-matched RLS, not a fixed relationship
+
+`db/schema.ts` adds RLS policies on `orders`, `order_items`, `payments`,
+`pickup_tokens` using PostgREST's `request.headers` GUC:
+
+```sql
+using ("orders"."access_token" = (current_setting('request.headers', true)::json ->> 'x-order-access-token'))
+```
+
+`src/lib/supabaseClient.ts` adds `createGuestOrderClient(token)`, a client
+scoped to one order's access token via that header — `OrderPage.tsx` creates
+one per page load (route is now `/orders/:accessToken`, not `/orders/:id`,
+since the access token is what actually grants access; the DB's own row id
+isn't secret and isn't what RLS checks). This is what makes it a real
+security boundary rather than a convenience filter: RLS `using` applies to
+every query regardless of what `.eq()` the client's own code adds, so a
+client can't just drop the filter and read every order.
+
+**Unverified**: this SQL is syntactically valid (confirmed via
+`drizzle-kit generate`, which doesn't need a live DB) and the
+`current_setting('request.headers')::json` pattern is long-standing/widely
+documented for Supabase, but it hasn't run against a real PostgREST instance
+from this environment. Test this specifically once deployed.
+
+While in `db/schema.ts` for this: `customers` and `admin_users` had **no
+RLS at all** (nothing in the schema did, before this milestone) — meaning
+both were fully readable via the public anon key once this project is live.
+Enabled RLS with zero policies on both (deny-all for `anon`/`authenticated`;
+Edge Functions still work since the service-role connection bypasses RLS
+entirely). Didn't extend this to every other table (`inventory`, `batches`,
+etc.) — that's a broader hardening pass worth doing deliberately, not a
+side effect of wiring one page.
+
+### No real auth yet — by design, but flagged loudly
+
+`verify-payment`, `prepare-pickup`, and `scan-pickup` all use a hardcoded
+`HARDCODED_ADMIN_ID` constant, matching milestone.md step 4's explicit scope
+("no real auth yet ... Supabase Auth comes in Milestone 4"). `verify_jwt` is
+`false` project-wide (`supabase/config.toml`), so as it stands, anyone with
+the public anon key can currently call any of these three functions and
+verify payments, stage orders for pickup, or confirm pickups. Each file has
+a loud comment to this effect. **Do not deploy these three functions to a
+public-facing project URL before Milestone 4** adds real staff auth + the
+§18.4 permission checks — for now, treat them as manually-invoked only.
+
+### `prepare-pickup`: a 4th Edge Function beyond the 3 milestone.md names
+
+milestone.md step 5 says "Pickup QR: token generation + a
+`supabase/functions/scan-pickup` endpoint," which reads as one function.
+Split it into two instead: `prepare-pickup` (READY_FOR_FULFILMENT →
+READY_FOR_PICKUP + token generation) and `scan-pickup` (lookup, then a
+separate `confirm: true` call → PICKED_UP). Reasoning: the state machine
+(`lib/order-state-machine.ts`, written in an earlier session, not touched
+here) already models `READY_FOR_FULFILMENT` and `READY_FOR_PICKUP` as
+separate states with their own event (`PREPARE_FOR_FULFILMENT`) — that's a
+strong signal the original design intended "payment/reservation settled" and
+"physically staged for pickup" to be distinct admin actions, not
+auto-chained. `verify-payment` stops at `READY_FOR_FULFILMENT` accordingly.
+If that turns out to be the wrong call for how the ready-stock + pickup flow
+actually operates day-to-day, the fix is to fold `PREPARE_FOR_FULFILMENT`
+back into `verify-payment`'s chain — worth revisiting once there's a real
+admin UI and it's clearer whether "stage for pickup" is ever a meaningfully
+separate action from "payment verified," or always happens in the same
+breath for ready stock specifically.
+
+### `lib/` and `db/` weren't actually type-checked before this milestone
+
+`tsc -b` only ever covered `src/` (`tsconfig.app.json`) and `vite.config.ts`
+(`tsconfig.node.json`) — `lib/order-state-machine.ts` was exercised by
+Vitest (which transpiles but doesn't type-check) but never ran through the
+TypeScript compiler itself. Added `tsconfig.lib.json` (covering `lib/` and
+`db/`) as a third project reference to close this gap. Deliberately *not*
+reusing `erasableSyntaxOnly` from `tsconfig.app.json` here — that flag exists
+for runtimes that only strip types without transforming syntax (e.g. Node's
+native `.ts` support), which doesn't describe either real consumer of this
+code (Vitest/esbuild and Deno/swc both fully transform), and it would have
+forced a rewrite of the existing `OrderTransitionError` class's constructor
+parameter properties for no actual benefit.
+
+### Repo hygiene: `node_modules/` and `dist/` are tracked in git
+
+Discovered while reinstalling to verify the project builds — no
+`.gitignore` existed, and both directories (11,000+ files) are committed.
+Added `.gitignore` so this doesn't get worse, but didn't run
+`git rm -r --cached node_modules dist` myself — that's a large, visible
+history change worth the repo owner doing deliberately rather than as a side
+effect of a milestone. Worth doing soon: it was actively producing noise
+(an unscoped lint run picked up 7,125 files and 25,000+ warnings from
+vendored/minified code before I scoped it to `src`/`lib`/`db`/`supabase`).
+
+### What's still unverified (needs a real Supabase project)
+
+Everything above was checked as rigorously as this sandboxed environment
+allows — real `tsc -b`, `vitest run`, `deno check`/`deno lint` against the
+actual npm registry (not guessed), and `drizzle-kit generate` for real SQL
+DDL. What it can't confirm, because this environment has no network path to
+Supabase itself:
+- The `DATABASE_URL` connection from an actual deployed Edge Function.
+- The `request.headers` RLS pattern against real PostgREST.
+- `drizzle-kit push` actually applying this schema to the live project
+  (`lhvxjgbjjamwatsmxiyc` per `supabase/config.toml`).
+- The three Edge Functions running end-to-end via
+  `supabase functions deploy` / `supabase functions serve`.
