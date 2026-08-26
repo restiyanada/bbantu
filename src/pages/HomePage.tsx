@@ -21,9 +21,14 @@ interface ProductRow {
   product_variants: VariantRow[];
 }
 
+// Same patterns as create-order's server-side validation — this is the UX
+// nicety only; the Edge Function re-validates identically (§3 principle 5).
+const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
+const PHONE_PATTERN = /^[0-9]{8,15}$/;
+
 const customerSchema = z.object({
-  name: z.string().trim().min(1, "Name is required."),
-  phone: z.string().trim().min(1, "Phone number is required."),
+  name: z.string().trim().min(1, "Name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
+  phone: z.string().trim().regex(PHONE_PATTERN, "Phone number must be 8–15 digits, numbers only."),
   email: z.string().trim().email("A valid email is required."),
 });
 

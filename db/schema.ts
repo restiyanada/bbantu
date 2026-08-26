@@ -3,6 +3,7 @@ import {
   pgTable,
   pgEnum,
   pgPolicy,
+  pgSequence,
   uuid,
   text,
   integer,
@@ -127,6 +128,15 @@ export const batchItems = pgTable("batch_items", {
 // can't just omit a filter and read every order.
 const requestAccessToken = sql`(current_setting('request.headers', true)::json ->> 'x-order-access-token')`;
 
+// Separate counters per fulfilment method so order numbers read as
+// "#010001" (pickup) / "#020001" (shipping) — sequential within each type,
+// not a shared global counter. The 01/02 type prefix is derived from
+// fulfilmentMethod at display time (src/lib/utils.ts formatOrderNumber),
+// not stored — avoids keeping a redundant, potentially-stale copy of data
+// orders.fulfilmentMethod already holds.
+export const pickupOrderSeq = pgSequence("pickup_order_seq", { startWith: 1 });
+export const shippingOrderSeq = pgSequence("shipping_order_seq", { startWith: 1 });
+
 export const orders = pgTable(
   "orders",
   {
@@ -139,6 +149,11 @@ export const orders = pgTable(
     status: orderStatusEnum("status").notNull().default("PAYMENT_PENDING"),
     paymentType: paymentTypeEnum("payment_type").notNull(),
     fulfilmentMethod: fulfilmentMethodEnum("fulfilment_method"),
+    // Human-readable sequence number within its fulfilment type (see the
+    // two sequences above). Nullable because fulfilmentMethod itself can be
+    // "configured later" (§7.2) — an order without a fulfilment method yet
+    // has no type-scoped sequence to draw from either.
+    orderNumber: integer("order_number"),
     merchandiseSubtotal: numeric("merchandise_subtotal", {
       precision: 12,
       scale: 2,

@@ -6,6 +6,8 @@ CREATE TYPE "public"."order_status" AS ENUM('PAYMENT_PENDING', 'PAYMENT_VERIFIED
 CREATE TYPE "public"."payment_status" AS ENUM('PENDING', 'VERIFIED', 'REJECTED');--> statement-breakpoint
 CREATE TYPE "public"."payment_type" AS ENUM('DP', 'FULL');--> statement-breakpoint
 CREATE TYPE "public"."sales_mode" AS ENUM('PRE_ORDER', 'READY_STOCK');--> statement-breakpoint
+CREATE SEQUENCE "public"."pickup_order_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1;--> statement-breakpoint
+CREATE SEQUENCE "public"."shipping_order_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1;--> statement-breakpoint
 CREATE TABLE "admin_users" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"name" text NOT NULL,
@@ -105,6 +107,7 @@ CREATE TABLE "orders" (
 	"status" "order_status" DEFAULT 'PAYMENT_PENDING' NOT NULL,
 	"payment_type" "payment_type" NOT NULL,
 	"fulfilment_method" "fulfilment_method",
+	"order_number" integer,
 	"merchandise_subtotal" numeric(12, 2) NOT NULL,
 	"shipping_cost" numeric(12, 2),
 	"amount_paid" numeric(12, 2) DEFAULT '0' NOT NULL,

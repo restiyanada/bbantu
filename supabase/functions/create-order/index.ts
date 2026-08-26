@@ -21,7 +21,7 @@
  * the email queue + worker to Milestone 5 ("nothing else depends on it").
  */
 
-import { inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
@@ -29,10 +29,23 @@ import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents
 import { customers, orders, orderItems, payments, productVariants, inventory } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
+// Letters (incl. common accented/Indonesian names), spaces, apostrophes,
+// hyphens — matches how the checkout form validates client-side; this is
+// the actual enforcement (§3 principle 5 — a browser check alone is never
+// sufficient).
+const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
+// Digits only — customer.phone is used for exact-match lookups (scan-pickup
+// phone fallback, §16/§27 recovery), so a consistent digits-only format
+// matters more here than accepting formatting punctuation.
+const PHONE_PATTERN = /^[0-9]{8,15}$/;
+
 const createOrderSchema = z.object({
   customer: z.object({
-    name: z.string().trim().min(1, "Customer name is required."),
-    phone: z.string().trim().min(1, "Phone number is required."),
+    name: z.string().trim().min(1, "Customer name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
+    phone: z
+      .string()
+      .trim()
+      .regex(PHONE_PATTERN, "Phone number must be 8–15 digits, numbers only."),
     email: z.string().trim().email("A valid email is required."),
   }),
   items: z
@@ -118,6 +131,10 @@ Deno.serve(async (req) => {
             status: "PAYMENT_PENDING",
             paymentType: "FULL",
             fulfilmentMethod: "PICKUP",
+            // M1 scope only ever creates PICKUP orders, so always this
+            // sequence — shipping orders (Milestone 3) will draw from
+            // shipping_order_seq instead. See db/schema.ts.
+            orderNumber: sql`nextval('pickup_order_seq')`,
             merchandiseSubtotal,
             submissionToken: input.submissionToken,
             accessToken,
@@ -160,6 +177,7 @@ Deno.serve(async (req) => {
     return json(
       {
         orderId: order.id,
+        orderNumber: order.orderNumber,
         accessToken: order.accessToken,
         merchandiseSubtotal: order.merchandiseSubtotal,
         status: order.status,

@@ -34,6 +34,7 @@ Deno.serve(async (req) => {
     const rows = await db
       .select({
         id: orders.id,
+        orderNumber: orders.orderNumber,
         status: orders.status,
         salesMode: orders.salesMode,
         paymentType: orders.paymentType,

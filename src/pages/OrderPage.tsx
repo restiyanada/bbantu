@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { createGuestOrderClient } from "../lib/supabaseClient";
-import { formatIDR } from "@/lib/utils";
+import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 
@@ -10,6 +10,7 @@ import { Badge } from "../components/ui/badge";
 // from db/schema.ts, not the camelCase TS property names.
 interface OrderRow {
   id: string;
+  order_number: number | null;
   status: string;
   merchandise_subtotal: string;
   shipping_cost: string | null;
@@ -41,12 +42,6 @@ type LoadState =
       pickupToken: string | null;
     };
 
-function statusBadgeVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "CANCELLED" || status === "REFUND_REQUIRED") return "destructive";
-  if (status === "COMPLETED" || status === "PICKED_UP" || status === "SHIPPED") return "default";
-  return "secondary";
-}
-
 export default function OrderPage() {
   const { accessToken } = useParams<{ accessToken: string }>();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
@@ -65,7 +60,7 @@ export default function OrderPage() {
 
       const { data: order, error: orderError } = await client
         .from("orders")
-        .select("id, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at")
+        .select("id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at")
         .eq("access_token", token)
         .maybeSingle();
 
@@ -136,7 +131,9 @@ export default function OrderPage() {
     <main className="p-8 max-w-2xl mx-auto space-y-6">
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">Order {order.id.slice(0, 8)}</h1>
+          <h1 className="text-2xl font-semibold">
+            Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
+          </h1>
           <Badge variant={statusBadgeVariant(order.status)}>{order.status.replaceAll("_", " ")}</Badge>
         </div>
         <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>

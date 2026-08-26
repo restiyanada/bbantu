@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import QrScanner from "qr-scanner";
 import { supabase } from "@/lib/supabaseClient";
+import { formatOrderNumber } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 
 interface ScanResult {
   orderId: string;
+  orderNumber: number | null;
   customerName: string | null;
   customerPhoneMasked: string | null;
   items: { name: string; quantity: number }[];
@@ -20,6 +22,13 @@ interface ScanResult {
   eligibleForPickup: boolean;
   alreadyPickedUp: boolean;
   confirmed: boolean;
+}
+
+interface PhoneMatch {
+  orderId: string;
+  orderNumber: number | null;
+  pickupToken: string;
+  customerName: string;
 }
 
 export default function ScanPage() {
@@ -33,17 +42,25 @@ export default function ScanPage() {
   const [manualToken, setManualToken] = useState("");
   const [currentToken, setCurrentToken] = useState<string | null>(null);
 
+  // Phone-number fallback (§16/§27 — a search shortcut, not proof of
+  // identity: staff still confirms by picking the right name below, the
+  // same as they would after scanning).
+  const [phoneQuery, setPhoneQuery] = useState("");
+  const [phoneMatches, setPhoneMatches] = useState<PhoneMatch[] | null>(null);
+  const [phoneSearching, setPhoneSearching] = useState(false);
+
   async function lookupToken(token: string) {
     setLookupError(null);
     const { data, error } = await supabase.functions.invoke("scan-pickup", {
       body: { token },
     });
     if (error || !data) {
-      setLookupError((data as { error?: string } | null)?.error ?? "Invalid QR code.");
+      setLookupError((data as { error?: string } | null)?.error ?? "Invalid pickup code.");
       return;
     }
     setCurrentToken(token);
     setResult(data as ScanResult);
+    setPhoneMatches(null);
   }
 
   useEffect(() => {
@@ -90,6 +107,8 @@ export default function ScanPage() {
     setResult(null);
     setLookupError(null);
     setCurrentToken(null);
+    setPhoneMatches(null);
+    setPhoneQuery("");
     void scannerRef.current?.start();
   }
 
@@ -99,11 +118,32 @@ export default function ScanPage() {
     void lookupToken(manualToken.trim());
   }
 
+  async function handlePhoneSearch() {
+    if (!phoneQuery.trim()) return;
+    setLookupError(null);
+    setPhoneSearching(true);
+    scannerRef.current?.pause();
+    const { data, error } = await supabase.functions.invoke("scan-pickup", {
+      body: { phone: phoneQuery.trim() },
+    });
+    setPhoneSearching(false);
+    if (error || !data) {
+      setLookupError("Couldn't search by phone number.");
+      return;
+    }
+    const matches = (data as { matches: PhoneMatch[] }).matches;
+    if (matches.length === 0) {
+      setLookupError("No orders ready for pickup found for that phone number.");
+      return;
+    }
+    setPhoneMatches(matches);
+  }
+
   return (
     <main className="p-8 max-w-md mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Pickup Scanner</h1>
-        <p className="text-gray-500 mt-1 text-sm">Point the camera at the customer's pickup QR code.</p>
+        <p className="text-gray-500 mt-1 text-sm">Point the camera at the customer's pickup code.</p>
       </div>
 
       <Card>
@@ -113,19 +153,63 @@ export default function ScanPage() {
         </CardContent>
       </Card>
 
-      {!result && (
+      {!result && !phoneMatches && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Camera not working?</CardTitle>
           </CardHeader>
-          <CardContent className="flex gap-2">
-            <input
-              value={manualToken}
-              onChange={(e) => setManualToken(e.target.value)}
-              placeholder="Paste pickup code"
-              className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            />
-            <Button onClick={handleManualLookup}>Look up</Button>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <input
+                value={manualToken}
+                onChange={(e) => setManualToken(e.target.value)}
+                placeholder="Paste pickup code"
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+              <Button onClick={handleManualLookup}>Look up</Button>
+            </div>
+            <p className="text-xs text-gray-400">— or find by phone number —</p>
+            <div className="flex gap-2">
+              <input
+                value={phoneQuery}
+                onChange={(e) => setPhoneQuery(e.target.value)}
+                placeholder="Customer phone number"
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+              <Button variant="outline" disabled={phoneSearching} onClick={handlePhoneSearch}>
+                {phoneSearching ? "Searching…" : "Search"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {phoneMatches && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Select the right order</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {phoneMatches.map((match) => (
+              <button
+                key={match.orderId}
+                type="button"
+                onClick={() => lookupToken(match.pickupToken)}
+                className="w-full text-left flex justify-between items-center rounded-md border px-3 py-2 text-sm hover:bg-accent"
+              >
+                <span>{match.customerName}</span>
+                <span className="font-mono text-xs text-gray-500">
+                  {formatOrderNumber("PICKUP", match.orderNumber, match.orderId)}
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="text-xs text-gray-500 underline"
+              onClick={() => setPhoneMatches(null)}
+            >
+              Cancel
+            </button>
           </CardContent>
         </Card>
       )}
@@ -135,7 +219,7 @@ export default function ScanPage() {
       {result && (
         <Card>
           <CardHeader>
-            <CardTitle>Order {result.orderId.slice(0, 8)}</CardTitle>
+            <CardTitle>Order {formatOrderNumber("PICKUP", result.orderNumber, result.orderId)}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <div>
@@ -157,7 +241,7 @@ export default function ScanPage() {
               <p className="text-destructive font-medium">Already picked up — cannot release again.</p>
             )}
             {result.eligibleForPickup && !result.confirmed && (
-              <Button onClick={handleConfirm} disabled={confirming}>
+              <Button variant="success" onClick={handleConfirm} disabled={confirming}>
                 {confirming ? "Confirming…" : "Confirm pickup"}
               </Button>
             )}

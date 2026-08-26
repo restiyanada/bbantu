@@ -127,6 +127,55 @@ pages → React Router pages + `supabase-js`).
 
 ## Milestone 1 decisions
 
+### User feedback pass: order numbers, short codes, phone lookup, colors
+
+Four small changes requested after clicking through the built UI:
+
+**Sequential order numbers, not raw UUIDs.** `orders.order_number` (plain
+integer) plus two Postgres sequences, `pickup_order_seq` and
+`shipping_order_seq` (`db/schema.ts`) — separate counters per fulfilment
+type, not one shared counter, so pickup and shipping orders each read as
+`#010001`, `#010002`... / `#020001`, `#020002`... The `01`/`02` type prefix
+is derived from `fulfilmentMethod` at display time
+(`src/lib/utils.ts` → `formatOrderNumber`), not stored — avoids keeping a
+second, potentially-stale copy of data the column already holds.
+`create-order` assigns the number via `nextval('pickup_order_seq')` inside
+the same transaction (M1 only ever creates PICKUP orders; shipping draws
+from the other sequence once Milestone 3 exists). This is a plain
+`CREATE SEQUENCE` + `ADD COLUMN` change — doesn't touch any RLS policy, so
+unlike the schema change earlier in this doc, `drizzle-kit push` should
+apply it correctly. Worth a quick verification anyway now that trust in
+`push` is calibrated:
+```sql
+SELECT last_value FROM pickup_order_seq;  -- should exist, start near 1
+SELECT tablename, policyname, qual FROM pg_policies WHERE qual IS NULL;  -- still empty
+```
+
+**Shorter pickup codes.** `prepare-pickup` now generates a 6-character code
+from a 32-symbol alphabet (excludes `0/O/1/I/L` to avoid characters that
+look alike) instead of a full UUID — same order of magnitude of
+unguessability (~1 billion combinations) for a booth-pickup context, much
+easier to type as the manual fallback. A cheap retry-on-collision loop
+handles the (astronomically unlikely) case of hitting the same code twice.
+
+**Phone-number lookup on the scanner.** `scan-pickup` now accepts a third
+input shape, `{ phone }`, alongside `{ token }` and `{ token, confirm }` —
+returns every `READY_FOR_PICKUP` order for that phone number so staff can
+pick the right one by name, then the flow converges back to the existing
+token-based confirm. Deliberately *not* a fourth way to confirm a pickup
+directly by phone: §27 is explicit that phone numbers aren't secret, so
+this is a search shortcut, not proof of identity — staff still visually
+confirm before pressing Confirm, same as the QR-scan path.
+
+**Status colors, for real this time.** `Badge` and `Button`
+(`src/components/ui/`) gained `warning`/`info`/`success` variants
+(amber/blue/green), extending the original shadcn-generated 4. The
+status→color mapping (`src/lib/utils.ts` → `statusBadgeVariant`) was
+previously duplicated 3 ways across pages with only 3 tones total; now
+consolidated in one place, covering all 12 order statuses with actual
+semantic grouping (amber = waiting on someone, blue = in progress,
+green = done, red = problem) instead of just default/secondary/destructive.
+
 ### UI pass: a 5th Edge Function, and one new dependency
 
 The original Milestone 1 build (backend only) proved every rule works, but

@@ -6,7 +6,7 @@ import {
   flexRender,
 } from "@tanstack/react-table";
 import { supabase } from "@/lib/supabaseClient";
-import { formatIDR } from "@/lib/utils";
+import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ interface PendingPayment {
 
 interface OrderRow {
   id: string;
+  orderNumber: number | null;
   status: string;
   salesMode: string;
   paymentType: string;
@@ -35,12 +36,6 @@ interface OrderRow {
   customerName: string;
   customerPhone: string;
   pendingPayment: PendingPayment | null;
-}
-
-function statusBadgeVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "CANCELLED" || status === "REFUND_REQUIRED") return "destructive";
-  if (status === "COMPLETED" || status === "PICKED_UP" || status === "SHIPPED") return "default";
-  return "secondary";
 }
 
 const columnHelper = createColumnHelper<OrderRow>();
@@ -112,7 +107,11 @@ export default function AdminDashboardPage() {
   const columns = [
     columnHelper.accessor("id", {
       header: "Order",
-      cell: (info) => <span className="font-mono text-xs">{info.getValue().slice(0, 8)}</span>,
+      cell: ({ row }) => (
+        <span className="font-mono text-xs">
+          {formatOrderNumber(row.original.fulfilmentMethod, row.original.orderNumber, row.original.id)}
+        </span>
+      ),
     }),
     columnHelper.accessor("customerName", { header: "Customer" }),
     columnHelper.accessor("status", {
@@ -155,7 +154,7 @@ export default function AdminDashboardPage() {
         if (order.pendingPayment) {
           return (
             <div className="flex gap-2">
-              <Button size="sm" disabled={isActioning} onClick={() => handleVerify(order.id)}>
+              <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
                 {isActioning ? "Verifying…" : "Verify"}
               </Button>
               <Button
@@ -172,7 +171,7 @@ export default function AdminDashboardPage() {
 
         if (order.status === "READY_FOR_FULFILMENT") {
           return (
-            <Button size="sm" disabled={isActioning} onClick={() => handlePreparePickup(order.id)}>
+            <Button size="sm" variant="info" disabled={isActioning} onClick={() => handlePreparePickup(order.id)}>
               {isActioning ? "Preparing…" : "Prepare for pickup"}
             </Button>
           );

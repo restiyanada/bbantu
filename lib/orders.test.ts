@@ -48,6 +48,7 @@ function baseOrder(overrides: Partial<OrderRow> = {}): OrderRow {
     status: "PAYMENT_PENDING",
     paymentType: "FULL",
     fulfilmentMethod: "PICKUP",
+    orderNumber: 1,
     merchandiseSubtotal: "100.00",
     shippingCost: null,
     amountPaid: "0",

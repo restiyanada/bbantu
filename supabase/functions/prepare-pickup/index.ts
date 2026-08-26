@@ -15,7 +15,7 @@
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
-import { json, errorResponse } from "../_shared/http.ts";
+import { json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
 import { pickupTokens } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 
@@ -23,6 +23,18 @@ import { transitionOrder } from "../../../lib/orders.ts";
 const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
 
 const prepareSchema = z.object({ orderId: z.string().uuid() });
+
+// Short (not a full UUID) so staff can type it as a manual fallback if the
+// camera doesn't work — 6 chars from a 32-symbol alphabet is ~1 billion
+// combinations, comfortably unguessable for a booth-pickup code (§13.3)
+// without being painful to type. Alphabet excludes 0/O/1/I/L to avoid
+// characters that look alike when handwritten or read off a phone screen.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function generatePickupCode(length = 6): string {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+}
 
 Deno.serve(async (req) => {
   const preflight = handleCors(req);
@@ -57,8 +69,20 @@ Deno.serve(async (req) => {
         return { status: to, pickupToken: null as string | null };
       }
 
-      const token = crypto.randomUUID();
-      await tx.insert(pickupTokens).values({ orderId: input.orderId, token });
+      // Astronomically unlikely to collide (~1 billion combinations), but
+      // the retry is cheap insurance against the unique constraint on
+      // pickup_tokens.token.
+      let token = "";
+      for (let attempt = 0; attempt < 5; attempt++) {
+        token = generatePickupCode();
+        try {
+          await tx.insert(pickupTokens).values({ orderId: input.orderId, token });
+          break;
+        } catch (err) {
+          if (isUniqueViolation(err) && attempt < 4) continue;
+          throw err;
+        }
+      }
 
       return { status: to, pickupToken: token };
     });

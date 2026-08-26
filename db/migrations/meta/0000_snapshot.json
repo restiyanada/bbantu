@@ -1,5 +1,5 @@
 {
-  "id": "1940dfc6-60c9-4fb8-8476-07b681869614",
+  "id": "30ae4275-4b6f-46c5-a0ae-b5c6b5b041e8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -705,6 +705,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "order_number": {
+          "name": "order_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "merchandise_subtotal": {
           "name": "merchandise_subtotal",
           "type": "numeric(12, 2)",
@@ -1273,7 +1279,28 @@
     }
   },
   "schemas": {},
-  "sequences": {},
+  "sequences": {
+    "public.pickup_order_seq": {
+      "name": "pickup_order_seq",
+      "schema": "public",
+      "increment": "1",
+      "startWith": "1",
+      "minValue": "1",
+      "maxValue": "9223372036854775807",
+      "cache": "1",
+      "cycle": false
+    },
+    "public.shipping_order_seq": {
+      "name": "shipping_order_seq",
+      "schema": "public",
+      "increment": "1",
+      "startWith": "1",
+      "minValue": "1",
+      "maxValue": "9223372036854775807",
+      "cache": "1",
+      "cycle": false
+    }
+  },
   "roles": {},
   "policies": {},
   "views": {},

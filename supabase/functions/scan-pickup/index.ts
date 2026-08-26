@@ -1,12 +1,22 @@
 /**
- * POST /scan-pickup — staff scans/looks up a pickup QR token and, optionally,
+ * POST /scan-pickup — staff scans/looks up a pickup code and, optionally,
  * confirms the pickup (§13).
  *
- * Two-phase by design, matching §13.2 ("staff must explicitly confirm the
- * pickup" as a deliberate action after reviewing order details, not
- * automatic on scan):
- *   { token }                 → look up only, no state change
+ * Three input shapes:
+ *   { token }                 → look up by pickup code, no state change
  *   { token, confirm: true }  → transitions READY_FOR_PICKUP → PICKED_UP
+ *   { phone }                 → search fallback: lists READY_FOR_PICKUP
+ *                                orders for that phone number, each with its
+ *                                own pickup token, so staff can pick the
+ *                                right one and re-call with { token } to see
+ *                                full details / confirm. Phone alone never
+ *                                confirms a pickup directly (§27 — phone
+ *                                numbers aren't secret, so they're a search
+ *                                shortcut, not proof of identity).
+ *
+ * Two-phase by design for the token path, matching §13.2 ("staff must
+ * explicitly confirm the pickup" as a deliberate action after reviewing
+ * order details, not automatic on scan).
  *
  * §26 "Invalid QR must produce a safe error without revealing customer
  * information" — an unknown token gets a generic error, nothing else.
@@ -21,7 +31,7 @@
  * trusted testing until Milestone 4 adds real staff authentication.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
@@ -32,10 +42,15 @@ import { transitionOrder } from "../../../lib/orders.ts";
 // Milestone 4 replaces this with the authenticated staff member's ID.
 const HARDCODED_STAFF_ID = "00000000-0000-0000-0000-000000000001";
 
-const scanSchema = z.object({
-  token: z.string().min(1),
-  confirm: z.boolean().optional().default(false),
-});
+const scanSchema = z.union([
+  z.object({
+    token: z.string().min(1),
+    confirm: z.boolean().optional().default(false),
+  }),
+  z.object({
+    phone: z.string().trim().min(1),
+  }),
+]);
 
 function maskPhone(phone: string): string {
   const digits = phone.replace(/\D/g, "");
@@ -62,15 +77,31 @@ Deno.serve(async (req) => {
   }
 
   try {
+    if ("phone" in input) {
+      const matches = await db
+        .select({
+          orderId: orders.id,
+          orderNumber: orders.orderNumber,
+          pickupToken: pickupTokens.token,
+          customerName: customers.name,
+        })
+        .from(orders)
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .innerJoin(pickupTokens, eq(pickupTokens.orderId, orders.id))
+        .where(and(eq(customers.phone, input.phone), eq(orders.status, "READY_FOR_PICKUP")));
+
+      return json({ matches });
+    }
+
     const outcome = await db.transaction(async (tx) => {
       const [pickupToken] = await tx.select().from(pickupTokens).where(eq(pickupTokens.token, input.token));
       if (!pickupToken) {
-        throw new HttpError(404, "Invalid QR code.");
+        throw new HttpError(404, "Invalid pickup code.");
       }
 
       const [order] = await tx.select().from(orders).where(eq(orders.id, pickupToken.orderId));
       if (!order) {
-        throw new HttpError(404, "Invalid QR code.");
+        throw new HttpError(404, "Invalid pickup code.");
       }
 
       if (input.confirm) {
@@ -94,6 +125,7 @@ Deno.serve(async (req) => {
 
       return {
         orderId: order.id,
+        orderNumber: order.orderNumber,
         customerName: customer?.name ?? null,
         customerPhoneMasked: customer ? maskPhone(customer.phone) : null,
         items: items.map((item) => ({ name: item.variantName, quantity: item.quantity })),
@@ -107,6 +139,6 @@ Deno.serve(async (req) => {
 
     return json(outcome);
   } catch (err) {
-    return errorResponse(err, "Unexpected error scanning pickup token.");
+    return errorResponse(err, "Unexpected error scanning pickup code.");
   }
 });
