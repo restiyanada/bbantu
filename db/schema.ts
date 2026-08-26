@@ -97,6 +97,21 @@ export const productVariants = pgTable("product_variants", {
   price: numeric("price", { precision: 12, scale: 2 }).notNull(),
 });
 
+// Milestone 1: a single global row (admin edits it directly via SQL console
+// for now). Milestone 2 upgrades this to per-batch bank accounts (§10.1) —
+// deliberately not adding an unused batchId column now, since it wouldn't
+// do anything until that batch work exists. No RLS: customers need to read
+// this during checkout before they've even submitted an order (no access
+// token exists yet to gate on), and it's not sensitive — it's information
+// meant to be given to any prospective customer who needs to pay.
+export const paymentSettings = pgTable("payment_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  bankName: text("bank_name").notNull(),
+  accountNumber: text("account_number").notNull(),
+  accountHolderName: text("account_holder_name").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const batches = pgTable("batches", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -205,7 +220,7 @@ export const payments = pgTable(
       .notNull()
       .references(() => orders.id),
     amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
-    proofFileUrl: text("proof_file_url"), // §8, §19 — retained 30 days post-completion
+    proofFileUrl: text("proof_file_url").notNull(), // §7.2 (v1.3) — required, not optional; §8, §19 retained 30 days post-completion
     status: paymentStatusEnum("status").notNull().default("PENDING"),
     submittedAt: timestamp("submitted_at").notNull().defaultNow(),
     verifiedBy: uuid("verified_by").references(() => adminUsers.id),

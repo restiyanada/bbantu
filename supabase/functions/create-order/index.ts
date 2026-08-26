@@ -9,13 +9,18 @@
  * Price is computed here from `product_variants.price`, never trusted from
  * the request body (architecture.md "Security boundary").
  *
- * Payment proof: this endpoint accepts an already-uploaded `proofFileUrl`
- * (client uploads directly to Supabase Storage — a plain "save what the user
- * typed" operation, not a business-rule computation, so architecture.md's
- * Edge-Function-only rule doesn't apply to the upload itself). Storage bucket
- * + RLS policies for that upload aren't wired up yet — that's a currently
- * open gap, not silently treated as done. `proofFileUrl` is optional here so
- * the rest of the flow is testable without it.
+ * Payment proof (§7.2, v1.3 — required, not optional): the client uploads
+ * directly to the private `payment-proofs` Storage bucket first (a plain
+ * "save what the user typed" operation, not a business-rule computation —
+ * architecture.md's Edge-Function-only rule doesn't apply to the upload
+ * itself), then calls this endpoint with the resulting storage path (not a
+ * public URL — the bucket has no public read at all, see
+ * supabase/storage_setup.sql). Because the order doesn't exist until this
+ * call succeeds, we can't verify the upload by checking "does this order own
+ * this file" — instead we verify the path actually exists in
+ * `storage.objects` (a metadata table Supabase's own docs say is safe to
+ * read directly, just not to write to). A client claiming a proof URL with
+ * nothing actually uploaded there gets rejected, not silently trusted.
  *
  * Email queuing (PRD §17) is deliberately NOT done here — milestone.md scopes
  * the email queue + worker to Milestone 5 ("nothing else depends on it").
@@ -60,7 +65,10 @@ const createOrderSchema = z.object({
   // orders.submissionToken is what actually enforces "one order per submit"
   // (§19) — a double-click or retry reuses this value and gets rejected.
   submissionToken: z.string().min(1),
-  proofFileUrl: z.string().url().nullable().optional(),
+  // Storage path within the payment-proofs bucket (e.g.
+  // "{submissionToken}/{filename}"), not a public URL — see the doc comment
+  // above.
+  proofFileUrl: z.string().min(1, "Payment proof is required."),
 });
 
 Deno.serve(async (req) => {
@@ -88,6 +96,18 @@ Deno.serve(async (req) => {
     quantityByVariant.set(item.variantId, (quantityByVariant.get(item.variantId) ?? 0) + item.quantity);
   }
   const variantIds = [...quantityByVariant.keys()];
+
+  // Fail fast, before any of the heavier order-creation work, if the client
+  // claims a proof path nothing was actually uploaded to.
+  const proofRows = await db.execute<{ exists: number }>(
+    sql`select 1 as exists from storage.objects where bucket_id = 'payment-proofs' and name = ${input.proofFileUrl} limit 1`
+  );
+  if (proofRows.length === 0) {
+    return json(
+      { error: "We couldn't find your uploaded payment proof. Please upload it again before submitting." },
+      400
+    );
+  }
 
   try {
     const order = await db.transaction(async (tx) => {
@@ -159,7 +179,7 @@ Deno.serve(async (req) => {
       await tx.insert(payments).values({
         orderId: insertedOrder.id,
         amount: merchandiseSubtotal,
-        proofFileUrl: input.proofFileUrl ?? null,
+        proofFileUrl: input.proofFileUrl,
         status: "PENDING",
       });
 

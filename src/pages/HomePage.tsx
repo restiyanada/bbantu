@@ -21,6 +21,16 @@ interface ProductRow {
   product_variants: VariantRow[];
 }
 
+interface PaymentSettingsRow {
+  bank_name: string;
+  account_number: string;
+  account_holder_name: string;
+}
+
+const PROOF_BUCKET = "payment-proofs";
+const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
+const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+
 // Same patterns as create-order's server-side validation — this is the UX
 // nicety only; the Edge Function re-validates identically (§3 principle 5).
 const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
@@ -41,10 +51,23 @@ export default function HomePage() {
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemsError, setItemsError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
+
+  // Payment proof upload state. `proofPath` is what actually gets sent to
+  // create-order — a Storage path within PROOF_BUCKET, not a public URL (the
+  // bucket has no public read at all, see supabase/storage_setup.sql).
+  const [proofPath, setProofPath] = useState<string | null>(null);
+  const [proofFileName, setProofFileName] = useState<string | null>(null);
+  const [proofUploading, setProofUploading] = useState(false);
+  const [proofError, setProofError] = useState<string | null>(null);
+
   // Client-generated once per visit — the unique constraint on
   // orders.submission_token is what actually enforces "one order per
   // submit" (§19); this is just the value that gets reused if the button
   // is double-clicked, and swapped for a new one after a failed attempt.
+  // Also used as the upload path prefix, so a proof can be uploaded before
+  // the order (and its id) exists yet.
   const [submissionToken, setSubmissionToken] = useState(() => crypto.randomUUID());
 
   const {
@@ -59,18 +82,19 @@ export default function HomePage() {
     async function load() {
       // Products/variants have no RLS (public storefront catalog, §5) — a
       // plain read, not something that needs the guest order-access token.
-      const { data, error } = await supabase
-        .from("products")
-        .select("id, name, description, product_variants(id, name, price)")
-        .eq("active", true);
+      const [productsResult, settingsResult] = await Promise.all([
+        supabase.from("products").select("id, name, description, product_variants(id, name, price)").eq("active", true),
+        supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
+      ]);
 
       if (cancelled) return;
 
-      if (error) {
+      if (productsResult.error) {
         setLoadError("Couldn't load products right now. Please try again shortly.");
-        return;
+      } else {
+        setProducts((productsResult.data as ProductRow[] | null) ?? []);
       }
-      setProducts((data as ProductRow[] | null) ?? []);
+      setPaymentSettings((settingsResult.data as PaymentSettingsRow | null) ?? null);
     }
 
     void load();
@@ -78,6 +102,55 @@ export default function HomePage() {
       cancelled = true;
     };
   }, []);
+
+  const subtotalCents =
+    products?.reduce(
+      (sum, product) =>
+        sum +
+        product.product_variants.reduce(
+          (s, variant) => s + (quantities[variant.id] ?? 0) * Math.round(Number(variant.price) * 100),
+          0
+        ),
+      0
+    ) ?? 0;
+  const hasItems = subtotalCents > 0;
+  const subtotal = (subtotalCents / 100).toFixed(2);
+
+  // M1 scope only ever creates FULL-payment orders (DP arrives in
+  // Milestone 2) — written to branch on paymentType now anyway, so the DP
+  // wording doesn't need writing from scratch later, even though only
+  // "FULL" is reachable today.
+  const paymentType = "FULL" as "FULL" | "DP";
+  const depositCents = Math.round(subtotalCents * 0.5);
+  const amountDueNowCents = paymentType === "DP" ? depositCents : subtotalCents;
+
+  async function handleProofFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setProofError(null);
+    setProofPath(null);
+
+    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
+      setProofError("Please upload a JPEG, PNG, WebP image, or a PDF.");
+      return;
+    }
+    if (file.size > MAX_PROOF_BYTES) {
+      setProofError("File is too large — please keep it under 5MB.");
+      return;
+    }
+
+    setProofUploading(true);
+    const path = `${submissionToken}/${crypto.randomUUID()}-${file.name}`;
+    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
+    setProofUploading(false);
+
+    if (error) {
+      setProofError("Couldn't upload your payment proof. Please try again.");
+      return;
+    }
+    setProofPath(path);
+    setProofFileName(file.name);
+  }
 
   async function onSubmit(customer: CustomerValues) {
     setSubmitError(null);
@@ -91,9 +164,13 @@ export default function HomePage() {
       setItemsError("Add at least one item before placing your order.");
       return;
     }
+    if (!proofPath) {
+      setProofError("Please upload your payment proof before submitting.");
+      return;
+    }
 
     const { data, error } = await supabase.functions.invoke("create-order", {
-      body: { customer, items, submissionToken },
+      body: { customer, items, submissionToken, proofFileUrl: proofPath },
     });
 
     if (error || !data) {
@@ -101,8 +178,13 @@ export default function HomePage() {
         (data as { error?: string } | null)?.error ?? "Something went wrong placing your order. Please try again."
       );
       // A fresh token for the retry avoids any ambiguity about whether the
-      // failed attempt's token might be considered used server-side.
+      // failed attempt's token might be considered used server-side. The
+      // already-uploaded proof stays valid (it's keyed by the old token's
+      // folder), but the new submission needs a token of its own too, so
+      // simplest is to ask for a fresh upload alongside the fresh token.
       setSubmissionToken(crypto.randomUUID());
+      setProofPath(null);
+      setProofFileName(null);
       return;
     }
 
@@ -157,6 +239,84 @@ export default function HomePage() {
         </CardContent>
       </Card>
 
+      {hasItems && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Order summary</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <span>Order total</span>
+              <span className="font-medium">{formatIDR(subtotal)}</span>
+            </div>
+
+            {paymentType === "DP" ? (
+              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
+                <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
+                <div className="flex justify-between text-amber-900">
+                  <span>Pay now (50% deposit)</span>
+                  <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
+                </div>
+                <div className="flex justify-between text-amber-800">
+                  <span>Remaining balance (due later, once ready)</span>
+                  <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+                </div>
+                <p className="text-xs text-amber-700 pt-1">
+                  You'll be notified when the remaining balance is due — you don't need to pay it now.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+                <p className="font-medium text-blue-900">You're paying the full amount now.</p>
+                <div className="flex justify-between text-blue-900 mt-1">
+                  <span>Amount to transfer</span>
+                  <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                </div>
+              </div>
+            )}
+
+            {paymentSettings ? (
+              <div className="pt-2 mt-2 border-t space-y-1">
+                <p className="text-gray-500">Transfer to:</p>
+                <p>
+                  <span className="font-medium">{paymentSettings.bank_name}</span> — {paymentSettings.account_number}
+                </p>
+                <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
+              </div>
+            ) : (
+              <p className="text-gray-500 pt-2 mt-2 border-t">
+                Bank account details aren't configured yet — contact us before paying.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {hasItems && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Payment proof</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-gray-500">
+              Upload a screenshot or PDF of your transfer receipt for the amount shown above.
+            </p>
+            <input
+              type="file"
+              accept={ACCEPTED_PROOF_TYPES.join(",")}
+              onChange={handleProofFileChange}
+              disabled={proofUploading}
+              className="text-sm"
+            />
+            {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
+            {proofPath && !proofUploading && (
+              <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>
+            )}
+            {proofError && <p className="text-destructive text-sm">{proofError}</p>}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Your details</CardTitle>
@@ -200,7 +360,10 @@ export default function HomePage() {
 
             {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-            <Button type="submit" disabled={isSubmitting || products === null || products.length === 0}>
+            <Button
+              type="submit"
+              disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
+            >
               {isSubmitting ? "Placing order…" : "Place order"}
             </Button>
           </form>

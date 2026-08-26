@@ -1,6 +1,9 @@
 # Architecture
 
-Running log of *why* this project is built the way it is. The PRD (`preorder_ready_stock_system_PRD_v1_2.html`)
+Running log of *why* this project is built the way it is. The PRD (`PRD.html`
+— a stable filename kept up to date in place, currently v1.3; the file's own
+changelog tracks version history, so there's no need to rename it on every
+revision and update every cross-reference)
 defines business rules — this doc is implementation decisions, which the PRD
 deliberately stays agnostic about (§30/§31 describe the architecture in
 framework-neutral terms).
@@ -126,6 +129,72 @@ each step changed (Next.js API routes → Supabase Edge Functions, Next.js
 pages → React Router pages + `supabase-js`).
 
 ## Milestone 1 decisions
+
+### Payment proof upload — a real Storage feature, not just a form field
+
+PRD v1.3 made §7.2's payment proof requirement explicit (order + proof are
+one atomic submission, not optional). This needed genuine new
+infrastructure, documented here since none of it existed before:
+
+**The bucket is set up outside drizzle-kit entirely.** `supabase/storage_setup.sql`
+creates the private `payment-proofs` bucket + an insert-only policy for
+`anon` directly in the SQL console — not through `db/schema.ts`. Supabase's
+own docs say to treat the `storage` schema as read-only/API-managed, not
+something an ORM should introspect or migrate. Bucket-level `file_size_limit`
+(5MB) and `allowed_mime_types` (jpeg/png/webp/pdf) enforce validation
+server-side, not just in the browser (§19 "upload validation").
+
+**Chicken-and-egg: the file has to exist before the order does.** §7.2 wants
+order creation and payment proof to be one atomic flow, but the order (and
+its id) doesn't exist until `create-order` succeeds — so the upload can't be
+scoped to "this order's files" the way everything else in this schema is
+scoped by id. Solved by keying the upload path to `submissionToken`
+(already generated client-side before submission) instead: `{submissionToken}/{filename}`.
+The bucket has **no select/list policy for `anon` at all** — customers can
+write, but can't read back any proof, including their own — so this
+write-anywhere-in-the-bucket policy doesn't leak anything; the actual
+security boundary is "nobody except service-role can read," not "customers
+can only write to their own folder."
+
+**A claimed proof path is verified, not trusted.** `create-order` and
+`resubmit-payment` both run `select 1 from storage.objects where bucket_id =
+'payment-proofs' and name = $1` before proceeding — `storage.objects` is
+metadata Supabase's docs explicitly say is safe to *read* directly (just not
+write to), so this needs no extra Storage API client, just the same
+Postgres connection already used for everything else. A client that skips
+the actual upload and just POSTs a made-up path gets rejected.
+
+**Admin needs to *see* the proof, which needs a different client.**
+Read-back for a private bucket requires either a service-role connection or
+a signed URL — raw SQL reads of `storage.objects` only return metadata
+(path, size, mime type), not file bytes or a usable link. `list-orders` now
+also uses a plain `supabase-js` client with `SUPABASE_SERVICE_ROLE_KEY`
+(`_shared/storage.ts`, `createSignedUrl`) alongside its existing direct-
+Postgres connection — two different clients doing two genuinely different
+jobs in the same function, not redundant.
+
+**Resubmission reuses the reject-doesn't-move-order-status design.**
+`resubmit-payment` is customer-facing (unlike verify-payment/scan-pickup),
+so unlike those it genuinely needs to verify the caller owns the order —
+done via the same access token already used for reading the order page, not
+the order id (which isn't secret). Only allowed when the *latest* payment
+for that order is `REJECTED`; this also keeps the pre-existing "at most one
+PENDING payment per order" invariant intact (confirmed, not assumed —
+checked in `list-orders`'s comment) since a second resubmit attempt while
+one's already pending hits a 409 instead of ever producing two PENDING rows.
+
+**DP wording is written now, unreachable until Milestone 2.** The checkout
+summary branches on `paymentType` ("FULL" vs "DP") even though `create-order`
+only ever produces FULL orders in this milestone — so Milestone 2 doesn't
+need to touch this component's core logic when DP selection actually
+becomes reachable, just wire a real value into the branch that already exists.
+
+**Bank account config: one global row, not per-batch yet.** `payment_settings`
+is a single-row table for now (bank name, account number, holder name), admin-
+edited directly via SQL console. Deliberately not adding an unused `batchId`
+column now — batches don't exist yet, and a nullable column that does
+nothing until Milestone 2 actually builds batches is dead schema in the
+meantime. Milestone 2's batch work adds that column when it's actually needed.
 
 ### User feedback pass: order numbers, short codes, phone lookup, colors
 

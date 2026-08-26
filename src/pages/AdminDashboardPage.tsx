@@ -21,6 +21,7 @@ interface PendingPayment {
   id: string;
   status: string;
   amount: string;
+  proofUrl: string | null;
 }
 
 interface OrderRow {
@@ -153,18 +154,32 @@ export default function AdminDashboardPage() {
 
         if (order.pendingPayment) {
           return (
-            <div className="flex gap-2">
-              <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
-                {isActioning ? "Verifying…" : "Verify"}
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={isActioning}
-                onClick={() => setRejectingId(order.id)}
-              >
-                Reject
-              </Button>
+            <div className="flex flex-col gap-1.5">
+              {order.pendingPayment.proofUrl ? (
+                <a
+                  href={order.pendingPayment.proofUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 underline w-fit"
+                >
+                  View proof
+                </a>
+              ) : (
+                <span className="text-xs text-gray-400">Proof unavailable</span>
+              )}
+              <div className="flex gap-2">
+                <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
+                  {isActioning ? "Verifying…" : "Verify"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={isActioning}
+                  onClick={() => setRejectingId(order.id)}
+                >
+                  Reject
+                </Button>
+              </div>
             </div>
           );
         }

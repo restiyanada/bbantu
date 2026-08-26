@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { createGuestOrderClient } from "../lib/supabaseClient";
+import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 // Raw Postgres column names (snake_case) — these queries go straight through
 // supabase-js/PostgREST, not drizzle, so they use the actual DB column names
@@ -29,7 +30,12 @@ interface PaymentRow {
   status: string;
   amount: string;
   submitted_at: string;
+  rejection_reason: string | null;
 }
+
+const PROOF_BUCKET = "payment-proofs";
+const MAX_PROOF_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
 
 type LoadState =
   | { kind: "loading" }
@@ -45,6 +51,14 @@ type LoadState =
 export default function OrderPage() {
   const { accessToken } = useParams<{ accessToken: string }>();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // Resubmission (after a rejected payment) UI state.
+  const [resubmitPath, setResubmitPath] = useState<string | null>(null);
+  const [resubmitFileName, setResubmitFileName] = useState<string | null>(null);
+  const [resubmitUploading, setResubmitUploading] = useState(false);
+  const [resubmitting, setResubmitting] = useState(false);
+  const [resubmitError, setResubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!accessToken) {
@@ -82,7 +96,7 @@ export default function OrderPage() {
           .eq("order_id", order.id),
         client
           .from("payments")
-          .select("status, amount, submitted_at")
+          .select("status, amount, submitted_at, rejection_reason")
           .eq("order_id", order.id)
           .order("submitted_at", { ascending: false }),
         client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
@@ -103,7 +117,7 @@ export default function OrderPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, [accessToken, reloadKey]);
 
   if (state.kind === "loading") {
     return (
@@ -120,6 +134,55 @@ export default function OrderPage() {
         <p className="text-gray-500 mt-2">{state.message}</p>
       </main>
     );
+  }
+
+  async function handleResubmitFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !accessToken) return;
+    setResubmitError(null);
+    setResubmitPath(null);
+
+    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
+      setResubmitError("Please upload a JPEG, PNG, WebP image, or a PDF.");
+      return;
+    }
+    if (file.size > MAX_PROOF_BYTES) {
+      setResubmitError("File is too large — please keep it under 5MB.");
+      return;
+    }
+
+    setResubmitUploading(true);
+    const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
+    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
+    setResubmitUploading(false);
+
+    if (error) {
+      setResubmitError("Couldn't upload your payment proof. Please try again.");
+      return;
+    }
+    setResubmitPath(path);
+    setResubmitFileName(file.name);
+  }
+
+  async function handleResubmit(orderId: string) {
+    if (!accessToken || !resubmitPath) return;
+    setResubmitting(true);
+    setResubmitError(null);
+
+    const { error, data } = await supabase.functions.invoke("resubmit-payment", {
+      body: { orderId, accessToken, proofFileUrl: resubmitPath },
+    });
+
+    setResubmitting(false);
+
+    if (error || !data) {
+      setResubmitError("Couldn't resubmit your payment. Please try again.");
+      return;
+    }
+
+    setResubmitPath(null);
+    setResubmitFileName(null);
+    setReloadKey((k) => k + 1);
   }
 
   const { order, items, payments, pickupToken } = state;
@@ -190,6 +253,39 @@ export default function OrderPage() {
           )}
         </CardContent>
       </Card>
+
+      {payments[0]?.status === "REJECTED" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Payment rejected</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {payments[0].rejection_reason && (
+              <p className="text-gray-600">Reason: {payments[0].rejection_reason}</p>
+            )}
+            <p className="text-gray-500">Upload a new payment proof to try again.</p>
+            <input
+              type="file"
+              accept={ACCEPTED_PROOF_TYPES.join(",")}
+              onChange={handleResubmitFileChange}
+              disabled={resubmitUploading}
+              className="text-sm"
+            />
+            {resubmitUploading && <p className="text-gray-500">Uploading…</p>}
+            {resubmitPath && !resubmitUploading && (
+              <p className="text-green-700">Uploaded: {resubmitFileName}</p>
+            )}
+            {resubmitError && <p className="text-destructive">{resubmitError}</p>}
+            <Button
+              variant="info"
+              disabled={!resubmitPath || resubmitting}
+              onClick={() => handleResubmit(order.id)}
+            >
+              {resubmitting ? "Resubmitting…" : "Resubmit payment"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {order.fulfilment_method === "PICKUP" && pickupToken && order.status !== "PICKED_UP" && (
         <Card>

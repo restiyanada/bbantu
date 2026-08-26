@@ -20,6 +20,7 @@ import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse } from "../_shared/http.ts";
+import { getSignedProofUrl } from "../_shared/storage.ts";
 import { orders, customers, payments } from "../../../db/schema.ts";
 
 Deno.serve(async (req) => {
@@ -54,23 +55,34 @@ Deno.serve(async (req) => {
     const pendingPayments =
       orderIds.length > 0
         ? await db
-            .select({ id: payments.id, orderId: payments.orderId, status: payments.status, amount: payments.amount })
+            .select({
+              id: payments.id,
+              orderId: payments.orderId,
+              status: payments.status,
+              amount: payments.amount,
+              proofFileUrl: payments.proofFileUrl,
+            })
             .from(payments)
             .where(inArray(payments.orderId, orderIds))
         : [];
 
-    // One order can only have one PENDING payment at a time in this
-    // milestone's scope (no resubmit-after-rejection flow built yet), so
-    // "first pending match" is unambiguous here — worth re-checking this
-    // assumption if/when a payment resubmission flow is added.
+    // Confirmed still holds now that resubmit-payment exists: that endpoint
+    // only allows a new payment row when the *latest* one is REJECTED, so a
+    // second resubmission attempt while one is already PENDING gets a 409
+    // there rather than ever producing two PENDING rows for the same order.
     const pendingByOrder = new Map(
       pendingPayments.filter((p) => p.status === "PENDING").map((p) => [p.orderId, p])
     );
 
-    const result = rows.map((row) => ({
-      ...row,
-      pendingPayment: pendingByOrder.get(row.id) ?? null,
-    }));
+    const result = await Promise.all(
+      rows.map(async (row) => {
+        const pending = pendingByOrder.get(row.id);
+        if (!pending) return { ...row, pendingPayment: null };
+
+        const proofUrl = await getSignedProofUrl(pending.proofFileUrl);
+        return { ...row, pendingPayment: { ...pending, proofUrl } };
+      })
+    );
 
     return json({ orders: result });
   } catch (err) {

@@ -119,11 +119,19 @@ CREATE TABLE "orders" (
 );
 --> statement-breakpoint
 ALTER TABLE "orders" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE TABLE "payment_settings" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"bank_name" text NOT NULL,
+	"account_number" text NOT NULL,
+	"account_holder_name" text NOT NULL,
+	"updated_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "payments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"order_id" uuid NOT NULL,
 	"amount" numeric(12, 2) NOT NULL,
-	"proof_file_url" text,
+	"proof_file_url" text NOT NULL,
 	"status" "payment_status" DEFAULT 'PENDING' NOT NULL,
 	"submitted_at" timestamp DEFAULT now() NOT NULL,
 	"verified_by" uuid,
