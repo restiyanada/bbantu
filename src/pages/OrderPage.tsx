@@ -197,7 +197,7 @@ export default function OrderPage() {
         </CardContent>
       </Card>
 
-      {order.fulfilment_method === "PICKUP" && pickupToken && (
+      {order.fulfilment_method === "PICKUP" && pickupToken && order.status !== "PICKED_UP" && (
         <Card>
           <CardHeader>
             <CardTitle>Pickup</CardTitle>

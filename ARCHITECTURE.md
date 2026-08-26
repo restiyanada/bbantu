@@ -257,16 +257,61 @@ effect of a milestone. Worth doing soon: it was actively producing noise
 (an unscoped lint run picked up 7,125 files and 25,000+ warnings from
 vendored/minified code before I scoped it to `src`/`lib`/`db`/`supabase`).
 
-### What's still unverified (needs a real Supabase project)
+### `drizzle-kit push` silently drops RLS policy conditions
 
-Everything above was checked as rigorously as this sandboxed environment
-allows — real `tsc -b`, `vitest run`, `deno check`/`deno lint` against the
-actual npm registry (not guessed), and `drizzle-kit generate` for real SQL
-DDL. What it can't confirm, because this environment has no network path to
-Supabase itself:
-- The `DATABASE_URL` connection from an actual deployed Edge Function.
-- The `request.headers` RLS pattern against real PostgREST.
-- `drizzle-kit push` actually applying this schema to the live project
-  (`lhvxjgbjjamwatsmxiyc` per `supabase/config.toml`).
-- The three Edge Functions running end-to-end via
-  `supabase functions deploy` / `supabase functions serve`.
+Found live, not in this sandbox: after `npx drizzle-kit push` against the
+real Supabase project, `OrderPage.tsx`'s read came back empty even with a
+correct access token. `SELECT tablename, policyname, qual FROM pg_policies`
+showed `qual: NULL` for all four guest-read policies — the policy rows
+existed, but their `USING` condition never got attached, which Postgres
+treats as deny-all rather than allow-all.
+
+This is a confirmed drizzle-kit bug, not anything wrong with the schema or
+the RLS design: [drizzle-orm#3504](https://github.com/drizzle-team/drizzle-orm/issues/3504)
+("RLS Policies not applied with `push` but applied with `migrate`") and
+[drizzle-orm#4078](https://github.com/drizzle-team/drizzle-orm/issues/4078)
+("RLS `using` rule not applied to supabase") describe this exact symptom.
+`drizzle-kit generate` (confirmed earlier in this doc, via inspecting the
+generated `.sql` directly) produces the correct `USING` clause every time —
+the bug is specifically in `push`'s diff-and-apply path.
+
+**Going forward: don't use `drizzle-kit push` for schema changes that touch
+RLS policies.** Use `drizzle-kit generate` + `drizzle-kit migrate` (runs the
+literal generated SQL) instead, or apply the generated `.sql` file by hand
+via the SQL console. After any push/migrate touching policies, a quick
+verification is worth it:
+```sql
+SELECT tablename, policyname, qual FROM pg_policies WHERE qual IS NULL;
+```
+Empty result = safe. Any rows back = a policy silently lost its condition.
+
+Fixed live for now via `DROP POLICY` + `CREATE POLICY` (with the exact
+`USING` clauses from `db/schema.ts`) run directly in the SQL console — the
+schema-as-code and the live database match again, this just didn't go
+through `push`.
+
+### Verified live against the real Supabase project
+
+Everything below was originally written as "unverified — needs a real
+Supabase project" (this sandbox has no network path to Supabase). All of it
+has since been run for real, end-to-end, against the live project
+(`lhvxjgbjjamwatsmxiyc`):
+- `DATABASE_URL` secret + Edge Functions connecting directly to Postgres —
+  confirmed working (`verify-payment`'s 3-way chained transition +
+  inventory reservation ran correctly).
+- `drizzle-kit push` applying the schema — ran successfully, **except** for
+  the RLS policy bug documented above, which push doesn't surface as an
+  error at all (silent data-shape loss, not a failure).
+- The `request.headers` RLS pattern against real PostgREST — confirmed
+  working once the policies actually had their `USING` clause attached (see
+  above); isolated via a direct `curl` to `/rest/v1/orders` with the custom
+  header, bypassing the frontend entirely, before also confirming it in the
+  browser.
+- All four Edge Functions deployed and exercised through the full order
+  lifecycle: `create-order` → `verify-payment` (VERIFY) → `prepare-pickup`
+  → `scan-pickup` (lookup, then confirm) → repeat confirm correctly
+  rejected with `OrderTransitionError` (409), proving §13.3 for real.
+- `OrderPage.tsx` rendering real data through the token-scoped client.
+
+Milestone 1 is now confirmed working end-to-end against a live project, not
+just internally consistent in a sandbox.
