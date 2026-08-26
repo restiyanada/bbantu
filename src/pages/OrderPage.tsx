@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { createGuestOrderClient } from "../lib/supabaseClient";
+import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 
@@ -39,10 +40,6 @@ type LoadState =
       payments: PaymentRow[];
       pickupToken: string | null;
     };
-
-function formatCurrency(value: string): string {
-  return `Rp ${Number(value).toLocaleString("id-ID")}`;
-}
 
 function statusBadgeVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "CANCELLED" || status === "REFUND_REQUIRED") return "destructive";
@@ -155,7 +152,7 @@ export default function OrderPage() {
               <span>
                 {item.product_variants?.name ?? "Item"} × {item.quantity}
               </span>
-              <span>{formatCurrency(item.unit_price)}</span>
+              <span>{formatIDR(item.unit_price)}</span>
             </div>
           ))}
         </CardContent>
@@ -168,28 +165,28 @@ export default function OrderPage() {
         <CardContent className="space-y-1 text-sm">
           <div className="flex justify-between">
             <span>Merchandise subtotal</span>
-            <span>{formatCurrency(order.merchandise_subtotal)}</span>
+            <span>{formatIDR(order.merchandise_subtotal)}</span>
           </div>
           {order.shipping_cost && (
             <div className="flex justify-between">
               <span>Shipping</span>
-              <span>{formatCurrency(order.shipping_cost)}</span>
+              <span>{formatIDR(order.shipping_cost)}</span>
             </div>
           )}
           <div className="flex justify-between font-medium">
             <span>Amount paid</span>
-            <span>{formatCurrency(order.amount_paid)}</span>
+            <span>{formatIDR(order.amount_paid)}</span>
           </div>
           <div className="flex justify-between font-medium">
             <span>Balance due</span>
-            <span>{formatCurrency(balanceDue.toFixed(2))}</span>
+            <span>{formatIDR(balanceDue.toFixed(2))}</span>
           </div>
           {payments.length > 0 && (
             <div className="pt-2 mt-2 border-t space-y-1">
               {payments.map((p, i) => (
                 <div key={i} className="flex justify-between text-gray-500">
                   <span>Payment ({p.status.toLowerCase()})</span>
-                  <span>{formatCurrency(p.amount)}</span>
+                  <span>{formatIDR(p.amount)}</span>
                 </div>
               ))}
             </div>

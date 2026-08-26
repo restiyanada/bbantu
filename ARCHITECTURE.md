@@ -127,6 +127,58 @@ pages → React Router pages + `supabase-js`).
 
 ## Milestone 1 decisions
 
+### UI pass: a 5th Edge Function, and one new dependency
+
+The original Milestone 1 build (backend only) proved every rule works, but
+only via curl — nothing a customer or admin could actually click through.
+Adding real UI surfaced two things not anticipated in the original plan:
+
+**`list-orders` — a 5th Edge Function, not in the original 4.** The admin
+action screen needs to see every order, but the RLS policy on `orders`
+deliberately only allows a guest to read *their own* order (matched by
+access token). There's no "staff" role for RLS to grant broader access to
+yet (that's Milestone 4's job). So, same pattern as the other admin-facing
+functions: a small Edge Function using the service-role connection
+(bypasses RLS) returns what the admin screen needs. Same "not secure yet,
+don't expose the URL" caveat applies — now covering a *read* of every
+customer's name and phone number, not just writes, which is arguably worse
+until Milestone 4 lands.
+
+**`qr-scanner` (npm) for the pickup scanner page.** Chosen over hand-rolling
+camera + QR decoding: lightweight, actively maintained, worker-based (won't
+block the UI thread decoding frames). Verified for real, not assumed: the
+package's own README says bundlers handle its dynamic worker import
+automatically, and a real `npm run build` in this repo confirms it —
+`qr-scanner-worker.min-*.js` shows up as its own emitted chunk in `dist/`,
+no manual `QrScanner.WORKER_PATH` override needed.
+
+### `src/pages/ScanPage.tsx`, `src/pages/AdminDashboardPage.tsx`, `src/pages/HomePage.tsx`
+
+- `HomePage.tsx` is now the real checkout form (was a placeholder). Reads
+  `products`/`product_variants` directly via `supabase-js` (no RLS on those
+  tables — public storefront catalog, §5) — not through an Edge Function,
+  since it's not a business-rule computation. **Payment proof upload is
+  still not wired** (Supabase Storage bucket + RLS don't exist yet, flagged
+  since the original Milestone 1 build) — the form has no field for it;
+  `create-order` accepts an optional pre-uploaded URL but nothing currently
+  produces one. Still an open gap, not silently resolved.
+- `AdminDashboardPage.tsx` replaces the dummy-data TanStack Table placeholder
+  with real data from `list-orders`, plus Verify/Reject (reusing the
+  already-built `PaymentRejectionForm`) and Prepare-for-Pickup actions.
+- `ScanPage.tsx` is new — camera-based scanning (§14), pausing on a hit,
+  looking up via `scan-pickup`, then a separate "Confirm pickup" button
+  (matching §13.2's two-step design already built into the backend). Manual
+  code entry as a fallback if the camera fails or is denied.
+- Extracted `formatIDR` into `src/lib/utils.ts` — was about to be duplicated
+  a third time across `OrderPage`/`HomePage`/`AdminDashboardPage`, past the
+  "copy twice, then abstract" threshold.
+
+None of this changes the Milestone 4 auth gap — if anything it widens what's
+exposed until then, since the admin screen and scanner page now both work
+end-to-end with zero login. Worth prioritizing Milestone 4 sooner rather
+than treating it as "eventually," now that there's an actual admin UI
+someone could stumble onto.
+
 ### Order transitions need a real transaction
 
 `lib/orders.ts` (`transitionOrder`) wraps a status change + audit row in one

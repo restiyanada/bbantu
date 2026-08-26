@@ -23,25 +23,32 @@ Backend (done):
 All of the above verified end-to-end against the live Supabase project —
 not just tested locally.
 
-UI (not yet built — this is the gap that made everything above only
-testable via curl, not by an actual customer or admin):
+UI (done):
 
-7. Customer checkout form — browse the seeded product(s), enter name/phone/
-   email, place the order. Calls create-order, then sends the customer to
-   their own /orders/:accessToken page (already built in step 6).
-8. Admin action screen — a plain list of orders with buttons: "Verify
-   Payment" / "Reject" (calls verify-payment), "Prepare for Pickup" (calls
-   prepare-pickup). No real login yet (Milestone 4) — for internal testing
-   only, not something to put a public link to.
-9. Staff pickup scanner — opens the phone camera (PWA, §14), decodes the
-   QR automatically, calls scan-pickup for lookup, shows the order details,
-   then a "Confirm Pickup" button calls scan-pickup again with confirm.
-   Manual code entry as a fallback if the camera doesn't work.
+7. Customer checkout form (src/pages/HomePage.tsx) — browse the seeded
+   product(s), enter name/phone/email, place the order. Calls create-order,
+   then sends the customer to their own /orders/:accessToken page (already
+   built in step 6). Payment proof upload is still not wired (Storage
+   bucket + RLS don't exist yet) — open gap, not silently resolved.
+8. Admin action screen (src/pages/AdminDashboardPage.tsx) — a real list of
+   orders (via a new supabase/functions/list-orders, needed since the RLS
+   policy on orders deliberately doesn't grant a "staff" role broader
+   access yet) with buttons: "Verify Payment" / "Reject" (calls
+   verify-payment), "Prepare for Pickup" (calls prepare-pickup). No real
+   login yet (Milestone 4) — for internal testing only, not something to
+   put a public link to.
+9. Staff pickup scanner (src/pages/ScanPage.tsx) — opens the phone camera
+   (qr-scanner npm package, §14), decodes the QR automatically, calls
+   scan-pickup for lookup, shows the order details, then a "Confirm Pickup"
+   button calls scan-pickup again with confirm. Manual code entry as a
+   fallback if the camera doesn't work.
 
-End of Milestone 1 (revised): a customer can place a real order by clicking
-through a form, an admin can verify it and stage it for pickup by clicking
-buttons, and staff can scan a real QR code with their phone camera to
-complete the pickup — the whole loop works by hand, not just by curl.
+End of Milestone 1: a customer can place a real order by clicking through a
+form, an admin can verify it and stage it for pickup by clicking buttons,
+and staff can scan a real QR code with their phone camera to complete the
+pickup — the whole loop works by hand, not just by curl. Not yet tested
+against the live Supabase project (needs supabase functions deploy
+list-orders, and real-camera testing in a browser) — see ARCHITECTURE.md.
 
 Milestone 2 — Batches + partial payment (DP)
 
