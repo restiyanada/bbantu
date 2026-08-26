@@ -130,6 +130,22 @@ pages → React Router pages + `supabase-js`).
 
 ## Milestone 1 decisions
 
+### Payment proof UI polish: Dialog component, image-only
+
+After clicking through the built payment-proof flow: checkout reordered
+(customer details first, then order summary/bank info/upload — was the
+reverse), proof restricted to images only (dropped PDF from both the
+Storage bucket's `allowed_mime_types` and the client-side accept/validation
+— removes any need for a PDF-vs-image branch in the viewer), and the
+"View proof" link moved out of the admin table's Actions column into its
+own Proof column.
+
+**First real use of `src/components/ui/dialog.tsx`** — `@radix-ui/react-dialog`
+was already a dependency (added early, never wrapped into a component).
+Standard shadcn Dialog primitives (Root/Trigger/Portal/Overlay/Content/
+Header/Title), used here for the proof-image popup instead of opening the
+signed URL in a new tab.
+
 ### Payment proof upload — a real Storage feature, not just a form field
 
 PRD v1.3 made §7.2's payment proof requirement explicit (order + proof are

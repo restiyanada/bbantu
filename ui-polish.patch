@@ -1,0 +1,481 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 76dedca..c87ed25 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -130,6 +130,22 @@ pages → React Router pages + `supabase-js`).
+ 
+ ## Milestone 1 decisions
+ 
++### Payment proof UI polish: Dialog component, image-only
++
++After clicking through the built payment-proof flow: checkout reordered
++(customer details first, then order summary/bank info/upload — was the
++reverse), proof restricted to images only (dropped PDF from both the
++Storage bucket's `allowed_mime_types` and the client-side accept/validation
++— removes any need for a PDF-vs-image branch in the viewer), and the
++"View proof" link moved out of the admin table's Actions column into its
++own Proof column.
++
++**First real use of `src/components/ui/dialog.tsx`** — `@radix-ui/react-dialog`
++was already a dependency (added early, never wrapped into a component).
++Standard shadcn Dialog primitives (Root/Trigger/Portal/Overlay/Content/
++Header/Title), used here for the proof-image popup instead of opening the
++signed URL in a new tab.
++
+ ### Payment proof upload — a real Storage feature, not just a form field
+ 
+ PRD v1.3 made §7.2's payment proof requirement explicit (order + proof are
+diff --git a/src/components/ui/dialog.tsx b/src/components/ui/dialog.tsx
+new file mode 100644
+index 0000000..7361b21
+--- /dev/null
++++ b/src/components/ui/dialog.tsx
+@@ -0,0 +1,102 @@
++import * as React from "react";
++import * as DialogPrimitive from "@radix-ui/react-dialog";
++import { X } from "lucide-react";
++
++import { cn } from "@/lib/utils";
++
++function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
++  return <DialogPrimitive.Root data-slot="dialog" {...props} />;
++}
++
++function DialogTrigger({ ...props }: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
++  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
++}
++
++function DialogPortal({ ...props }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
++  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
++}
++
++function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.Close>) {
++  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
++}
++
++function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
++  return (
++    <DialogPrimitive.Overlay
++      data-slot="dialog-overlay"
++      className={cn(
++        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/50",
++        className
++      )}
++      {...props}
++    />
++  );
++}
++
++function DialogContent({
++  className,
++  children,
++  ...props
++}: React.ComponentProps<typeof DialogPrimitive.Content>) {
++  return (
++    <DialogPortal data-slot="dialog-portal">
++      <DialogOverlay />
++      <DialogPrimitive.Content
++        data-slot="dialog-content"
++        className={cn(
++          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg",
++          className
++        )}
++        {...props}
++      >
++        {children}
++        <DialogPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
++          <X className="size-4" />
++          <span className="sr-only">Close</span>
++        </DialogPrimitive.Close>
++      </DialogPrimitive.Content>
++    </DialogPortal>
++  );
++}
++
++function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
++  return (
++    <div
++      data-slot="dialog-header"
++      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
++      {...props}
++    />
++  );
++}
++
++function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
++  return (
++    <DialogPrimitive.Title
++      data-slot="dialog-title"
++      className={cn("text-lg leading-none font-semibold", className)}
++      {...props}
++    />
++  );
++}
++
++function DialogDescription({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Description>) {
++  return (
++    <DialogPrimitive.Description
++      data-slot="dialog-description"
++      className={cn("text-muted-foreground text-sm", className)}
++      {...props}
++    />
++  );
++}
++
++export {
++  Dialog,
++  DialogClose,
++  DialogContent,
++  DialogDescription,
++  DialogHeader,
++  DialogOverlay,
++  DialogPortal,
++  DialogTitle,
++  DialogTrigger,
++};
+diff --git a/src/pages/AdminDashboardPage.tsx b/src/pages/AdminDashboardPage.tsx
+index 59f94f7..a228371 100644
+--- a/src/pages/AdminDashboardPage.tsx
++++ b/src/pages/AdminDashboardPage.tsx
+@@ -11,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+ import { Badge } from "@/components/ui/badge";
+ import { Button } from "@/components/ui/button";
+ import { PaymentRejectionForm } from "@/components/payment-rejection-form";
++import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+ 
+ // ⚠️ NOT SECURE YET — this page has no login and no permission checks
+ // (Milestone 4 adds real Supabase Auth + the §18.4 per-action toggles).
+@@ -127,6 +128,29 @@ export default function AdminDashboardPage() {
+       header: "Fulfilment",
+       cell: (info) => info.getValue() ?? "—",
+     }),
++    columnHelper.display({
++      id: "proof",
++      header: "Proof",
++      cell: ({ row }) => {
++        const proofUrl = row.original.pendingPayment?.proofUrl;
++        if (!proofUrl) return <span className="text-gray-400 text-sm">—</span>;
++        return (
++          <Dialog>
++            <DialogTrigger asChild>
++              <button type="button" className="text-xs text-blue-600 underline">
++                View
++              </button>
++            </DialogTrigger>
++            <DialogContent>
++              <DialogHeader>
++                <DialogTitle>Payment proof</DialogTitle>
++              </DialogHeader>
++              <img src={proofUrl} alt="Payment proof" className="w-full rounded-md" />
++            </DialogContent>
++          </Dialog>
++        );
++      },
++    }),
+     columnHelper.display({
+       id: "actions",
+       header: "Actions",
+@@ -154,32 +178,18 @@ export default function AdminDashboardPage() {
+ 
+         if (order.pendingPayment) {
+           return (
+-            <div className="flex flex-col gap-1.5">
+-              {order.pendingPayment.proofUrl ? (
+-                <a
+-                  href={order.pendingPayment.proofUrl}
+-                  target="_blank"
+-                  rel="noreferrer"
+-                  className="text-xs text-blue-600 underline w-fit"
+-                >
+-                  View proof
+-                </a>
+-              ) : (
+-                <span className="text-xs text-gray-400">Proof unavailable</span>
+-              )}
+-              <div className="flex gap-2">
+-                <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
+-                  {isActioning ? "Verifying…" : "Verify"}
+-                </Button>
+-                <Button
+-                  size="sm"
+-                  variant="destructive"
+-                  disabled={isActioning}
+-                  onClick={() => setRejectingId(order.id)}
+-                >
+-                  Reject
+-                </Button>
+-              </div>
++            <div className="flex gap-2">
++              <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
++                {isActioning ? "Verifying…" : "Verify"}
++              </Button>
++              <Button
++                size="sm"
++                variant="destructive"
++                disabled={isActioning}
++                onClick={() => setRejectingId(order.id)}
++              >
++                Reject
++              </Button>
+             </div>
+           );
+         }
+diff --git a/src/pages/HomePage.tsx b/src/pages/HomePage.tsx
+index 5306772..ce46b23 100644
+--- a/src/pages/HomePage.tsx
++++ b/src/pages/HomePage.tsx
+@@ -29,7 +29,7 @@ interface PaymentSettingsRow {
+ 
+ const PROOF_BUCKET = "payment-proofs";
+ const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
+-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
++const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
+ 
+ // Same patterns as create-order's server-side validation — this is the UX
+ // nicety only; the Edge Function re-validates identically (§3 principle 5).
+@@ -131,7 +131,7 @@ export default function HomePage() {
+     setProofPath(null);
+ 
+     if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
+-      setProofError("Please upload a JPEG, PNG, WebP image, or a PDF.");
++      setProofError("Please upload a JPEG, PNG, or WebP image.");
+       return;
+     }
+     if (file.size > MAX_PROOF_BYTES) {
+@@ -239,90 +239,12 @@ export default function HomePage() {
+         </CardContent>
+       </Card>
+ 
+-      {hasItems && (
++      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+         <Card>
+           <CardHeader>
+-            <CardTitle>Order summary</CardTitle>
++            <CardTitle>Your details</CardTitle>
+           </CardHeader>
+-          <CardContent className="space-y-3 text-sm">
+-            <div className="flex justify-between">
+-              <span>Order total</span>
+-              <span className="font-medium">{formatIDR(subtotal)}</span>
+-            </div>
+-
+-            {paymentType === "DP" ? (
+-              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
+-                <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
+-                <div className="flex justify-between text-amber-900">
+-                  <span>Pay now (50% deposit)</span>
+-                  <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
+-                </div>
+-                <div className="flex justify-between text-amber-800">
+-                  <span>Remaining balance (due later, once ready)</span>
+-                  <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+-                </div>
+-                <p className="text-xs text-amber-700 pt-1">
+-                  You'll be notified when the remaining balance is due — you don't need to pay it now.
+-                </p>
+-              </div>
+-            ) : (
+-              <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+-                <p className="font-medium text-blue-900">You're paying the full amount now.</p>
+-                <div className="flex justify-between text-blue-900 mt-1">
+-                  <span>Amount to transfer</span>
+-                  <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+-                </div>
+-              </div>
+-            )}
+-
+-            {paymentSettings ? (
+-              <div className="pt-2 mt-2 border-t space-y-1">
+-                <p className="text-gray-500">Transfer to:</p>
+-                <p>
+-                  <span className="font-medium">{paymentSettings.bank_name}</span> — {paymentSettings.account_number}
+-                </p>
+-                <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
+-              </div>
+-            ) : (
+-              <p className="text-gray-500 pt-2 mt-2 border-t">
+-                Bank account details aren't configured yet — contact us before paying.
+-              </p>
+-            )}
+-          </CardContent>
+-        </Card>
+-      )}
+-
+-      {hasItems && (
+-        <Card>
+-          <CardHeader>
+-            <CardTitle>Payment proof</CardTitle>
+-          </CardHeader>
+-          <CardContent className="space-y-2">
+-            <p className="text-sm text-gray-500">
+-              Upload a screenshot or PDF of your transfer receipt for the amount shown above.
+-            </p>
+-            <input
+-              type="file"
+-              accept={ACCEPTED_PROOF_TYPES.join(",")}
+-              onChange={handleProofFileChange}
+-              disabled={proofUploading}
+-              className="text-sm"
+-            />
+-            {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
+-            {proofPath && !proofUploading && (
+-              <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>
+-            )}
+-            {proofError && <p className="text-destructive text-sm">{proofError}</p>}
+-          </CardContent>
+-        </Card>
+-      )}
+-
+-      <Card>
+-        <CardHeader>
+-          <CardTitle>Your details</CardTitle>
+-        </CardHeader>
+-        <CardContent>
+-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
++          <CardContent className="space-y-3">
+             <div>
+               <label htmlFor="name" className="text-sm font-medium">
+                 Name
+@@ -357,18 +279,95 @@ export default function HomePage() {
+               />
+               {errors.email && <p className="text-destructive text-xs mt-1">{errors.email.message}</p>}
+             </div>
++          </CardContent>
++        </Card>
+ 
+-            {submitError && <p className="text-destructive text-sm">{submitError}</p>}
++        {hasItems && (
++          <Card>
++            <CardHeader>
++              <CardTitle>Order summary</CardTitle>
++            </CardHeader>
++            <CardContent className="space-y-3 text-sm">
++              <div className="flex justify-between">
++                <span>Order total</span>
++                <span className="font-medium">{formatIDR(subtotal)}</span>
++              </div>
+ 
+-            <Button
+-              type="submit"
+-              disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
+-            >
+-              {isSubmitting ? "Placing order…" : "Place order"}
+-            </Button>
+-          </form>
+-        </CardContent>
+-      </Card>
++              {paymentType === "DP" ? (
++                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
++                  <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
++                  <div className="flex justify-between text-amber-900">
++                    <span>Pay now (50% deposit)</span>
++                    <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
++                  </div>
++                  <div className="flex justify-between text-amber-800">
++                    <span>Remaining balance (due later, once ready)</span>
++                    <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
++                  </div>
++                  <p className="text-xs text-amber-700 pt-1">
++                    You'll be notified when the remaining balance is due — you don't need to pay it now.
++                  </p>
++                </div>
++              ) : (
++                <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
++                  <p className="font-medium text-blue-900">You're paying the full amount now.</p>
++                  <div className="flex justify-between text-blue-900 mt-1">
++                    <span>Amount to transfer</span>
++                    <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
++                  </div>
++                </div>
++              )}
++
++              {paymentSettings ? (
++                <div className="pt-2 mt-2 border-t space-y-1">
++                  <p className="text-gray-500">Transfer to:</p>
++                  <p>
++                    <span className="font-medium">{paymentSettings.bank_name}</span> —{" "}
++                    {paymentSettings.account_number}
++                  </p>
++                  <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
++                </div>
++              ) : (
++                <p className="text-gray-500 pt-2 mt-2 border-t">
++                  Bank account details aren't configured yet — contact us before paying.
++                </p>
++              )}
++            </CardContent>
++          </Card>
++        )}
++
++        {hasItems && (
++          <Card>
++            <CardHeader>
++              <CardTitle>Payment proof</CardTitle>
++            </CardHeader>
++            <CardContent className="space-y-2">
++              <p className="text-sm text-gray-500">
++                Upload a screenshot of your transfer receipt for the amount shown above.
++              </p>
++              <input
++                type="file"
++                accept={ACCEPTED_PROOF_TYPES.join(",")}
++                onChange={handleProofFileChange}
++                disabled={proofUploading}
++                className="text-sm"
++              />
++              {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
++              {proofPath && !proofUploading && <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>}
++              {proofError && <p className="text-destructive text-sm">{proofError}</p>}
++            </CardContent>
++          </Card>
++        )}
++
++        {submitError && <p className="text-destructive text-sm">{submitError}</p>}
++
++        <Button
++          type="submit"
++          disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
++        >
++          {isSubmitting ? "Placing order…" : "Place order"}
++        </Button>
++      </form>
+     </main>
+   );
+ }
+diff --git a/src/pages/OrderPage.tsx b/src/pages/OrderPage.tsx
+index 292e2ed..c6f2fa5 100644
+--- a/src/pages/OrderPage.tsx
++++ b/src/pages/OrderPage.tsx
+@@ -35,7 +35,7 @@ interface PaymentRow {
+ 
+ const PROOF_BUCKET = "payment-proofs";
+ const MAX_PROOF_BYTES = 5 * 1024 * 1024;
+-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
++const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
+ 
+ type LoadState =
+   | { kind: "loading" }
+@@ -143,7 +143,7 @@ export default function OrderPage() {
+     setResubmitPath(null);
+ 
+     if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
+-      setResubmitError("Please upload a JPEG, PNG, WebP image, or a PDF.");
++      setResubmitError("Please upload a JPEG, PNG, or WebP image.");
+       return;
+     }
+     if (file.size > MAX_PROOF_BYTES) {
+diff --git a/supabase/storage_setup.sql b/supabase/storage_setup.sql
+index bece716..e75a350 100644
+--- a/supabase/storage_setup.sql
++++ b/supabase/storage_setup.sql
+@@ -17,7 +17,9 @@ values (
+   'payment-proofs',
+   false,
+   5242880, -- 5MB
+-  array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
++  -- Images only — no PDF. Keeps the admin proof viewer a plain <img>, no
++  -- PDF-vs-image branching or embedded-viewer fallback to build/maintain.
++  array['image/jpeg', 'image/png', 'image/webp']
+ );
+ 
+ create policy "anon_can_upload_payment_proof"

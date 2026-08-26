@@ -17,7 +17,9 @@ values (
   'payment-proofs',
   false,
   5242880, -- 5MB
-  array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+  -- Images only — no PDF. Keeps the admin proof viewer a plain <img>, no
+  -- PDF-vs-image branching or embedded-viewer fallback to build/maintain.
+  array['image/jpeg', 'image/png', 'image/webp']
 );
 
 create policy "anon_can_upload_payment_proof"

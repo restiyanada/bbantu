@@ -11,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 // ⚠️ NOT SECURE YET — this page has no login and no permission checks
 // (Milestone 4 adds real Supabase Auth + the §18.4 per-action toggles).
@@ -128,6 +129,29 @@ export default function AdminDashboardPage() {
       cell: (info) => info.getValue() ?? "—",
     }),
     columnHelper.display({
+      id: "proof",
+      header: "Proof",
+      cell: ({ row }) => {
+        const proofUrl = row.original.pendingPayment?.proofUrl;
+        if (!proofUrl) return <span className="text-gray-400 text-sm">—</span>;
+        return (
+          <Dialog>
+            <DialogTrigger asChild>
+              <button type="button" className="text-xs text-blue-600 underline">
+                View
+              </button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Payment proof</DialogTitle>
+              </DialogHeader>
+              <img src={proofUrl} alt="Payment proof" className="w-full rounded-md" />
+            </DialogContent>
+          </Dialog>
+        );
+      },
+    }),
+    columnHelper.display({
       id: "actions",
       header: "Actions",
       cell: ({ row }) => {
@@ -154,32 +178,18 @@ export default function AdminDashboardPage() {
 
         if (order.pendingPayment) {
           return (
-            <div className="flex flex-col gap-1.5">
-              {order.pendingPayment.proofUrl ? (
-                <a
-                  href={order.pendingPayment.proofUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-blue-600 underline w-fit"
-                >
-                  View proof
-                </a>
-              ) : (
-                <span className="text-xs text-gray-400">Proof unavailable</span>
-              )}
-              <div className="flex gap-2">
-                <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
-                  {isActioning ? "Verifying…" : "Verify"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={isActioning}
-                  onClick={() => setRejectingId(order.id)}
-                >
-                  Reject
-                </Button>
-              </div>
+            <div className="flex gap-2">
+              <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
+                {isActioning ? "Verifying…" : "Verify"}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={isActioning}
+                onClick={() => setRejectingId(order.id)}
+              >
+                Reject
+              </Button>
             </div>
           );
         }

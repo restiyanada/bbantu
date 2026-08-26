@@ -35,7 +35,7 @@ interface PaymentRow {
 
 const PROOF_BUCKET = "payment-proofs";
 const MAX_PROOF_BYTES = 5 * 1024 * 1024;
-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 type LoadState =
   | { kind: "loading" }
@@ -143,7 +143,7 @@ export default function OrderPage() {
     setResubmitPath(null);
 
     if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
-      setResubmitError("Please upload a JPEG, PNG, WebP image, or a PDF.");
+      setResubmitError("Please upload a JPEG, PNG, or WebP image.");
       return;
     }
     if (file.size > MAX_PROOF_BYTES) {

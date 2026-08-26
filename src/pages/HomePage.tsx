@@ -29,7 +29,7 @@ interface PaymentSettingsRow {
 
 const PROOF_BUCKET = "payment-proofs";
 const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 // Same patterns as create-order's server-side validation — this is the UX
 // nicety only; the Edge Function re-validates identically (§3 principle 5).
@@ -131,7 +131,7 @@ export default function HomePage() {
     setProofPath(null);
 
     if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
-      setProofError("Please upload a JPEG, PNG, WebP image, or a PDF.");
+      setProofError("Please upload a JPEG, PNG, or WebP image.");
       return;
     }
     if (file.size > MAX_PROOF_BYTES) {
@@ -239,90 +239,12 @@ export default function HomePage() {
         </CardContent>
       </Card>
 
-      {hasItems && (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>Order summary</CardTitle>
+            <CardTitle>Your details</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <span>Order total</span>
-              <span className="font-medium">{formatIDR(subtotal)}</span>
-            </div>
-
-            {paymentType === "DP" ? (
-              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
-                <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
-                <div className="flex justify-between text-amber-900">
-                  <span>Pay now (50% deposit)</span>
-                  <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
-                </div>
-                <div className="flex justify-between text-amber-800">
-                  <span>Remaining balance (due later, once ready)</span>
-                  <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
-                </div>
-                <p className="text-xs text-amber-700 pt-1">
-                  You'll be notified when the remaining balance is due — you don't need to pay it now.
-                </p>
-              </div>
-            ) : (
-              <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
-                <p className="font-medium text-blue-900">You're paying the full amount now.</p>
-                <div className="flex justify-between text-blue-900 mt-1">
-                  <span>Amount to transfer</span>
-                  <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
-                </div>
-              </div>
-            )}
-
-            {paymentSettings ? (
-              <div className="pt-2 mt-2 border-t space-y-1">
-                <p className="text-gray-500">Transfer to:</p>
-                <p>
-                  <span className="font-medium">{paymentSettings.bank_name}</span> — {paymentSettings.account_number}
-                </p>
-                <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
-              </div>
-            ) : (
-              <p className="text-gray-500 pt-2 mt-2 border-t">
-                Bank account details aren't configured yet — contact us before paying.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {hasItems && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Payment proof</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-sm text-gray-500">
-              Upload a screenshot or PDF of your transfer receipt for the amount shown above.
-            </p>
-            <input
-              type="file"
-              accept={ACCEPTED_PROOF_TYPES.join(",")}
-              onChange={handleProofFileChange}
-              disabled={proofUploading}
-              className="text-sm"
-            />
-            {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
-            {proofPath && !proofUploading && (
-              <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>
-            )}
-            {proofError && <p className="text-destructive text-sm">{proofError}</p>}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Your details</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+          <CardContent className="space-y-3">
             <div>
               <label htmlFor="name" className="text-sm font-medium">
                 Name
@@ -357,18 +279,95 @@ export default function HomePage() {
               />
               {errors.email && <p className="text-destructive text-xs mt-1">{errors.email.message}</p>}
             </div>
+          </CardContent>
+        </Card>
 
-            {submitError && <p className="text-destructive text-sm">{submitError}</p>}
+        {hasItems && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Order summary</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <span>Order total</span>
+                <span className="font-medium">{formatIDR(subtotal)}</span>
+              </div>
 
-            <Button
-              type="submit"
-              disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
-            >
-              {isSubmitting ? "Placing order…" : "Place order"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+              {paymentType === "DP" ? (
+                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
+                  <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
+                  <div className="flex justify-between text-amber-900">
+                    <span>Pay now (50% deposit)</span>
+                    <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
+                  </div>
+                  <div className="flex justify-between text-amber-800">
+                    <span>Remaining balance (due later, once ready)</span>
+                    <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+                  </div>
+                  <p className="text-xs text-amber-700 pt-1">
+                    You'll be notified when the remaining balance is due — you don't need to pay it now.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+                  <p className="font-medium text-blue-900">You're paying the full amount now.</p>
+                  <div className="flex justify-between text-blue-900 mt-1">
+                    <span>Amount to transfer</span>
+                    <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                  </div>
+                </div>
+              )}
+
+              {paymentSettings ? (
+                <div className="pt-2 mt-2 border-t space-y-1">
+                  <p className="text-gray-500">Transfer to:</p>
+                  <p>
+                    <span className="font-medium">{paymentSettings.bank_name}</span> —{" "}
+                    {paymentSettings.account_number}
+                  </p>
+                  <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
+                </div>
+              ) : (
+                <p className="text-gray-500 pt-2 mt-2 border-t">
+                  Bank account details aren't configured yet — contact us before paying.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {hasItems && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Payment proof</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <p className="text-sm text-gray-500">
+                Upload a screenshot of your transfer receipt for the amount shown above.
+              </p>
+              <input
+                type="file"
+                accept={ACCEPTED_PROOF_TYPES.join(",")}
+                onChange={handleProofFileChange}
+                disabled={proofUploading}
+                className="text-sm"
+              />
+              {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
+              {proofPath && !proofUploading && <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>}
+              {proofError && <p className="text-destructive text-sm">{proofError}</p>}
+            </CardContent>
+          </Card>
+        )}
+
+        {submitError && <p className="text-destructive text-sm">{submitError}</p>}
+
+        <Button
+          type="submit"
+          disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
+        >
+          {isSubmitting ? "Placing order…" : "Place order"}
+        </Button>
+      </form>
     </main>
   );
 }
