@@ -15,6 +15,13 @@
       "when": 1787820290387,
       "tag": "0001_bent_the_initiative",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787836356902,
+      "tag": "0002_milestone4_admin_auth",
+      "breakpoints": true
     }
   ]
 }

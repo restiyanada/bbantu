@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import QrScanner from "qr-scanner";
 import { supabase } from "@/lib/supabaseClient";
+import { useAdminAuth } from "@/lib/adminAuth";
 import { formatOrderNumber } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
-// ⚠️ NOT SECURE YET — matches scan-pickup's own caveat: no staff-session
-// auth check exists yet (Milestone 4). §13.3 wants an unauthenticated scan
-// to see only "Login required" — until real auth exists, this page just
-// shows real order data to anyone who opens it. Don't link this page
-// anywhere public yet.
 
 interface ScanResult {
   orderId: string;
@@ -32,6 +27,9 @@ interface PhoneMatch {
 }
 
 export default function ScanPage() {
+  const { admin } = useAdminAuth();
+  const canScan = admin?.canScanConfirmPickup ?? false;
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const scannerRef = useRef<QrScanner | null>(null);
 
@@ -64,7 +62,7 @@ export default function ScanPage() {
   }
 
   useEffect(() => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || !canScan) return;
 
     const scanner = new QrScanner(
       videoRef.current,
@@ -87,7 +85,7 @@ export default function ScanPage() {
       scanner.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [canScan]);
 
   async function handleConfirm() {
     if (!currentToken) return;
@@ -146,6 +144,15 @@ export default function ScanPage() {
         <p className="text-gray-500 mt-1 text-sm">Point the camera at the customer's pickup code.</p>
       </div>
 
+      {!canScan && (
+        <Card className="border-destructive/50">
+          <CardContent className="pt-6 text-sm text-destructive">
+            You don't have the "Scan / confirm pickup" permission (§18.4). The camera and lookup below are
+            disabled — ask an admin with this permission to grant it if you need to use this page.
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="pt-6">
           <video ref={videoRef} className="w-full rounded-md bg-black aspect-square object-cover" />
@@ -164,9 +171,12 @@ export default function ScanPage() {
                 value={manualToken}
                 onChange={(e) => setManualToken(e.target.value)}
                 placeholder="Paste pickup code"
-                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                disabled={!canScan}
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
               />
-              <Button onClick={handleManualLookup}>Look up</Button>
+              <Button disabled={!canScan} onClick={handleManualLookup}>
+                Look up
+              </Button>
             </div>
             <p className="text-xs text-gray-400">— or find by phone number —</p>
             <div className="flex gap-2">
@@ -174,9 +184,10 @@ export default function ScanPage() {
                 value={phoneQuery}
                 onChange={(e) => setPhoneQuery(e.target.value)}
                 placeholder="Customer phone number"
-                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                disabled={!canScan}
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
               />
-              <Button variant="outline" disabled={phoneSearching} onClick={handlePhoneSearch}>
+              <Button variant="outline" disabled={!canScan || phoneSearching} onClick={handlePhoneSearch}>
                 {phoneSearching ? "Searching…" : "Search"}
               </Button>
             </div>
@@ -241,7 +252,7 @@ export default function ScanPage() {
               <p className="text-destructive font-medium">Already picked up — cannot release again.</p>
             )}
             {result.eligibleForPickup && !result.confirmed && (
-              <Button variant="success" onClick={handleConfirm} disabled={confirming}>
+              <Button variant="success" onClick={handleConfirm} disabled={confirming || !canScan}>
                 {confirming ? "Confirming…" : "Confirm pickup"}
               </Button>
             )}

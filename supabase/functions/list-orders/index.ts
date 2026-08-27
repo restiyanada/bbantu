@@ -8,18 +8,18 @@
  * Milestone 4). So for now, this is a small Edge Function using the service
  * role connection (bypasses RLS) to return what the admin screen needs.
  *
- * ⚠️ NOT SECURE YET — same caveat as verify-payment/prepare-pickup/
- * scan-pickup. No admin auth check. Anyone with the anon key can currently
- * call this and see every order, customer name, and phone number. Do not
- * expose this function's URL outside trusted testing until Milestone 4 adds
- * real staff auth + the §18.4 canVerifyPayments/canScanConfirmPickup checks
- * (which should gate this read too, not just the write actions).
+ * Milestone 4: requires a real Supabase Auth session, but no specific §18.4
+ * permission — every admin can see this regardless of individual toggles
+ * ("the dashboard itself is read-only for everyone regardless of
+ * permissions", §18.4). `requireAdmin(req, null)` means exactly that: any
+ * row in admin_users, no particular flag checked.
  */
 
 import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 import { getSignedProofUrl } from "../_shared/storage.ts";
 import { orders, customers, payments, shipments } from "../../../db/schema.ts";
 
@@ -32,6 +32,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    await requireAdmin(req, null);
+
     const rows = await db
       .select({
         id: orders.id,

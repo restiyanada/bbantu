@@ -6,6 +6,7 @@ import {
   flexRender,
 } from "@tanstack/react-table";
 import { supabase } from "@/lib/supabaseClient";
+import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,11 +15,6 @@ import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { TrackingForm } from "@/components/tracking-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Link } from "react-router-dom";
-
-// ⚠️ NOT SECURE YET — this page has no login and no permission checks
-// (Milestone 4 adds real Supabase Auth + the §18.4 per-action toggles).
-// It calls list-orders/verify-payment/prepare-pickup directly with the
-// public anon key. Don't link this page anywhere public yet.
 
 interface PendingPayment {
   id: string;
@@ -57,6 +53,7 @@ interface OrderRow {
 const columnHelper = createColumnHelper<OrderRow>();
 
 export default function AdminDashboardPage() {
+  const { admin, signOut } = useAdminAuth();
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
@@ -274,15 +271,23 @@ export default function AdminDashboardPage() {
         }
 
         if (order.pendingPayment) {
+          const canVerify = admin?.canVerifyPayments ?? false;
           return (
             <div className="flex gap-2">
-              <Button size="sm" variant="success" disabled={isActioning} onClick={() => handleVerify(order.id)}>
+              <Button
+                size="sm"
+                variant="success"
+                disabled={isActioning || !canVerify}
+                title={canVerify ? undefined : "Requires the Verify payments permission"}
+                onClick={() => handleVerify(order.id)}
+              >
                 {isActioning ? "Verifying…" : "Verify"}
               </Button>
               <Button
                 size="sm"
                 variant="destructive"
-                disabled={isActioning}
+                disabled={isActioning || !canVerify}
+                title={canVerify ? undefined : "Requires the Verify payments permission"}
                 onClick={() => setRejectingId(order.id)}
               >
                 Reject
@@ -296,17 +301,35 @@ export default function AdminDashboardPage() {
           // it already branches on fulfilmentMethod internally (Milestone 1
           // designed READY_FOR_PICKUP/READY_TO_SHIP as siblings under one
           // PREPARE_FOR_FULFILMENT event). Only the label differs here.
-          const label = order.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup";
+          // Permission mirrors the Edge Function's own split (§18.4):
+          // shipping orders need canManageShipping, pickup orders need
+          // canScanConfirmPickup.
+          const isShipping = order.fulfilmentMethod === "SHIPPING";
+          const label = isShipping ? "Prepare for shipment" : "Prepare for pickup";
+          const canPrepare = isShipping ? admin?.canManageShipping ?? false : admin?.canScanConfirmPickup ?? false;
           return (
-            <Button size="sm" variant="info" disabled={isActioning} onClick={() => handlePreparePickup(order.id)}>
+            <Button
+              size="sm"
+              variant="info"
+              disabled={isActioning || !canPrepare}
+              title={canPrepare ? undefined : "Requires the Manage shipping / Scan-confirm pickup permission"}
+              onClick={() => handlePreparePickup(order.id)}
+            >
               {isActioning ? "Preparing…" : label}
             </Button>
           );
         }
 
         if (order.status === "READY_TO_SHIP") {
+          const canManageShipping = admin?.canManageShipping ?? false;
           return (
-            <Button size="sm" variant="info" onClick={() => setTrackingEntryId(order.id)}>
+            <Button
+              size="sm"
+              variant="info"
+              disabled={!canManageShipping}
+              title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+              onClick={() => setTrackingEntryId(order.id)}
+            >
               Record tracking
             </Button>
           );
@@ -328,15 +351,18 @@ export default function AdminDashboardPage() {
       <div>
         <h1 className="text-2xl font-semibold">Admin — Orders</h1>
         <p className="text-muted-foreground mt-1">
-          No login yet (§18.4 permissions land in Milestone 4) — internal testing only.
+          Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
         </p>
-        <div className="flex gap-3 mt-2 text-sm">
+        <div className="flex gap-3 mt-2 text-sm items-center">
           <Link to="/admin/products" className="text-blue-600 underline">
             Products
           </Link>
           <Link to="/admin/batches" className="text-blue-600 underline">
             Batches
           </Link>
+          <button type="button" className="text-gray-500 underline" onClick={() => void signOut()}>
+            Sign out
+          </button>
         </div>
       </div>
 

@@ -26,8 +26,8 @@
  * cancellation (§26 shortfall rule: "remaining orders are cancelled manually
  * by admin", not by this endpoint).
  *
- * ⚠️ Same auth caveat as every other admin action in this codebase — no real
- * auth until Milestone 4.
+ * Milestone 4: requires a real Supabase Auth session with
+ * admin_users.canAdjustInventory — see supabase/functions/_shared/auth.ts.
  */
 
 import { eq, and, inArray, sql } from "drizzle-orm";
@@ -35,13 +35,11 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 import { batchItems, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { allocateReceivedStock, type WaitingOrder, type VariantStock } from "../../../lib/batch-allocation.ts";
-
-// Milestone 4 replaces this with the authenticated admin's ID.
-const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
 
 const recordReceiptSchema = z.object({
   batchItemId: z.string().uuid(),
@@ -67,6 +65,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const admin = await requireAdmin(req, "canAdjustInventory");
+
     const result = await db.transaction(async (tx) => {
       const [batchItem] = await tx.select().from(batchItems).where(eq(batchItems.id, input.batchItemId));
       if (!batchItem) {
@@ -88,11 +88,11 @@ Deno.serve(async (req) => {
         variantId: batchItem.variantId,
         quantityDelta: input.quantityReceived,
         reason: `Supplier receipt recorded for batch item ${batchItem.id}`,
-        createdBy: HARDCODED_ADMIN_ID,
+        createdBy: admin.id,
       });
 
       await logAudit(tx, {
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         entityType: "batch_item",
         entityId: batchItem.id,
         action: "supplier receipt recorded",
@@ -162,7 +162,7 @@ Deno.serve(async (req) => {
           variantId,
           quantityDelta: -delta,
           reason: `Reservation allocated from batch receipt (batch item ${batchItem.id})`,
-          createdBy: HARDCODED_ADMIN_ID,
+          createdBy: admin.id,
         });
       }
 
@@ -170,7 +170,7 @@ Deno.serve(async (req) => {
         await transitionOrder(tx, {
           orderId: order.orderId,
           event: "STOCK_RECEIVED",
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           stockAvailable: true,
         });
       }

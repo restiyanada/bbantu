@@ -2,7 +2,33 @@
 # https://supabase.com/docs/guides/local-development/cli/config
 # A string used to distinguish different Supabase projects on the same host. Defaults to the
 # working directory name when running `supabase init`.
-project_id = "bbantu"
+project_id = "lhvxjgbjjamwatsmxiyc"
+
+# Restored (Milestone 4) — this file had drifted back to CLI defaults at some
+# point (project_id had reverted to the folder-name default "bbantu", and
+# this whole [functions] section was missing), losing both customizations
+# below. Found via supabase/config.toml.bak, which still had the real
+# values. verify_jwt = false is required: every Edge Function does its own
+# auth (see supabase/functions/_shared/auth.ts, Milestone 4) rather than the
+# platform gateway rejecting requests up front — that's what lets
+# create-order and other guest-facing functions keep working with only the
+# anon key, while verify-payment/prepare-pickup/scan-pickup/record-tracking/
+# record-batch-receipt/list-orders can still demand a real staff session
+# inside the handler itself.
+[functions]
+verify_jwt = false
+
+[functions.create-order]
+verify_jwt = false
+
+[functions.verify-payment]
+verify_jwt = false
+
+[functions.prepare-pickup]
+verify_jwt = false
+
+[functions.scan-pickup]
+verify_jwt = false
 
 [api]
 enabled = true

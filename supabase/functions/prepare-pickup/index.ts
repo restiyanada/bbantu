@@ -9,18 +9,25 @@
  * staged for pickup" are different facts, even though for ready-stock items
  * they often happen close together in practice.
  *
- * ⚠️ Same auth caveat as verify-payment — no real admin auth until Milestone 4.
+ * Milestone 4: requires a real Supabase Auth session. This endpoint branches
+ * on the order's own fulfilment method internally (§13.1), so which §18.4
+ * permission it demands branches the same way: canScanConfirmPickup for a
+ * PICKUP order, canManageShipping for a SHIPPING one ("pack orders" in the
+ * §18.4 permission table is exactly this step for the shipping path — this
+ * function marks it READY_TO_SHIP, matching record-tracking's later step
+ * which already requires canManageShipping). Checked *before* the state
+ * transition runs, from the order's current fulfilmentMethod, so an admin
+ * lacking the right permission never causes the transition's side effects.
  */
 
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
-import { json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
-import { pickupTokens } from "../../../db/schema.ts";
+import { HttpError, json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
+import { orders, pickupTokens } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
-
-// Milestone 4 replaces this with the authenticated admin's ID.
-const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
 
 const prepareSchema = z.object({ orderId: z.string().uuid() });
 
@@ -55,11 +62,18 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const [orderRow] = await db.select({ fulfilmentMethod: orders.fulfilmentMethod }).from(orders).where(eq(orders.id, input.orderId));
+    if (!orderRow) {
+      throw new HttpError(404, "Order not found.");
+    }
+
+    const admin = await requireAdmin(req, orderRow.fulfilmentMethod === "SHIPPING" ? "canManageShipping" : "canScanConfirmPickup");
+
     const result = await db.transaction(async (tx) => {
       const { to } = await transitionOrder(tx, {
         orderId: input.orderId,
         event: "PREPARE_FOR_FULFILMENT",
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         stockAvailable: true, // unused by this transition
       });
 

@@ -65,6 +65,48 @@ export const emailStatusEnum = pgEnum("email_status", [
   "FAILED",
 ]);
 
+// ── Admin identity & permissions (§18.4) — defined early, since RLS
+// policies further down in this file (products, batches, inventory, orders)
+// need to reference admin_users to check "is this caller a staff member /
+// do they have permission X". ──
+
+// RLS enabled with no policies for direct table access: nothing reads or
+// writes admin_users directly (no browser client, not even an authenticated
+// one) — Edge Functions use the service-role connection, which bypasses RLS
+// entirely. Other tables' policies below reference this table *from inside
+// their own policy definition* (a `using`/`with check` subquery), which is
+// evaluated with the privileges of the query issuer, not of admin_users'
+// own (nonexistent) policies — so "no policies here" doesn't block those.
+//
+// Milestone 4: passwordHash removed. architecture.md specifies Supabase Auth
+// magic-link only (no password ever collected or checked), so the column
+// flagged here since Milestone 1 as a mismatch is now resolved by deleting
+// it rather than leaving it unused.
+export const adminUsers = pgTable("admin_users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  canVerifyPayments: boolean("can_verify_payments").notNull().default(false),
+  canScanConfirmPickup: boolean("can_scan_confirm_pickup")
+    .notNull()
+    .default(false),
+  canManageProductsBatches: boolean("can_manage_products_batches").notNull().default(false),
+  canAdjustInventory: boolean("can_adjust_inventory").notNull().default(false),
+  canManageShipping: boolean("can_manage_shipping").notNull().default(false),
+  canViewAuditLog: boolean("can_view_audit_log").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}).enableRLS();
+
+// §18.4 — a staff member's identity comes from a real Supabase Auth session
+// (magic link), not the custom-header trick guests use (requestAccessToken
+// further down). Postgres's `auth.jwt()` is populated by Supabase's own
+// authenticator role from the request's Authorization JWT, so no custom
+// header/GUC is needed here — just read the email claim straight out of it.
+const requestAdminEmail = sql`(auth.jwt() ->> 'email')`;
+
+/** Matches any authenticated staff member, regardless of which specific permissions they hold. */
+const isAnyAdmin = sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail})`;
+
 // ── Core entities (PRD §21 Suggested Domain Model) ──
 
 // RLS enabled with no policies: PII (name/phone/email) is never read
@@ -80,36 +122,70 @@ export const customers = pgTable("customers", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }).enableRLS();
 
-export const products = pgTable("products", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  description: text("description"),
-  // One image per product (Milestone 2 decision): a product with two colors
-  // is modeled as two separate products, each with its own image — not a
-  // color dimension on variants. Public URL in the public `product-images`
-  // Storage bucket (supabase/product_images_storage_setup.sql), not a
-  // private path — unlike payment proofs, there's nothing sensitive here and
-  // the storefront needs to render it directly in an <img> tag.
-  imageUrl: text("image_url"),
-  active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+// Milestone 4: RLS enabled. Previously this table had none at all, which
+// meant any caller holding the public anon key could INSERT/UPDATE/DELETE
+// products directly (not a hypothetical — AdminProductsPage does exactly
+// that with the plain browser client). Read stays open to everyone
+// (unchanged from before — the storefront needs it, and product names/
+// prices/images were never sensitive); only writes now require an
+// authenticated staff session with canManageProductsBatches (§18.4).
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    description: text("description"),
+    // One image per product (Milestone 2 decision): a product with two colors
+    // is modeled as two separate products, each with its own image — not a
+    // color dimension on variants. Public URL in the public `product-images`
+    // Storage bucket (supabase/product_images_storage_setup.sql), not a
+    // private path — unlike payment proofs, there's nothing sensitive here and
+    // the storefront needs to render it directly in an <img> tag.
+    imageUrl: text("image_url"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (_table) => [
+    pgPolicy("anyone_can_read_products", { for: "select", to: ["anon", "authenticated"], using: sql`true` }),
+    pgPolicy("staff_can_manage_products", {
+      for: "all",
+      to: "authenticated",
+      using: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+      withCheck: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+    }),
+  ]
+).enableRLS();
 
-export const productVariants = pgTable("product_variants", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  productId: uuid("product_id")
-    .notNull()
-    .references(() => products.id),
-  name: text("name").notNull(), // e.g. size/design
-  price: numeric("price", { precision: 12, scale: 2 }).notNull(),
-  // Milestone 3: needed to compute package weight for shipping-rate lookups
-  // (§15.2 — api.co.id's rate endpoint requires a weight in kg). Nullable
-  // rather than required, since every variant from Milestone 1/2 was created
-  // without one — supabase/functions/_shared/shipping.ts falls back to a
-  // documented default per item when this is unset, rather than rejecting
-  // checkout for products nobody has gotten around to weighing yet.
-  weightGrams: integer("weight_grams"),
-});
+// Same reasoning and same two policies as products above — variants are
+// created/edited in the same AdminProductsPage flow, so they need the same
+// "public read, staff-only write" shape.
+export const productVariants = pgTable(
+  "product_variants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    name: text("name").notNull(), // e.g. size/design
+    price: numeric("price", { precision: 12, scale: 2 }).notNull(),
+    // Milestone 3: needed to compute package weight for shipping-rate lookups
+    // (§15.2 — api.co.id's rate endpoint requires a weight in kg). Nullable
+    // rather than required, since every variant from Milestone 1/2 was created
+    // without one — supabase/functions/_shared/shipping.ts falls back to a
+    // documented default per item when this is unset, rather than rejecting
+    // checkout for products nobody has gotten around to weighing yet.
+    weightGrams: integer("weight_grams"),
+  },
+  (_table) => [
+    pgPolicy("anyone_can_read_product_variants", { for: "select", to: ["anon", "authenticated"], using: sql`true` }),
+    pgPolicy("staff_can_manage_product_variants", {
+      for: "all",
+      to: "authenticated",
+      using: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+      withCheck: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+    }),
+  ]
+).enableRLS();
 
 // Milestone 1: a single global row (admin edits it directly via SQL console
 // for now). Milestone 2 upgrades this to per-batch bank accounts (§10.1) —
@@ -142,23 +218,39 @@ export const shippingSettings = pgTable("shipping_settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const batches = pgTable("batches", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  openAt: timestamp("open_at").notNull(),
-  closeAt: timestamp("close_at").notNull(),
-  status: batchStatusEnum("status").notNull().default("DRAFT"),
-  allowedPaymentTypes: paymentTypeEnum("allowed_payment_types").array().notNull(), // §10.1
-  // §13.1/§26 (Milestone 2 note) — a batch can restrict fulfilment to
-  // pickup, shipping, or both. Shipping isn't actually functional until
-  // Milestone 3 (no address/cost calc yet), so the batch UI only lets an
-  // admin pick PICKUP or [PICKUP, SHIPPING] for now — SHIPPING-only is
-  // accepted here at the schema/data level but disabled in the UI, since
-  // enforcing "no shipping-only batches" is a UI/product decision, not a
-  // database constraint.
-  allowedFulfilmentMethods: fulfilmentMethodEnum("allowed_fulfilment_methods").array().notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+// Milestone 4: RLS enabled — same "public read, staff-only write" shape and
+// same reasoning as products above. Batch visibility to customers is
+// unchanged (still world-readable, same as before this table had any RLS at
+// all); only INSERT/UPDATE/DELETE now require canManageProductsBatches.
+export const batches = pgTable(
+  "batches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    openAt: timestamp("open_at").notNull(),
+    closeAt: timestamp("close_at").notNull(),
+    status: batchStatusEnum("status").notNull().default("DRAFT"),
+    allowedPaymentTypes: paymentTypeEnum("allowed_payment_types").array().notNull(), // §10.1
+    // §13.1/§26 (Milestone 2 note) — a batch can restrict fulfilment to
+    // pickup, shipping, or both. Shipping isn't actually functional until
+    // Milestone 3 (no address/cost calc yet), so the batch UI only lets an
+    // admin pick PICKUP or [PICKUP, SHIPPING] for now — SHIPPING-only is
+    // accepted here at the schema/data level but disabled in the UI, since
+    // enforcing "no shipping-only batches" is a UI/product decision, not a
+    // database constraint.
+    allowedFulfilmentMethods: fulfilmentMethodEnum("allowed_fulfilment_methods").array().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (_table) => [
+    pgPolicy("anyone_can_read_batches", { for: "select", to: ["anon", "authenticated"], using: sql`true` }),
+    pgPolicy("staff_can_manage_batches", {
+      for: "all",
+      to: "authenticated",
+      using: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+      withCheck: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+    }),
+  ]
+).enableRLS();
 
 // Milestone 2 correction: MOQ and procured quantity are per batch-item (per
 // product/variant), not a single number for the whole batch — a batch can
@@ -166,22 +258,36 @@ export const batches = pgTable("batches", {
 // tote bag MOQ 10 in the same drop). FR-004 ("ordered qty vs MOQ") is
 // therefore a per-line-item comparison in the batch screen, not one
 // batch-wide number.
-export const batchItems = pgTable("batch_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  batchId: uuid("batch_id")
-    .notNull()
-    .references(() => batches.id),
-  variantId: uuid("variant_id")
-    .notNull()
-    .references(() => productVariants.id),
-  moq: integer("moq"), // §10.1, §10.3 — informational only, never enforced
-  // Admin's own memo of what they decided to order from the supplier for
-  // this line (§10.1 "quantity actually ordered from supplier"). Purely
-  // informational, set manually by admin — NOT auto-updated when receipts
-  // are recorded. "How much has actually arrived so far" is derived from
-  // inventory_transactions / on-hand, not tracked as a second counter here.
-  procuredQuantity: integer("procured_quantity"),
-});
+// Same "public read, staff-only write" shape as batches — line items are
+// created as part of the same AdminBatchesPage form submission.
+export const batchItems = pgTable(
+  "batch_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => batches.id),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id),
+    moq: integer("moq"), // §10.1, §10.3 — informational only, never enforced
+    // Admin's own memo of what they decided to order from the supplier for
+    // this line (§10.1 "quantity actually ordered from supplier"). Purely
+    // informational, set manually by admin — NOT auto-updated when receipts
+    // are recorded. "How much has actually arrived so far" is derived from
+    // inventory_transactions / on-hand, not tracked as a second counter here.
+    procuredQuantity: integer("procured_quantity"),
+  },
+  (_table) => [
+    pgPolicy("anyone_can_read_batch_items", { for: "select", to: ["anon", "authenticated"], using: sql`true` }),
+    pgPolicy("staff_can_manage_batch_items", {
+      for: "all",
+      to: "authenticated",
+      using: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+      withCheck: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+    }),
+  ]
+).enableRLS();
 
 // §16, §27 — guest order access via direct supabase-js read (no login).
 // PostgREST exposes the raw request headers as a JSON GUC; this pulls out a
@@ -243,6 +349,18 @@ export const orders = pgTable(
       to: "anon",
       using: sql`${table.accessToken} = ${requestAccessToken}`,
     }),
+    // Milestone 4 — fixes a real bug: AdminBatchesPage reads this table
+    // directly (for FR-004 "ordered qty vs MOQ") using the plain browser
+    // client, but until now there was no policy granting staff access at
+    // all, so every such read silently returned zero rows. Any admin can
+    // read (no specific §18.4 permission — matches "dashboard is read-only
+    // for everyone regardless of permissions", §18.4); writes are unaffected
+    // and still go through Edge Functions only.
+    pgPolicy("staff_can_read_all_orders", {
+      for: "select",
+      to: "authenticated",
+      using: isAnyAdmin,
+    }),
   ]
 ).enableRLS();
 
@@ -264,6 +382,13 @@ export const orderItems = pgTable(
       for: "select",
       to: "anon",
       using: sql`exists (select 1 from ${orders} where ${orders.id} = ${table.orderId} and ${orders.accessToken} = ${requestAccessToken})`,
+    }),
+    // Same fix and same reasoning as staff_can_read_all_orders above —
+    // AdminBatchesPage joins order_items to orders for the same FR-004 read.
+    pgPolicy("staff_can_read_all_order_items", {
+      for: "select",
+      to: "authenticated",
+      using: isAnyAdmin,
     }),
   ]
 ).enableRLS();
@@ -292,16 +417,41 @@ export const payments = pgTable(
   ]
 ).enableRLS();
 
-export const inventory = pgTable("inventory", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  variantId: uuid("variant_id")
-    .notNull()
-    .references(() => productVariants.id)
-    .unique(),
-  onHand: integer("on_hand").notNull().default(0),
-  reserved: integer("reserved").notNull().default(0),
-  // available = onHand - reserved, computed at query time, not stored
-});
+// Milestone 4: RLS enabled — previously none at all (same open-write hole as
+// products/batches above). Unlike those, there's no public/anon storefront
+// read of this table, so SELECT is staff-only too (not just writes) — any
+// admin can view current stock (§18.4 dashboard-read-only-for-everyone), but
+// only canManageProductsBatches (new-variant zero-stock row on product
+// creation, AdminProductsPage) or canAdjustInventory (actual stock changes)
+// may INSERT. No authenticated UPDATE/DELETE policy is added: every real
+// quantity change (record-batch-receipt, verify-payment's reservation
+// allocation) already goes through an Edge Function on the service-role
+// connection, which bypasses RLS regardless of what's defined here.
+export const inventory = pgTable(
+  "inventory",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id)
+      .unique(),
+    onHand: integer("on_hand").notNull().default(0),
+    reserved: integer("reserved").notNull().default(0),
+    // available = onHand - reserved, computed at query time, not stored
+  },
+  (_table) => [
+    pgPolicy("staff_can_read_inventory", { for: "select", to: "authenticated", using: isAnyAdmin }),
+    pgPolicy("staff_can_create_inventory_rows", {
+      for: "insert",
+      to: "authenticated",
+      withCheck: sql`exists (
+        select 1 from ${adminUsers}
+        where ${adminUsers.email} = ${requestAdminEmail}
+          and (${adminUsers.canManageProductsBatches} = true or ${adminUsers.canAdjustInventory} = true)
+      )`,
+    }),
+  ]
+).enableRLS();
 
 export const inventoryTransactions = pgTable("inventory_transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -400,26 +550,4 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// RLS enabled with no policies — same reasoning as customers above. Staff
-// identity/permissions are only ever touched via the service role connection.
-export const adminUsers = pgTable("admin_users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  // NOTE: architecture.md specifies magic-link auth (Supabase Auth), which
-  // doesn't need a password at all. Flagging this mismatch rather than
-  // silently resolving it — leave for Milestone 4 to decide (drop this
-  // column, or keep it for a fallback auth method) when auth is actually wired up.
-  passwordHash: text("password_hash").notNull(),
-  canVerifyPayments: boolean("can_verify_payments").notNull().default(false),
-  canScanConfirmPickup: boolean("can_scan_confirm_pickup")
-    .notNull()
-    .default(false),
-  canManageProductsBatches: boolean("can_manage_products_batches")
-    .notNull()
-    .default(false),
-  canAdjustInventory: boolean("can_adjust_inventory").notNull().default(false),
-  canManageShipping: boolean("can_manage_shipping").notNull().default(false),
-  canViewAuditLog: boolean("can_view_audit_log").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-}).enableRLS();
+

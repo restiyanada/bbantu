@@ -3,19 +3,18 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { supabase } from "@/lib/supabaseClient";
+import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-// ⚠️ NOT SECURE YET — same caveat as every other admin screen in this
-// codebase: no login, no permission checks (§18.4 lands in Milestone 4).
-// products/product_variants/inventory have no RLS at all — creating a
-// product is "save what the user typed", not a business-rule computation
-// (architecture.md's own rule of thumb for when a direct write is fine, vs.
-// when something needs to be an Edge Function), so this page writes to
-// those tables directly with the anon key rather than through a new Edge
-// Function. That also means anyone with the anon key can currently write
-// here too — don't link this page anywhere public yet.
+// Milestone 4: products/product_variants/inventory now have RLS
+// (db/schema.ts) requiring canManageProductsBatches for writes — this page
+// still writes to those tables directly with the browser client (unchanged
+// from before; "save what the user typed" per architecture.md's own rule of
+// thumb), but the write is now enforced server-side, not just disabled here
+// for UX. The disabled state below is the friendly first line; RLS is what
+// actually stops it.
 
 const IMAGE_BUCKET = "product-images";
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -81,6 +80,8 @@ interface ProductRow extends RawProductRow {
 }
 
 export default function AdminProductsPage() {
+  const { admin } = useAdminAuth();
+  const canManage = admin?.canManageProductsBatches ?? false;
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -323,7 +324,7 @@ export default function AdminProductsPage() {
 
             {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
               {submitting ? "Creating…" : "Create product"}
             </Button>
           </form>

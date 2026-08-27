@@ -3,20 +3,17 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { supabase } from "@/lib/supabaseClient";
+import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-// ⚠️ NOT SECURE YET — same caveat as every other admin screen: no login, no
-// permission checks (§18.4 lands in Milestone 4). Batch creation and status
-// changes are direct writes (batches/batch_items have no RLS — this is
-// "save what the user typed", architecture.md's own rule of thumb for when
-// a direct write is fine). Recording a supplier receipt is the one action
-// here that goes through an Edge Function (record-batch-receipt) — that one
-// has real business logic (inventory + the §26 shortfall-ranked promotion),
-// which is exactly what architecture.md says needs a transaction/service
-// role, not a plain table write.
+// Milestone 4: batches/batch_items now have RLS (db/schema.ts) requiring
+// canManageProductsBatches for writes — same "disabled here is UX, RLS is
+// enforcement" split as AdminProductsPage. record-batch-receipt (an Edge
+// Function, not a direct write) already required canAdjustInventory as of
+// this milestone too.
 
 const BATCH_STATUSES = [
   "DRAFT",
@@ -89,6 +86,9 @@ interface RawInventoryRow {
 }
 
 export default function AdminBatchesPage() {
+  const { admin } = useAdminAuth();
+  const canManage = admin?.canManageProductsBatches ?? false;
+  const canAdjustInventory = admin?.canAdjustInventory ?? false;
   const [variantOptions, setVariantOptions] = useState<RawVariantOption[] | null>(null);
   const [batches, setBatches] = useState<RawBatch[] | null>(null);
   const [inventoryByVariant, setInventoryByVariant] = useState<Map<string, { onHand: number; reserved: number }>>(
@@ -416,7 +416,7 @@ export default function AdminBatchesPage() {
 
             {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
               {submitting ? "Creating…" : "Create batch"}
             </Button>
           </form>
@@ -446,7 +446,9 @@ export default function AdminBatchesPage() {
               <select
                 value={batch.status}
                 onChange={(e) => handleStatusChange(batch.id, e.target.value)}
-                className="rounded-md border bg-background px-2 py-1 text-xs"
+                disabled={!canManage}
+                title={canManage ? undefined : "Requires the Manage products & batches permission"}
+                className="rounded-md border bg-background px-2 py-1 text-xs disabled:opacity-50"
               >
                 {BATCH_STATUSES.map((s) => (
                   <option key={s} value={s}>
@@ -493,7 +495,8 @@ export default function AdminBatchesPage() {
                     <Button
                       size="sm"
                       variant="info"
-                      disabled={receiptBusyId === item.id}
+                      disabled={receiptBusyId === item.id || !canAdjustInventory}
+                      title={canAdjustInventory ? undefined : "Requires the Adjust inventory permission"}
                       onClick={() => handleRecordReceipt(item.id)}
                     >
                       {receiptBusyId === item.id ? "Recording…" : "Record receipt"}

@@ -12,9 +12,8 @@
  * of this endpoint or this milestone's scope yet — flagged as a deliberate
  * gap, not an oversight (see architecture.md).
  *
- * ⚠️ Same auth caveat as verify-payment/prepare-pickup/scan-pickup — no real
- * admin auth until Milestone 4. Do not expose this function's URL outside
- * trusted testing.
+ * Milestone 4: requires a real Supabase Auth session with
+ * admin_users.canManageShipping — see supabase/functions/_shared/auth.ts.
  */
 
 import { eq } from "drizzle-orm";
@@ -22,12 +21,10 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, centsToDecimalString } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 import { orders, shipments } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
-
-// Milestone 4 replaces this with the authenticated admin's ID.
-const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
 
 const recordTrackingSchema = z
   .object({
@@ -65,6 +62,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const admin = await requireAdmin(req, "canManageShipping");
+
     const result = await db.transaction(async (tx) => {
       const [order] = await tx.select().from(orders).where(eq(orders.id, input.orderId));
       if (!order) {
@@ -94,7 +93,7 @@ Deno.serve(async (req) => {
         await tx.update(orders).set({ shippingCost: newCost }).where(eq(orders.id, order.id));
 
         await logAudit(tx, {
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           entityType: "shipment",
           entityId: shipment.id,
           action: "shipping cost changed",
@@ -109,7 +108,7 @@ Deno.serve(async (req) => {
         .where(eq(shipments.id, shipment.id));
 
       await logAudit(tx, {
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         entityType: "shipment",
         entityId: shipment.id,
         action: "tracking added",
@@ -122,7 +121,7 @@ Deno.serve(async (req) => {
       const { to } = await transitionOrder(tx, {
         orderId: order.id,
         event: "TRACKING_RECORDED",
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         stockAvailable: true, // unused by this transition
       });
 

@@ -30,13 +30,8 @@
  * either at initial verification (READY_STOCK) or at receipt time
  * (PRE_ORDER, record-batch-receipt). It just marks the order fulfilment-ready.
  *
- * ⚠️ NOT SECURE YET. Per milestone.md: "No real auth yet, just a hardcoded
- * admin id for now — Supabase Auth comes in Milestone 4." This function has
- * no admin authentication or authorization check. `verify_jwt` is globally
- * false for this project (supabase/config.toml), so ANYONE with the public
- * anon key can currently call this and verify/reject any payment. Do not
- * expose this function's URL outside trusted testing until Milestone 4 adds
- * real Supabase Auth + the §18.4 canVerifyPayments permission check.
+ * Milestone 4: requires a real Supabase Auth session with
+ * admin_users.canVerifyPayments — see supabase/functions/_shared/auth.ts.
  */
 
 import { eq, and, sql } from "drizzle-orm";
@@ -44,13 +39,10 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 import { payments, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
-
-// Milestone 4 replaces this with the authenticated admin's ID from the
-// Supabase Auth session (and checks admin_users.canVerifyPayments).
-const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
 
 const verifyPaymentSchema = z.discriminatedUnion("decision", [
   z.object({ orderId: z.string().uuid(), decision: z.literal("VERIFY") }),
@@ -80,6 +72,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const admin = await requireAdmin(req, "canVerifyPayments");
+
     const result = await db.transaction(async (tx) => {
       // §11.2 "customer commitments are allocated first" — checks every
       // item on the order against current on-hand/available, and only if
@@ -112,7 +106,7 @@ Deno.serve(async (req) => {
             variantId: item.variantId,
             quantityDelta: -item.quantity,
             reason: `Reservation allocated for order ${orderId}`,
-            createdBy: HARDCODED_ADMIN_ID,
+            createdBy: admin.id,
           });
         }
 
@@ -139,13 +133,13 @@ Deno.serve(async (req) => {
           .set({
             status: "REJECTED",
             rejectionReason: input.rejectionReason,
-            verifiedBy: HARDCODED_ADMIN_ID,
+            verifiedBy: admin.id,
             verifiedAt: new Date(),
           })
           .where(eq(payments.id, payment.id));
 
         await logAudit(tx, {
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           entityType: "payment",
           entityId: payment.id,
           action: "payment rejected",
@@ -166,7 +160,7 @@ Deno.serve(async (req) => {
 
       await tx
         .update(payments)
-        .set({ status: "VERIFIED", verifiedBy: HARDCODED_ADMIN_ID, verifiedAt: new Date() })
+        .set({ status: "VERIFIED", verifiedBy: admin.id, verifiedAt: new Date() })
         .where(eq(payments.id, payment.id));
 
       // §16 — the order page needs an accurate "amount paid" / "balance due",
@@ -177,7 +171,7 @@ Deno.serve(async (req) => {
         .where(eq(orders.id, input.orderId));
 
       await logAudit(tx, {
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         entityType: "payment",
         entityId: payment.id,
         action: order.status === "BALANCE_DUE" ? "balance payment verified" : "payment verified",
@@ -190,7 +184,7 @@ Deno.serve(async (req) => {
         const { to } = await transitionOrder(tx, {
           orderId: input.orderId,
           event: "BALANCE_PAYMENT_VERIFIED",
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           stockAvailable: true, // unused by this transition
         });
         return { orderStatus: to as string | null };
@@ -200,7 +194,7 @@ Deno.serve(async (req) => {
       await transitionOrder(tx, {
         orderId: input.orderId,
         event: "PAYMENT_VERIFIED",
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         stockAvailable: true, // not evaluated until STOCK_STATUS_EVALUATED below; unused by this transition
       });
 
@@ -219,14 +213,14 @@ Deno.serve(async (req) => {
         await transitionOrder(tx, {
           orderId: input.orderId,
           event: "RESERVATION_ALLOCATED",
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           stockAvailable: true,
         });
 
         const { to } = await transitionOrder(tx, {
           orderId: input.orderId,
           event: "STOCK_STATUS_EVALUATED",
-          actorId: HARDCODED_ADMIN_ID,
+          actorId: admin.id,
           stockAvailable: true, // ready stock is on hand by definition
         });
 
@@ -237,7 +231,7 @@ Deno.serve(async (req) => {
       await transitionOrder(tx, {
         orderId: input.orderId,
         event: "RESERVATION_ALLOCATED",
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         stockAvailable: true, // unused by this transition
       });
 
@@ -256,7 +250,7 @@ Deno.serve(async (req) => {
       const { to } = await transitionOrder(tx, {
         orderId: input.orderId,
         event: "STOCK_STATUS_EVALUATED",
-        actorId: HARDCODED_ADMIN_ID,
+        actorId: admin.id,
         stockAvailable: alreadyAvailable,
       });
 

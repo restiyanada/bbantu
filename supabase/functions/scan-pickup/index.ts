@@ -25,10 +25,12 @@
  * from PICKED_UP, so a repeat confirm throws OrderTransitionError → 409.
  *
  * ⚠️ §13.3 also requires unauthenticated scan sessions to see only a generic
- * "Login required" message — nothing else. This function has no staff-session
- * auth check yet (Milestone 4), so it currently returns real order data to
- * any caller with the anon key. Do not expose this function's URL outside
- * trusted testing until Milestone 4 adds real staff authentication.
+ * "Login required" message — nothing else. Milestone 4: requireAdmin throws
+ * HttpError(401) for that case (no session at all), which errorResponse maps
+ * to a 401 with a generic message — the frontend ScanPage shows its own
+ * "Login required" UI on any 401, never surfacing order data. A logged-in
+ * admin without canScanConfirmPickup gets a 403 instead (they're staff, just
+ * not permitted for this action — a different case from "not logged in").
  */
 
 import { eq, and } from "drizzle-orm";
@@ -36,11 +38,9 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { requireAdmin } from "../_shared/auth.ts";
 import { pickupTokens, orders, customers, orderItems, productVariants, payments } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
-
-// Milestone 4 replaces this with the authenticated staff member's ID.
-const HARDCODED_STAFF_ID = "00000000-0000-0000-0000-000000000001";
 
 const scanSchema = z.union([
   z.object({
@@ -77,6 +77,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const admin = await requireAdmin(req, "canScanConfirmPickup");
+
     if ("phone" in input) {
       const matches = await db
         .select({
@@ -108,7 +110,7 @@ Deno.serve(async (req) => {
         await transitionOrder(tx, {
           orderId: order.id,
           event: "PICKUP_CONFIRMED",
-          actorId: HARDCODED_STAFF_ID,
+          actorId: admin.id,
           stockAvailable: true, // unused by this transition
         });
       }
