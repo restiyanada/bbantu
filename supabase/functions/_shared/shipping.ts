@@ -168,6 +168,13 @@ export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
     weight: String(params.weightKg),
   });
 
+  // TEMPORARY DEBUG — remove once the real field name for price is
+  // confirmed from these logs (2026-08-27: prices are coming back as
+  // undefined/NaN for at least some JNE service rows on real routes,
+  // meaning `total_price` isn't reliably the right field — need to see
+  // the actual raw shape rather than guess a second time).
+  console.log("[shipping-rates DEBUG] raw api.co.id rates response:", JSON.stringify(body));
+
   return body.data.rates
     .filter((r) => r.courier_code === "jne")
     .map((r) => ({

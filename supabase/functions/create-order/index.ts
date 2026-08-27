@@ -108,6 +108,11 @@ const createOrderSchema = z.object({
   // actually missing) when fulfilmentMethod is SHIPPING. serviceCode is
   // whichever JNE service the customer picked from a prior /shipping-rates
   // call — re-validated against a fresh rate lookup below, not trusted.
+  // NOT an enum of ["REG","YES"] — real api.co.id responses return many
+  // route/weight-specific JNE service codes (e.g. "CTC", "CTCYES",
+  // "JTR<130"), not just those two. The enum was a wrong assumption from
+  // the provider's example docs; the actual validation is the re-match
+  // against a live getJneRates() call further down, not this schema.
   shipping: z
     .object({
       recipientName: z.string().trim().min(1, "Recipient name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
@@ -115,7 +120,7 @@ const createOrderSchema = z.object({
       address: z.string().trim().min(1, "Delivery address is required."),
       destinationDistrictCode: z.string().trim().min(1),
       destinationDistrictName: z.string().trim().min(1),
-      serviceCode: z.enum(["REG", "YES"]),
+      serviceCode: z.string().trim().min(1),
     })
     .optional(),
 });

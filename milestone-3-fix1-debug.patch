@@ -1,0 +1,43 @@
+diff --git a/supabase/functions/_shared/shipping.ts b/supabase/functions/_shared/shipping.ts
+index 3930411..9e82c57 100644
+--- a/supabase/functions/_shared/shipping.ts
++++ b/supabase/functions/_shared/shipping.ts
+@@ -168,6 +168,13 @@ export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
+     weight: String(params.weightKg),
+   });
+ 
++  // TEMPORARY DEBUG — remove once the real field name for price is
++  // confirmed from these logs (2026-08-27: prices are coming back as
++  // undefined/NaN for at least some JNE service rows on real routes,
++  // meaning `total_price` isn't reliably the right field — need to see
++  // the actual raw shape rather than guess a second time).
++  console.log("[shipping-rates DEBUG] raw api.co.id rates response:", JSON.stringify(body));
++
+   return body.data.rates
+     .filter((r) => r.courier_code === "jne")
+     .map((r) => ({
+diff --git a/supabase/functions/create-order/index.ts b/supabase/functions/create-order/index.ts
+index 33e1bd7..552a4fe 100644
+--- a/supabase/functions/create-order/index.ts
++++ b/supabase/functions/create-order/index.ts
+@@ -108,6 +108,11 @@ const createOrderSchema = z.object({
+   // actually missing) when fulfilmentMethod is SHIPPING. serviceCode is
+   // whichever JNE service the customer picked from a prior /shipping-rates
+   // call — re-validated against a fresh rate lookup below, not trusted.
++  // NOT an enum of ["REG","YES"] — real api.co.id responses return many
++  // route/weight-specific JNE service codes (e.g. "CTC", "CTCYES",
++  // "JTR<130"), not just those two. The enum was a wrong assumption from
++  // the provider's example docs; the actual validation is the re-match
++  // against a live getJneRates() call further down, not this schema.
+   shipping: z
+     .object({
+       recipientName: z.string().trim().min(1, "Recipient name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
+@@ -115,7 +120,7 @@ const createOrderSchema = z.object({
+       address: z.string().trim().min(1, "Delivery address is required."),
+       destinationDistrictCode: z.string().trim().min(1),
+       destinationDistrictName: z.string().trim().min(1),
+-      serviceCode: z.enum(["REG", "YES"]),
++      serviceCode: z.string().trim().min(1),
+     })
+     .optional(),
+ });
