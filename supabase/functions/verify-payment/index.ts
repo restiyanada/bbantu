@@ -1,14 +1,34 @@
 /**
  * POST /verify-payment — admin verifies or rejects a submitted payment (§8.3).
  *
- * Milestone 1 scope: READY_STOCK + FULL payment orders only. On VERIFY, this
- * chains three deterministic transitions (payment verified → reservation
- * allocated → stock status evaluated) because for this specific combination
- * none of them need separate admin input — verifying the payment is the one
- * decision point. It stops at READY_FOR_FULFILMENT: moving on to
- * READY_FOR_PICKUP (and issuing the pickup QR token) is a distinct real-world
- * action — "staging the order for pickup" — handled by prepare-pickup
- * (Milestone 1 step 5), not bundled in here.
+ * Handles two different payment rows through the same endpoint, since both
+ * are just "the one PENDING payment row for this order" from the DB's point
+ * of view — only the order's *current status* tells them apart:
+ *
+ *   - order.status === "PAYMENT_PENDING" → this is the initial/deposit
+ *     payment (READY_STOCK+FULL, or PRE_ORDER+FULL/DP).
+ *   - order.status === "BALANCE_DUE"     → this is a DP order's remaining
+ *     balance (Milestone 2, submitted via submit-balance-payment).
+ *
+ * On VERIFY, sales mode changes what "allocate the reservation" means:
+ *
+ *   - READY_STOCK: physical stock must already be on hand (§5.2) — checked
+ *     and reserved immediately, same as Milestone 1. Throws if insufficient
+ *     (shouldn't normally happen; create-order already checked, but stock
+ *     can be claimed by another order in the interim).
+ *   - PRE_ORDER: §11.2 — commitments are tracked *before* physical stock
+ *     exists. Verifying the deposit does NOT touch `inventory` at all; it
+ *     just advances the order to RESERVED/AWAITING_STOCK and stamps
+ *     `reservedAt` (the §26 shortfall-ranking key). The one exception: if
+ *     this batch's stock already happens to be on hand (e.g. a late deposit
+ *     verification after the batch already received stock), allocate and
+ *     promote immediately instead of parking it in AWAITING_STOCK for no
+ *     reason. The normal case — stock arriving after the fact — is handled
+ *     by supabase/functions/record-batch-receipt, not here.
+ *
+ * BALANCE_DUE verification never touches inventory — that already happened
+ * either at initial verification (READY_STOCK) or at receipt time
+ * (PRE_ORDER, record-batch-receipt). It just marks the order fulfilment-ready.
  *
  * ⚠️ NOT SECURE YET. Per milestone.md: "No real auth yet, just a hardcoded
  * admin id for now — Supabase Auth comes in Milestone 4." This function has
@@ -61,6 +81,49 @@ Deno.serve(async (req) => {
 
   try {
     const result = await db.transaction(async (tx) => {
+      // §11.2 "customer commitments are allocated first" — checks every
+      // item on the order against current on-hand/available, and only if
+      // *all* of them clear does it actually write the reservation. Returns
+      // false (no writes at all) rather than throwing, so the two call
+      // sites below can each decide what "not available yet" means for
+      // their sales mode. Declared inside the transaction closure so `tx`'s
+      // type is inferred from `db.transaction(...)` rather than hand-rolled.
+      async function tryAllocatePhysicalReservation(orderId: string): Promise<boolean> {
+        const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+
+        for (const item of items) {
+          const [stock] = await tx
+            .select()
+            .from(inventory)
+            .where(eq(inventory.variantId, item.variantId))
+            .for("update");
+
+          const available = (stock?.onHand ?? 0) - (stock?.reserved ?? 0);
+          if (item.quantity > available) return false;
+        }
+
+        for (const item of items) {
+          await tx
+            .update(inventory)
+            .set({ reserved: sql`${inventory.reserved} + ${item.quantity}` })
+            .where(eq(inventory.variantId, item.variantId));
+
+          await tx.insert(inventoryTransactions).values({
+            variantId: item.variantId,
+            quantityDelta: -item.quantity,
+            reason: `Reservation allocated for order ${orderId}`,
+            createdBy: HARDCODED_ADMIN_ID,
+          });
+        }
+
+        return true;
+      }
+
+      const [order] = await tx.select().from(orders).where(eq(orders.id, input.orderId));
+      if (!order) {
+        throw new HttpError(404, "Order not found.");
+      }
+
       const [payment] = await tx
         .select()
         .from(payments)
@@ -91,11 +154,16 @@ Deno.serve(async (req) => {
         });
 
         // No order-state-machine event exists for "payment rejected" — the
-        // order simply stays PAYMENT_PENDING so the customer can resubmit (§26).
+        // order simply stays in whatever status it was already in
+        // (PAYMENT_PENDING or BALANCE_DUE) so the customer can resubmit (§26).
         return { orderStatus: null as string | null };
       }
 
       // decision === "VERIFY"
+      if (order.status !== "PAYMENT_PENDING" && order.status !== "BALANCE_DUE") {
+        throw new HttpError(409, `Order is in ${order.status} — nothing to verify.`);
+      }
+
       await tx
         .update(payments)
         .set({ status: "VERIFIED", verifiedBy: HARDCODED_ADMIN_ID, verifiedAt: new Date() })
@@ -112,11 +180,23 @@ Deno.serve(async (req) => {
         actorId: HARDCODED_ADMIN_ID,
         entityType: "payment",
         entityId: payment.id,
-        action: "payment verified",
+        action: order.status === "BALANCE_DUE" ? "balance payment verified" : "payment verified",
         before: { status: "PENDING" },
         after: { status: "VERIFIED" },
       });
 
+      // ── Balance payment (DP order's remaining amount) ──
+      if (order.status === "BALANCE_DUE") {
+        const { to } = await transitionOrder(tx, {
+          orderId: input.orderId,
+          event: "BALANCE_PAYMENT_VERIFIED",
+          actorId: HARDCODED_ADMIN_ID,
+          stockAvailable: true, // unused by this transition
+        });
+        return { orderStatus: to as string | null };
+      }
+
+      // ── Initial payment (PAYMENT_PENDING → …) ──
       await transitionOrder(tx, {
         orderId: input.orderId,
         event: "PAYMENT_VERIFIED",
@@ -124,55 +204,60 @@ Deno.serve(async (req) => {
         stockAvailable: true, // not evaluated until STOCK_STATUS_EVALUATED below; unused by this transition
       });
 
-      // Allocate reservation (§11.2 "customer commitments are allocated
-      // first"). Re-check availability now rather than trusting the check
-      // from order-creation time — other orders may have been verified
-      // (and reserved stock) first in the interim.
-      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, input.orderId));
-
-      for (const item of items) {
-        const [stock] = await tx
-          .select()
-          .from(inventory)
-          .where(eq(inventory.variantId, item.variantId))
-          .for("update");
-
-        const available = (stock?.onHand ?? 0) - (stock?.reserved ?? 0);
-        if (item.quantity > available) {
+      if (order.salesMode === "READY_STOCK") {
+        // Ready stock must physically exist by definition (§5.2) — re-check
+        // now rather than trusting create-order's check, since another order
+        // may have been verified (and reserved stock) first in the interim.
+        const allocated = await tryAllocatePhysicalReservation(input.orderId);
+        if (!allocated) {
           throw new HttpError(
             409,
             "Cannot allocate reservation — insufficient stock for one of the items. Payment was not verified."
           );
         }
-      }
 
-      for (const item of items) {
-        await tx
-          .update(inventory)
-          .set({ reserved: sql`${inventory.reserved} + ${item.quantity}` })
-          .where(eq(inventory.variantId, item.variantId));
-
-        await tx.insert(inventoryTransactions).values({
-          variantId: item.variantId,
-          quantityDelta: -item.quantity,
-          reason: `Reservation allocated for order ${input.orderId}`,
-          createdBy: HARDCODED_ADMIN_ID,
+        await transitionOrder(tx, {
+          orderId: input.orderId,
+          event: "RESERVATION_ALLOCATED",
+          actorId: HARDCODED_ADMIN_ID,
+          stockAvailable: true,
         });
+
+        const { to } = await transitionOrder(tx, {
+          orderId: input.orderId,
+          event: "STOCK_STATUS_EVALUATED",
+          actorId: HARDCODED_ADMIN_ID,
+          stockAvailable: true, // ready stock is on hand by definition
+        });
+
+        return { orderStatus: to as string | null };
       }
 
+      // ── PRE_ORDER: commitment tracked before physical stock exists (§11.2) ──
       await transitionOrder(tx, {
         orderId: input.orderId,
         event: "RESERVATION_ALLOCATED",
         actorId: HARDCODED_ADMIN_ID,
-        stockAvailable: true,
+        stockAvailable: true, // unused by this transition
       });
 
-      // Ready stock is on-hand by definition, so stock is always available here.
+      // §26 ranking key — stamped once, right as the order becomes a
+      // tracked commitment. record-batch-receipt sorts on this later.
+      await tx.update(orders).set({ reservedAt: new Date() }).where(eq(orders.id, input.orderId));
+
+      // Edge case, not the normal path: this batch's stock might already be
+      // on hand (e.g. a late deposit verification after the batch already
+      // received stock). If so, allocate and promote right now instead of
+      // parking it in AWAITING_STOCK to wait for a receipt that already
+      // happened. The normal case — stock arriving later — is NOT handled
+      // here; see supabase/functions/record-batch-receipt.
+      const alreadyAvailable = await tryAllocatePhysicalReservation(input.orderId);
+
       const { to } = await transitionOrder(tx, {
         orderId: input.orderId,
         event: "STOCK_STATUS_EVALUATED",
         actorId: HARDCODED_ADMIN_ID,
-        stockAvailable: true,
+        stockAvailable: alreadyAvailable,
       });
 
       return { orderStatus: to as string | null };

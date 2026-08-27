@@ -1,13 +1,25 @@
 /**
  * POST /create-order — guest order creation (PRD §7).
  *
- * Milestone 1 scope only: READY_STOCK sales mode, FULL payment, PICKUP
- * fulfilment. Pre-order/batch orders (Milestone 2), DP payment (Milestone 2),
- * and shipping (Milestone 3) all need additional fields this endpoint
- * doesn't accept yet — rejecting them explicitly rather than half-handling.
+ * Milestone 1: READY_STOCK sales mode, FULL payment, PICKUP fulfilment only.
+ * Milestone 2 adds PRE_ORDER: a client sends `batchId` to order from an open
+ * batch instead of the general ready-stock catalogue, and can choose
+ * `paymentType: "DP"` if that batch allows it (§8.2, §10.1). Fulfilment
+ * method is still always forced to PICKUP server-side, for every sales mode
+ * — shipping isn't implemented until Milestone 3, so it's rejected here
+ * regardless of what a batch's `allowedFulfilmentMethods` nominally permits
+ * (that field exists for the batch config screen; it doesn't mean shipping
+ * actually works yet).
  *
  * Price is computed here from `product_variants.price`, never trusted from
- * the request body (architecture.md "Security boundary").
+ * the request body (architecture.md "Security boundary"). For a DP order,
+ * the amount actually charged now is 50% of that computed subtotal (§8.2 —
+ * a single global rule, not configurable), not something the client sends.
+ *
+ * Pre-order stock availability is deliberately NOT checked here — §11.2:
+ * "pre-order commitments are tracked even before physical stock exists".
+ * Ready-stock orders keep the existing check (you can't order what isn't on
+ * the shelf).
  *
  * Payment proof (§7.2, v1.3 — required, not optional): the client uploads
  * directly to the private `payment-proofs` Storage bucket first (a plain
@@ -26,12 +38,12 @@
  * the email queue + worker to Milestone 5 ("nothing else depends on it").
  */
 
-import { inArray, sql } from "drizzle-orm";
+import { inArray, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents, centsToDecimalString } from "../_shared/http.ts";
-import { customers, orders, orderItems, payments, productVariants, inventory } from "../../../db/schema.ts";
+import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
 // Letters (incl. common accented/Indonesian names), spaces, apostrophes,
@@ -69,6 +81,12 @@ const createOrderSchema = z.object({
   // "{submissionToken}/{filename}"), not a public URL — see the doc comment
   // above.
   proofFileUrl: z.string().min(1, "Payment proof is required."),
+  // Milestone 2: present only when ordering from a pre-order batch. Absent
+  // (or omitted) means ready stock, exactly like Milestone 1.
+  batchId: z.string().uuid().optional(),
+  // Only meaningful when batchId is set — ready-stock orders are always
+  // FULL (see below, ignored if sent for a non-batch order).
+  paymentType: z.enum(["DP", "FULL"]).default("FULL"),
 });
 
 Deno.serve(async (req) => {
@@ -109,6 +127,12 @@ Deno.serve(async (req) => {
     );
   }
 
+  const isPreOrder = input.batchId != null;
+  // Ready-stock orders are always FULL, regardless of what a client sends —
+  // DP only makes sense when payment is deferred until stock arrives (§8.2),
+  // which never applies to stock that's already on hand.
+  const paymentType = isPreOrder ? input.paymentType : "FULL";
+
   try {
     const order = await db.transaction(async (tx) => {
       const variants = await tx.select().from(productVariants).where(inArray(productVariants.id, variantIds));
@@ -116,16 +140,40 @@ Deno.serve(async (req) => {
         throw new HttpError(400, "One or more items reference a product variant that doesn't exist.");
       }
 
-      const stockRows = await tx.select().from(inventory).where(inArray(inventory.variantId, variantIds));
-      const stockByVariant = new Map(stockRows.map((row) => [row.variantId, row]));
+      let batch: typeof batches.$inferSelect | undefined;
+      if (isPreOrder) {
+        [batch] = await tx.select().from(batches).where(eq(batches.id, input.batchId!));
+        if (!batch) {
+          throw new HttpError(400, "This batch doesn't exist.");
+        }
+        if (batch.status !== "OPEN") {
+          throw new HttpError(409, "This batch isn't open for orders right now.");
+        }
+        if (!batch.allowedPaymentTypes.includes(paymentType)) {
+          throw new HttpError(400, `This batch doesn't accept ${paymentType} payment.`);
+        }
 
-      for (const variantId of variantIds) {
-        const stock = stockByVariant.get(variantId);
-        const available = (stock?.onHand ?? 0) - (stock?.reserved ?? 0);
-        const requested = quantityByVariant.get(variantId)!;
-        if (requested > available) {
-          const name = variants.find((v) => v.id === variantId)?.name ?? variantId;
-          throw new HttpError(409, `Not enough stock available for "${name}".`);
+        const items = await tx.select().from(batchItems).where(eq(batchItems.batchId, batch.id));
+        const batchVariantIds = new Set(items.map((i) => i.variantId));
+        for (const variantId of variantIds) {
+          if (!batchVariantIds.has(variantId)) {
+            throw new HttpError(400, "One or more items aren't part of this batch.");
+          }
+        }
+      } else {
+        // §5.2 Ready stock: physically on hand by definition — must exist
+        // right now. Pre-orders skip this check entirely (§11.2).
+        const stockRows = await tx.select().from(inventory).where(inArray(inventory.variantId, variantIds));
+        const stockByVariant = new Map(stockRows.map((row) => [row.variantId, row]));
+
+        for (const variantId of variantIds) {
+          const stock = stockByVariant.get(variantId);
+          const available = (stock?.onHand ?? 0) - (stock?.reserved ?? 0);
+          const requested = quantityByVariant.get(variantId)!;
+          if (requested > available) {
+            const name = variants.find((v) => v.id === variantId)?.name ?? variantId;
+            throw new HttpError(409, `Not enough stock available for "${name}".`);
+          }
         }
       }
 
@@ -137,6 +185,11 @@ Deno.serve(async (req) => {
       });
       const merchandiseSubtotal = centsToDecimalString(subtotalCents);
 
+      // §8.2 — DP is a single global rule (50% of order total), computed
+      // here from the server-side subtotal, never sent by the client.
+      const paymentAmountCents = paymentType === "DP" ? Math.round(subtotalCents * 0.5) : subtotalCents;
+      const paymentAmount = centsToDecimalString(paymentAmountCents);
+
       const [customer] = await tx.insert(customers).values(input.customer).returning();
 
       const accessToken = crypto.randomUUID();
@@ -147,13 +200,13 @@ Deno.serve(async (req) => {
           .insert(orders)
           .values({
             customerId: customer.id,
-            salesMode: "READY_STOCK",
+            salesMode: isPreOrder ? "PRE_ORDER" : "READY_STOCK",
+            batchId: isPreOrder ? input.batchId : null,
             status: "PAYMENT_PENDING",
-            paymentType: "FULL",
+            paymentType,
+            // Forced regardless of sales mode/batch config — shipping isn't
+            // built yet (Milestone 3). See file-level doc comment.
             fulfilmentMethod: "PICKUP",
-            // M1 scope only ever creates PICKUP orders, so always this
-            // sequence — shipping orders (Milestone 3) will draw from
-            // shipping_order_seq instead. See db/schema.ts.
             orderNumber: sql`nextval('pickup_order_seq')`,
             merchandiseSubtotal,
             submissionToken: input.submissionToken,
@@ -178,7 +231,7 @@ Deno.serve(async (req) => {
 
       await tx.insert(payments).values({
         orderId: insertedOrder.id,
-        amount: merchandiseSubtotal,
+        amount: paymentAmount,
         proofFileUrl: input.proofFileUrl,
         status: "PENDING",
       });
@@ -188,7 +241,7 @@ Deno.serve(async (req) => {
         entityType: "order",
         entityId: insertedOrder.id,
         action: "customer created order",
-        after: { status: insertedOrder.status, merchandiseSubtotal },
+        after: { status: insertedOrder.status, merchandiseSubtotal, paymentType, batchId: insertedOrder.batchId },
       });
 
       return insertedOrder;

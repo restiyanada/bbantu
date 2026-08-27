@@ -1,0 +1,357 @@
+import { useEffect, useState, useCallback } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { supabase } from "@/lib/supabaseClient";
+import { formatIDR } from "@/lib/utils";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
+// ⚠️ NOT SECURE YET — same caveat as every other admin screen in this
+// codebase: no login, no permission checks (§18.4 lands in Milestone 4).
+// products/product_variants/inventory have no RLS at all — creating a
+// product is "save what the user typed", not a business-rule computation
+// (architecture.md's own rule of thumb for when a direct write is fine, vs.
+// when something needs to be an Edge Function), so this page writes to
+// those tables directly with the anon key rather than through a new Edge
+// Function. That also means anyone with the anon key can currently write
+// here too — don't link this page anywhere public yet.
+
+const IMAGE_BUCKET = "product-images";
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+const productSchema = z.object({
+  name: z.string().trim().min(1, "Product name is required."),
+  description: z.string().trim().optional(),
+});
+type ProductValues = z.infer<typeof productSchema>;
+
+interface VariantDraft {
+  name: string;
+  price: string;
+}
+
+// Raw PostgREST column names — these queries go straight through
+// supabase-js, not drizzle (same convention as OrderPage.tsx).
+interface RawVariantRow {
+  id: string;
+  name: string;
+  price: string;
+}
+interface RawProductRow {
+  id: string;
+  name: string;
+  description: string | null;
+  image_url: string | null;
+  product_variants: RawVariantRow[];
+}
+interface RawInventoryRow {
+  variant_id: string;
+  on_hand: number;
+  reserved: number;
+}
+
+interface ProductRow extends RawProductRow {
+  inventoryByVariant: Map<string, { onHand: number; reserved: number }>;
+}
+
+export default function AdminProductsPage() {
+  const [products, setProducts] = useState<ProductRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [variants, setVariants] = useState<VariantDraft[]>([{ name: "", price: "" }]);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<ProductValues>({ resolver: zodResolver(productSchema) });
+
+  const loadProducts = useCallback(async () => {
+    setLoadError(null);
+
+    const { data: rawProducts, error: productsError } = await supabase
+      .from("products")
+      .select("id, name, description, image_url, product_variants(id, name, price)")
+      .order("created_at", { ascending: false });
+
+    if (productsError) {
+      setLoadError("Couldn't load products. Please try refreshing.");
+      return;
+    }
+
+    const rows = (rawProducts as RawProductRow[] | null) ?? [];
+    const allVariantIds = rows.flatMap((p) => p.product_variants.map((v) => v.id));
+
+    const { data: inventoryRows } =
+      allVariantIds.length > 0
+        ? await supabase.from("inventory").select("variant_id, on_hand, reserved").in("variant_id", allVariantIds)
+        : { data: [] as RawInventoryRow[] };
+
+    const inventoryByVariant = new Map(
+      ((inventoryRows as RawInventoryRow[] | null) ?? []).map((row) => [
+        row.variant_id,
+        { onHand: row.on_hand, reserved: row.reserved },
+      ])
+    );
+
+    setProducts(rows.map((p) => ({ ...p, inventoryByVariant })));
+  }, []);
+
+  useEffect(() => {
+    void loadProducts();
+  }, [loadProducts]);
+
+  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSubmitError(null);
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setSubmitError("Please upload a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setSubmitError("Image is too large — please keep it under 5MB.");
+      return;
+    }
+    setImageFile(file);
+    setImagePreviewUrl(URL.createObjectURL(file));
+  }
+
+  function updateVariant(index: number, field: keyof VariantDraft, value: string) {
+    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, [field]: value } : v)));
+  }
+
+  function addVariantRow() {
+    setVariants((prev) => [...prev, { name: "", price: "" }]);
+  }
+
+  function removeVariantRow(index: number) {
+    setVariants((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function onSubmit(values: ProductValues) {
+    setSubmitError(null);
+
+    const cleanVariants = variants
+      .map((v) => ({ name: v.name.trim(), price: v.price.trim() }))
+      .filter((v) => v.name && v.price);
+
+    if (cleanVariants.length === 0) {
+      setSubmitError("Add at least one size/variant with a price.");
+      return;
+    }
+    if (cleanVariants.some((v) => Number.isNaN(Number(v.price)) || Number(v.price) <= 0)) {
+      setSubmitError("Every variant needs a valid price.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // Sequential, best-effort writes — supabase-js/PostgREST has no
+      // multi-table transaction primitive from the browser, same tradeoff
+      // Milestone 1 already accepted for manual SQL-console product
+      // seeding. If a later step fails, fix up the partial rows via Drizzle
+      // Studio — acceptable risk for a 3-person internal admin tool.
+      let imageUrl: string | null = null;
+      if (imageFile) {
+        const path = `${crypto.randomUUID()}-${imageFile.name}`;
+        const { error: uploadError } = await supabase.storage
+          .from(IMAGE_BUCKET)
+          .upload(path, imageFile, { contentType: imageFile.type });
+        if (uploadError) throw new Error("Couldn't upload the product image.");
+        imageUrl = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(path).data.publicUrl;
+      }
+
+      const { data: product, error: productError } = await supabase
+        .from("products")
+        .insert({ name: values.name, description: values.description || null, image_url: imageUrl })
+        .select()
+        .single();
+      if (productError || !product) throw new Error("Couldn't create the product.");
+
+      const { data: insertedVariants, error: variantError } = await supabase
+        .from("product_variants")
+        .insert(cleanVariants.map((v) => ({ product_id: product.id, name: v.name, price: v.price })))
+        .select();
+      if (variantError || !insertedVariants) {
+        throw new Error("Product was created, but adding its variants failed — check Drizzle Studio.");
+      }
+
+      // One inventory row per variant, starting at zero — record-batch-receipt
+      // and future ready-stock restocks both add to this.
+      const { error: inventoryError } = await supabase
+        .from("inventory")
+        .insert((insertedVariants as { id: string }[]).map((v) => ({ variant_id: v.id, on_hand: 0, reserved: 0 })));
+      if (inventoryError) {
+        throw new Error("Product and variants were created, but inventory rows failed — check Drizzle Studio.");
+      }
+
+      reset();
+      setVariants([{ name: "", price: "" }]);
+      setImageFile(null);
+      setImagePreviewUrl(null);
+      await loadProducts();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Something went wrong creating the product.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="p-8 max-w-3xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Admin — Products</h1>
+        <p className="text-muted-foreground mt-1">
+          Create products and variants here, independent of any batch. Batches (Admin — Batches) pick
+          from what's created here. No login yet (§18.4 lands in Milestone 4) — internal testing only.
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>New product</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <div>
+              <label htmlFor="name" className="text-sm font-medium">
+                Product name
+              </label>
+              <input
+                id="name"
+                {...register("name")}
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                placeholder="e.g. Hoodie — Black"
+              />
+              {errors.name && <p className="text-destructive text-xs mt-1">{errors.name.message}</p>}
+              <p className="text-xs text-gray-500 mt-1">
+                One photo per product. Selling this in two colors? Create two separate products (e.g. "Hoodie
+                — Black" and "Hoodie — Navy"), each with its own photo — not a color option on one product.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="description" className="text-sm font-medium">
+                Description
+              </label>
+              <textarea
+                id="description"
+                {...register("description")}
+                rows={2}
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Photo</label>
+              <input
+                type="file"
+                accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                onChange={handleImageChange}
+                className="mt-1 block text-sm"
+              />
+              {imagePreviewUrl && (
+                <img src={imagePreviewUrl} alt="Preview" className="mt-2 h-24 w-24 rounded-md object-cover border" />
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Sizes / variants</label>
+              {variants.map((variant, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={variant.name}
+                    onChange={(e) => updateVariant(i, "name", e.target.value)}
+                    placeholder="e.g. M"
+                    className="w-24 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  />
+                  <input
+                    value={variant.price}
+                    onChange={(e) => updateVariant(i, "price", e.target.value)}
+                    placeholder="Price (IDR)"
+                    inputMode="decimal"
+                    className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  />
+                  {variants.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeVariantRow(i)}
+                      className="text-xs text-gray-500 underline"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button type="button" onClick={addVariantRow} className="text-xs text-blue-600 underline">
+                + Add another size
+              </button>
+            </div>
+
+            {submitError && <p className="text-destructive text-sm">{submitError}</p>}
+
+            <Button type="submit" disabled={submitting}>
+              {submitting ? "Creating…" : "Create product"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+      {products === null && !loadError && <p className="text-gray-500 text-sm">Loading products…</p>}
+
+      {products !== null && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Existing products ({products.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {products.length === 0 && <p className="text-gray-500 text-sm">No products yet.</p>}
+            {products.map((product) => (
+              <div key={product.id} className="flex gap-3 border-b pb-3 last:border-0 last:pb-0">
+                {product.image_url ? (
+                  <img
+                    src={product.image_url}
+                    alt={product.name}
+                    className="h-16 w-16 rounded-md object-cover border"
+                  />
+                ) : (
+                  <div className="h-16 w-16 rounded-md border bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+                    No photo
+                  </div>
+                )}
+                <div className="flex-1">
+                  <p className="font-medium">{product.name}</p>
+                  {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+                  <div className="mt-1 space-y-0.5">
+                    {product.product_variants.map((v) => {
+                      const stock = product.inventoryByVariant.get(v.id);
+                      return (
+                        <div key={v.id} className="flex justify-between text-sm">
+                          <span>
+                            {v.name} — {formatIDR(v.price)}
+                          </span>
+                          <span className="text-gray-500">
+                            on hand: {stock?.onHand ?? 0} · reserved: {stock?.reserved ?? 0}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </main>
+  );
+}

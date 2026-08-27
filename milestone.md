@@ -126,35 +126,106 @@ resubmit-payment (new) plus redeploying create-order/list-orders, running
 supabase/storage_setup.sql, and seeding one payment_settings row before
 testing end to end.
 
-Milestone 2 — Batches + partial payment (DP)
+Milestone 2 — Batches + partial payment (DP) — DONE, pending live verification
 
-Backend:
-16. Batch management: create/open/close, MOQ display (§10) — admin actions,
-    permission-gated (canManageProductsBatches, wired for real in
-    Milestone 4; for now, same no-login caveat as step 8).
-17. Supplier stock receipt recording → resolves AWAITING_STOCK (§10.3, §11).
-18. DP payment type + balance-due flow (§8.2, §9) — AWAITING_STOCK →
-    BALANCE_DUE once stock arrives, if unpaid balance remains.
+Four decisions corrected the plan below before any of it was built (chat
+carried over from Milestone 1):
 
-UI:
-19. Admin batch screen — create a batch: name, open/close time, MOQ, which
-    products/variants are sold in it (with picture + description — this is
-    also the first real product-creation UI, replacing the manual SQL
-    seeding from step 2), which payment types it allows (DP / FULL / both,
-    §10.1), and which fulfilment methods it allows (pickup-only,
-    shipping-only, or both — a batch-level restriction, not just a
-    per-order customer choice).
-20. Customer checkout form (extends step 7, not a new screen) — when
-    ordering from an active batch, only shows the payment types and
-    fulfilment methods that batch allows; adds the DP vs. FULL choice.
-21. Customer balance payment — from their existing order page, a way to
-    submit the remaining payment once BALANCE_DUE (reusing the same
-    payment-submission pattern as the initial order, admin verifies through
-    an extended version of verify-payment).
+- **Products screen is standalone**, not folded into batch creation as step
+  19 originally had it. `src/pages/AdminProductsPage.tsx` creates
+  products+variants+images independent of any batch; the batch screen only
+  picks from what already exists there. Lets a product be reused across
+  batches, or exist as ready stock with no batch at all.
+- **One image per product**, not per variant/color. A product with two
+  colors is two separate products, each with its own photo — `imageUrl`
+  lives on `products`, not `product_variants`. Uploaded to a new *public*
+  Storage bucket (`supabase/product_images_storage_setup.sql`), unlike the
+  private payment-proofs bucket.
+- **MOQ moved from `batches` to `batch_items`** — it's per product/variant,
+  not one number for the whole batch (a batch can bundle a hoodie at MOQ 24
+  and a tote bag at MOQ 10). `procuredQuantity` moved with it, and stays
+  purely informational (§10.3), never auto-updated by receipts.
+- **No "publish surplus" approval gate** (§12's previously-open question,
+  §33 item 10) — surplus from a receipt is sellable the moment it's on
+  hand, no separate admin approval step.
 
-No email in this milestone, even though §17 marks balance-due as a P0
-(never-delayed) email — building the full priority queue just for one email
-type isn't worth it; every email, including this one, waits for Milestone 5.
+Backend (done):
+16. `db/schema.ts` — `products.imageUrl`; `batch_items.moq` /
+    `.procuredQuantity` (moved off `batches`); `batches.allowedFulfilmentMethods`
+    (new — pickup/shipping/both per batch, §13.1); `orders.reservedAt`
+    (stamped the instant a pre-order enters RESERVED — the §26
+    shortfall-ranking key, since it has to be payment-verification time,
+    not order-submission time).
+17. `lib/batch-allocation.ts` (+ 7 Vitest cases) — the §26 MOQ-shortfall
+    rule as a pure function, same "decision logic separate from DB
+    orchestration" split as `lib/order-state-machine.ts`. Promotes
+    AWAITING_STOCK orders oldest-payment-verified-first when a receipt
+    doesn't cover everyone; a multi-item order is all-or-nothing (never
+    partially promoted — a stuck order's available stock isn't locked away
+    from a different, easier-to-satisfy order that jumps ahead of it).
+18. `supabase/functions/record-batch-receipt` (new) — admin logs a supplier
+    delivery for one batch line item: adds to `inventory.onHand`, then runs
+    the allocation above and fires the existing `STOCK_RECEIVED` transition
+    (unchanged since Milestone 1) for whoever gets promoted. Not gated on
+    batch.status — a bookkeeping event, same "MOQ is informational only"
+    spirit extended to the rest of procurement. Orders that don't get
+    covered just stay in AWAITING_STOCK — no auto-cancellation.
+19. `supabase/functions/create-order` (extended) — accepts `batchId` +
+    `paymentType` for pre-orders. Skips the ready-stock physical-stock
+    check entirely for pre-orders (§11.2 — commitments tracked before stock
+    exists); validates the batch is OPEN, the payment type is allowed, and
+    every item actually belongs to that batch. Fulfilment method stays
+    forced to PICKUP server-side regardless of sales mode or what a batch's
+    `allowedFulfilmentMethods` says — shipping isn't real until Milestone 3.
+20. `supabase/functions/verify-payment` (extended) — now branches on
+    `order.status` (PAYMENT_PENDING vs. BALANCE_DUE) and `salesMode`
+    (READY_STOCK vs. PRE_ORDER). Verifying a pre-order's deposit does NOT
+    touch `inventory` — it stamps `reservedAt` and moves to
+    RESERVED/AWAITING_STOCK, full stop. The one exception: if this batch's
+    stock already happens to be on hand (a late deposit verification after
+    the batch already received stock), it allocates and promotes
+    immediately instead of parking the order in AWAITING_STOCK for no
+    reason. The normal "stock arrives later" case is record-batch-receipt's
+    job, not this function's.
+21. `supabase/functions/submit-balance-payment` (new) — customer submits
+    (or resubmits, after a rejection) the remaining balance once
+    BALANCE_DUE. Same ownership-via-access-token pattern as
+    resubmit-payment. verify-payment (above) is what actually verifies it.
+
+UI (done):
+22. `src/pages/AdminProductsPage.tsx` (new) — create product + variants +
+    photo upload; direct table writes (no Edge Function — creating a
+    product is "save what the user typed", architecture.md's own rule of
+    thumb for when that's fine), sequential (not transactional) since
+    supabase-js/PostgREST has no multi-table transaction from the browser —
+    same tradeoff already accepted for Milestone 1's manual SQL seeding.
+23. `src/pages/AdminBatchesPage.tsx` (new) — create a batch (name,
+    open/close, payment types, fulfilment methods with pickup forced on),
+    pick products/variants into it with a per-item MOQ, see live
+    ordered-quantity-vs-MOQ per item (computed from order rows, not a
+    stored counter — §10.3 stays informational only), and the "record
+    receipt" action per item.
+24. `src/pages/HomePage.tsx` (extended) — a source switcher (ready stock, or
+    one tab per open batch); picking a batch shows only that batch's items
+    and, if the batch allows both, a DP-vs-FULL choice. An order can only
+    belong to one sales mode/batch at a time (switching tabs clears
+    quantities) — `orders.batchId` is a single column.
+25. `src/pages/OrderPage.tsx` (extended) — a BALANCE_DUE card with the same
+    upload-proof pattern as the existing rejected-payment resubmit card,
+    calling submit-balance-payment.
+
+Not built in this pass — flagging for whoever picks this up next:
+- Live end-to-end verification against the real Supabase project (schema
+  push, new storage bucket, redeploying the two extended functions plus the
+  two new ones) — same "written and typechecked, not yet proven live" gap
+  Milestone 1 had for payment-proof upload at handoff.
+- No email in this milestone, even though §17 marks balance-due as a P0
+  (never-delayed) email — building the full priority queue for one email
+  type isn't worth it; every email, including this one, still waits for
+  Milestone 5.
+- Editing/deactivating a product after creation — Products screen is
+  create-only for now (FR-001's "edit" half), matching what was actually
+  asked for ("first real product-creation UI"), not the full CRUD surface.
 
 Milestone 3 — Shipping
 

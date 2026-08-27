@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Link } from "react-router-dom";
 
 // ⚠️ NOT SECURE YET — this page has no login and no permission checks
 // (Milestone 4 adds real Supabase Auth + the §18.4 per-action toggles).
@@ -116,6 +117,10 @@ export default function AdminDashboardPage() {
       ),
     }),
     columnHelper.accessor("customerName", { header: "Customer" }),
+    columnHelper.accessor("salesMode", {
+      header: "Mode",
+      cell: (info) => <span className="text-xs">{info.getValue() === "PRE_ORDER" ? "Pre-order" : "Ready stock"}</span>,
+    }),
     columnHelper.accessor("status", {
       header: "Status",
       cell: (info) => <Badge variant={statusBadgeVariant(info.getValue())}>{info.getValue().replaceAll("_", " ")}</Badge>,
@@ -220,6 +225,14 @@ export default function AdminDashboardPage() {
         <p className="text-muted-foreground mt-1">
           No login yet (§18.4 permissions land in Milestone 4) — internal testing only.
         </p>
+        <div className="flex gap-3 mt-2 text-sm">
+          <Link to="/admin/products" className="text-blue-600 underline">
+            Products
+          </Link>
+          <Link to="/admin/batches" className="text-blue-600 underline">
+            Batches
+          </Link>
+        </div>
       </div>
 
       {loadError && <p className="text-destructive text-sm">{loadError}</p>}

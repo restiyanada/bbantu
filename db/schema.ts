@@ -84,6 +84,13 @@ export const products = pgTable("products", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   description: text("description"),
+  // One image per product (Milestone 2 decision): a product with two colors
+  // is modeled as two separate products, each with its own image — not a
+  // color dimension on variants. Public URL in the public `product-images`
+  // Storage bucket (supabase/product_images_storage_setup.sql), not a
+  // private path — unlike payment proofs, there's nothing sensitive here and
+  // the storefront needs to render it directly in an <img> tag.
+  imageUrl: text("image_url"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -117,13 +124,25 @@ export const batches = pgTable("batches", {
   name: text("name").notNull(),
   openAt: timestamp("open_at").notNull(),
   closeAt: timestamp("close_at").notNull(),
-  moq: integer("moq"),
-  procuredQuantity: integer("procured_quantity"),
   status: batchStatusEnum("status").notNull().default("DRAFT"),
   allowedPaymentTypes: paymentTypeEnum("allowed_payment_types").array().notNull(), // §10.1
+  // §13.1/§26 (Milestone 2 note) — a batch can restrict fulfilment to
+  // pickup, shipping, or both. Shipping isn't actually functional until
+  // Milestone 3 (no address/cost calc yet), so the batch UI only lets an
+  // admin pick PICKUP or [PICKUP, SHIPPING] for now — SHIPPING-only is
+  // accepted here at the schema/data level but disabled in the UI, since
+  // enforcing "no shipping-only batches" is a UI/product decision, not a
+  // database constraint.
+  allowedFulfilmentMethods: fulfilmentMethodEnum("allowed_fulfilment_methods").array().notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Milestone 2 correction: MOQ and procured quantity are per batch-item (per
+// product/variant), not a single number for the whole batch — a batch can
+// bundle multiple products with different supplier MOQs (e.g. hoodie MOQ 24,
+// tote bag MOQ 10 in the same drop). FR-004 ("ordered qty vs MOQ") is
+// therefore a per-line-item comparison in the batch screen, not one
+// batch-wide number.
 export const batchItems = pgTable("batch_items", {
   id: uuid("id").primaryKey().defaultRandom(),
   batchId: uuid("batch_id")
@@ -132,6 +151,13 @@ export const batchItems = pgTable("batch_items", {
   variantId: uuid("variant_id")
     .notNull()
     .references(() => productVariants.id),
+  moq: integer("moq"), // §10.1, §10.3 — informational only, never enforced
+  // Admin's own memo of what they decided to order from the supplier for
+  // this line (§10.1 "quantity actually ordered from supplier"). Purely
+  // informational, set manually by admin — NOT auto-updated when receipts
+  // are recorded. "How much has actually arrived so far" is derived from
+  // inventory_transactions / on-hand, not tracked as a second counter here.
+  procuredQuantity: integer("procured_quantity"),
 });
 
 // §16, §27 — guest order access via direct supabase-js read (no login).
@@ -169,6 +195,13 @@ export const orders = pgTable(
     // "configured later" (§7.2) — an order without a fulfilment method yet
     // has no type-scoped sequence to draw from either.
     orderNumber: integer("order_number"),
+    // Stamped the instant a pre-order enters RESERVED (i.e. right after its
+    // initial payment is verified) — NOT when the order was created. §26's
+    // MOQ-shortfall rule ranks by *payment-verification* time, not
+    // order-submission time, so this needs its own column rather than
+    // reusing createdAt. Ready-stock orders get this stamped too (harmless,
+    // just unused — they never wait in AWAITING_STOCK).
+    reservedAt: timestamp("reserved_at"),
     merchandiseSubtotal: numeric("merchandise_subtotal", {
       precision: 12,
       scale: 2,

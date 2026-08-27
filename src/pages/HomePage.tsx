@@ -27,6 +27,31 @@ interface PaymentSettingsRow {
   account_holder_name: string;
 }
 
+// Raw PostgREST embed shapes for open batches (Milestone 2).
+interface RawBatchItem {
+  id: string;
+  variant_id: string;
+  product_variants: { name: string; price: string; products: { name: string } | null };
+}
+interface RawBatch {
+  id: string;
+  name: string;
+  allowed_payment_types: string[];
+}
+
+interface SelectableItem {
+  variantId: string;
+  label: string;
+  price: string;
+}
+
+interface BatchOption {
+  id: string;
+  name: string;
+  allowedPaymentTypes: string[];
+  items: SelectableItem[];
+}
+
 const PROOF_BUCKET = "payment-proofs";
 const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
 const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -47,10 +72,18 @@ type CustomerValues = z.infer<typeof customerSchema>;
 export default function HomePage() {
   const navigate = useNavigate();
   const [products, setProducts] = useState<ProductRow[] | null>(null);
+  const [batches, setBatches] = useState<BatchOption[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // "READY_STOCK" or a batch id — which section the customer is ordering
+  // from right now. An order can only belong to one sales mode/batch
+  // (orders.batchId is a single column), so switching sections clears
+  // quantities rather than trying to merge across them.
+  const [activeSource, setActiveSource] = useState<string>("READY_STOCK");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemsError, setItemsError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [paymentType, setPaymentType] = useState<"DP" | "FULL">("FULL");
 
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
 
@@ -80,10 +113,15 @@ export default function HomePage() {
     let cancelled = false;
 
     async function load() {
-      // Products/variants have no RLS (public storefront catalog, §5) — a
-      // plain read, not something that needs the guest order-access token.
-      const [productsResult, settingsResult] = await Promise.all([
+      // Products/variants and open batches have no RLS (public storefront
+      // catalog, §5) — a plain read, not something that needs the guest
+      // order-access token.
+      const [productsResult, batchesResult, settingsResult] = await Promise.all([
         supabase.from("products").select("id, name, description, product_variants(id, name, price)").eq("active", true),
+        supabase
+          .from("batches")
+          .select("id, name, allowed_payment_types, batch_items(id, variant_id, product_variants(name, price, products(name)))")
+          .eq("status", "OPEN"),
         supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
       ]);
 
@@ -94,6 +132,26 @@ export default function HomePage() {
       } else {
         setProducts((productsResult.data as ProductRow[] | null) ?? []);
       }
+
+      // Cast through `unknown` first: without generated Database types, the
+      // untyped supabase-js client can't know these nested embeds are
+      // one-to-one rather than one-to-many.
+      const rawBatches = ((batchesResult.data as unknown) as
+        | (RawBatch & { batch_items: RawBatchItem[] })[]
+        | null) ?? [];
+      setBatches(
+        rawBatches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          allowedPaymentTypes: b.allowed_payment_types,
+          items: b.batch_items.map((item) => ({
+            variantId: item.variant_id,
+            label: `${item.product_variants.products?.name ?? "Product"} — ${item.product_variants.name}`,
+            price: item.product_variants.price,
+          })),
+        }))
+      );
+
       setPaymentSettings((settingsResult.data as PaymentSettingsRow | null) ?? null);
     }
 
@@ -103,26 +161,35 @@ export default function HomePage() {
     };
   }, []);
 
-  const subtotalCents =
-    products?.reduce(
-      (sum, product) =>
-        sum +
-        product.product_variants.reduce(
-          (s, variant) => s + (quantities[variant.id] ?? 0) * Math.round(Number(variant.price) * 100),
-          0
-        ),
-      0
-    ) ?? 0;
+  const activeBatch = activeSource === "READY_STOCK" ? null : batches?.find((b) => b.id === activeSource) ?? null;
+
+  // Unified list of what's orderable in the currently-active section, so
+  // quantity state / subtotal math doesn't need two separate code paths.
+  const activeItems: SelectableItem[] =
+    activeSource === "READY_STOCK"
+      ? (products ?? []).flatMap((p) =>
+          p.product_variants.map((v) => ({ variantId: v.id, label: `${p.name} — ${v.name}`, price: v.price }))
+        )
+      : activeBatch?.items ?? [];
+
+  function handleSourceChange(source: string) {
+    setActiveSource(source);
+    setQuantities({});
+    setItemsError(null);
+    setPaymentType("FULL");
+  }
+
+  const subtotalCents = activeItems.reduce(
+    (sum, item) => sum + (quantities[item.variantId] ?? 0) * Math.round(Number(item.price) * 100),
+    0
+  );
   const hasItems = subtotalCents > 0;
   const subtotal = (subtotalCents / 100).toFixed(2);
 
-  // M1 scope only ever creates FULL-payment orders (DP arrives in
-  // Milestone 2) — written to branch on paymentType now anyway, so the DP
-  // wording doesn't need writing from scratch later, even though only
-  // "FULL" is reachable today.
-  const paymentType = "FULL" as "FULL" | "DP";
+  const isPreOrder = activeSource !== "READY_STOCK";
+  const effectivePaymentType = isPreOrder ? paymentType : "FULL";
   const depositCents = Math.round(subtotalCents * 0.5);
-  const amountDueNowCents = paymentType === "DP" ? depositCents : subtotalCents;
+  const amountDueNowCents = effectivePaymentType === "DP" ? depositCents : subtotalCents;
 
   async function handleProofFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -170,7 +237,13 @@ export default function HomePage() {
     }
 
     const { data, error } = await supabase.functions.invoke("create-order", {
-      body: { customer, items, submissionToken, proofFileUrl: proofPath },
+      body: {
+        customer,
+        items,
+        submissionToken,
+        proofFileUrl: proofPath,
+        ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
+      },
     });
 
     if (error || !data) {
@@ -198,6 +271,32 @@ export default function HomePage() {
         <p className="text-gray-500 mt-1">Pick an item, enter your details, and place your order.</p>
       </div>
 
+      {batches !== null && batches.length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => handleSourceChange("READY_STOCK")}
+            className={`text-sm px-3 py-1.5 rounded-md border ${
+              activeSource === "READY_STOCK" ? "bg-primary text-primary-foreground" : "bg-background"
+            }`}
+          >
+            Ready stock
+          </button>
+          {batches.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              onClick={() => handleSourceChange(b.id)}
+              className={`text-sm px-3 py-1.5 rounded-md border ${
+                activeSource === b.id ? "bg-primary text-primary-foreground" : "bg-background"
+              }`}
+            >
+              {b.name} (pre-order)
+            </button>
+          ))}
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Items</CardTitle>
@@ -205,36 +304,86 @@ export default function HomePage() {
         <CardContent className="space-y-4">
           {loadError && <p className="text-destructive text-sm">{loadError}</p>}
           {!loadError && products === null && <p className="text-gray-500 text-sm">Loading items…</p>}
-          {products !== null && products.length === 0 && (
+          {activeSource === "READY_STOCK" && products !== null && products.length === 0 && (
             <p className="text-gray-500 text-sm">Nothing available to order right now.</p>
           )}
-          {products?.map((product) => (
-            <div key={product.id} className="space-y-2">
-              <div>
-                <p className="font-medium">{product.name}</p>
-                {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+
+          {activeSource === "READY_STOCK" &&
+            products?.map((product) => (
+              <div key={product.id} className="space-y-2">
+                <div>
+                  <p className="font-medium">{product.name}</p>
+                  {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+                </div>
+                {product.product_variants.map((variant) => (
+                  <div key={variant.id} className="flex items-center justify-between text-sm pl-3">
+                    <span>
+                      {variant.name} — {formatIDR(variant.price)}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={quantities[variant.id] ?? 0}
+                      onChange={(e) =>
+                        setQuantities((prev) => ({
+                          ...prev,
+                          [variant.id]: Math.max(0, Number(e.target.value) || 0),
+                        }))
+                      }
+                      className="w-16 rounded-md border bg-background px-2 py-1 text-sm text-right"
+                    />
+                  </div>
+                ))}
               </div>
-              {product.product_variants.map((variant) => (
-                <div key={variant.id} className="flex items-center justify-between text-sm pl-3">
+            ))}
+
+          {activeBatch && (
+            <div className="space-y-2">
+              {activeBatch.items.length === 0 && (
+                <p className="text-gray-500 text-sm">This batch has no items yet.</p>
+              )}
+              {activeBatch.items.map((item) => (
+                <div key={item.variantId} className="flex items-center justify-between text-sm">
                   <span>
-                    {variant.name} — {formatIDR(variant.price)}
+                    {item.label} — {formatIDR(item.price)}
                   </span>
                   <input
                     type="number"
                     min={0}
-                    value={quantities[variant.id] ?? 0}
+                    value={quantities[item.variantId] ?? 0}
                     onChange={(e) =>
                       setQuantities((prev) => ({
                         ...prev,
-                        [variant.id]: Math.max(0, Number(e.target.value) || 0),
+                        [item.variantId]: Math.max(0, Number(e.target.value) || 0),
                       }))
                     }
                     className="w-16 rounded-md border bg-background px-2 py-1 text-sm text-right"
                   />
                 </div>
               ))}
+              {activeBatch.allowedPaymentTypes.length > 1 && (
+                <div className="pt-2 mt-2 border-t flex gap-4 text-sm">
+                  {activeBatch.allowedPaymentTypes.includes("FULL") && (
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        checked={paymentType === "FULL"}
+                        onChange={() => setPaymentType("FULL")}
+                      />
+                      Pay in full
+                    </label>
+                  )}
+                  {activeBatch.allowedPaymentTypes.includes("DP") && (
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={paymentType === "DP"} onChange={() => setPaymentType("DP")} />
+                      Pay 50% deposit now
+                    </label>
+                  )}
+                </div>
+              )}
             </div>
-          ))}
+          )}
+
           {itemsError && <p className="text-destructive text-sm">{itemsError}</p>}
         </CardContent>
       </Card>
@@ -293,7 +442,7 @@ export default function HomePage() {
                 <span className="font-medium">{formatIDR(subtotal)}</span>
               </div>
 
-              {paymentType === "DP" ? (
+              {effectivePaymentType === "DP" ? (
                 <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
                   <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
                   <div className="flex justify-between text-amber-900">
@@ -361,10 +510,7 @@ export default function HomePage() {
 
         {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-        <Button
-          type="submit"
-          disabled={isSubmitting || products === null || products.length === 0 || !proofPath || proofUploading}
-        >
+        <Button type="submit" disabled={isSubmitting || !proofPath || proofUploading}>
           {isSubmitting ? "Placing order…" : "Place order"}
         </Button>
       </form>

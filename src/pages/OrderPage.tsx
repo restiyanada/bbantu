@@ -60,6 +60,14 @@ export default function OrderPage() {
   const [resubmitting, setResubmitting] = useState(false);
   const [resubmitError, setResubmitError] = useState<string | null>(null);
 
+  // Balance payment (DP order's remaining amount, Milestone 2) UI state —
+  // same shape as resubmission above, just a different endpoint.
+  const [balancePath, setBalancePath] = useState<string | null>(null);
+  const [balanceFileName, setBalanceFileName] = useState<string | null>(null);
+  const [balanceUploading, setBalanceUploading] = useState(false);
+  const [balanceSubmitting, setBalanceSubmitting] = useState(false);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!accessToken) {
       setState({ kind: "error", message: "No order link provided." });
@@ -185,6 +193,55 @@ export default function OrderPage() {
     setReloadKey((k) => k + 1);
   }
 
+  async function handleBalanceFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !accessToken) return;
+    setBalanceError(null);
+    setBalancePath(null);
+
+    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
+      setBalanceError("Please upload a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (file.size > MAX_PROOF_BYTES) {
+      setBalanceError("File is too large — please keep it under 5MB.");
+      return;
+    }
+
+    setBalanceUploading(true);
+    const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
+    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
+    setBalanceUploading(false);
+
+    if (error) {
+      setBalanceError("Couldn't upload your payment proof. Please try again.");
+      return;
+    }
+    setBalancePath(path);
+    setBalanceFileName(file.name);
+  }
+
+  async function handleSubmitBalance(orderId: string) {
+    if (!accessToken || !balancePath) return;
+    setBalanceSubmitting(true);
+    setBalanceError(null);
+
+    const { error, data } = await supabase.functions.invoke("submit-balance-payment", {
+      body: { orderId, accessToken, proofFileUrl: balancePath },
+    });
+
+    setBalanceSubmitting(false);
+
+    if (error || !data) {
+      setBalanceError("Couldn't submit your balance payment. Please try again.");
+      return;
+    }
+
+    setBalancePath(null);
+    setBalanceFileName(null);
+    setReloadKey((k) => k + 1);
+  }
+
   const { order, items, payments, pickupToken } = state;
   const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
   const total = Number(order.merchandise_subtotal) + shippingCost;
@@ -254,7 +311,7 @@ export default function OrderPage() {
         </CardContent>
       </Card>
 
-      {payments[0]?.status === "REJECTED" && (
+      {payments[0]?.status === "REJECTED" && order.status === "PAYMENT_PENDING" && (
         <Card>
           <CardHeader>
             <CardTitle>Payment rejected</CardTitle>
@@ -283,6 +340,47 @@ export default function OrderPage() {
             >
               {resubmitting ? "Resubmitting…" : "Resubmit payment"}
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {order.status === "BALANCE_DUE" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Balance payment</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {payments[0]?.status === "PENDING" ? (
+              <p className="text-gray-500">Your balance payment is awaiting review.</p>
+            ) : (
+              <>
+                {payments[0]?.status === "REJECTED" && payments[0].rejection_reason && (
+                  <p className="text-gray-600">Previous attempt rejected: {payments[0].rejection_reason}</p>
+                )}
+                <p className="text-gray-500">
+                  Your item is ready — upload proof for the remaining balance of {formatIDR(balanceDue.toFixed(2))}.
+                </p>
+                <input
+                  type="file"
+                  accept={ACCEPTED_PROOF_TYPES.join(",")}
+                  onChange={handleBalanceFileChange}
+                  disabled={balanceUploading}
+                  className="text-sm"
+                />
+                {balanceUploading && <p className="text-gray-500">Uploading…</p>}
+                {balancePath && !balanceUploading && (
+                  <p className="text-green-700">Uploaded: {balanceFileName}</p>
+                )}
+                {balanceError && <p className="text-destructive">{balanceError}</p>}
+                <Button
+                  variant="info"
+                  disabled={!balancePath || balanceSubmitting}
+                  onClick={() => handleSubmitBalance(order.id)}
+                >
+                  {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
       )}
