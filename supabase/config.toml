@@ -15,19 +15,43 @@ project_id = "lhvxjgbjjamwatsmxiyc"
 # anon key, while verify-payment/prepare-pickup/scan-pickup/record-tracking/
 # record-batch-receipt/list-orders can still demand a real staff session
 # inside the handler itself.
-[functions]
-verify_jwt = false
-
 [functions.create-order]
 verify_jwt = false
 
-[functions.verify-payment]
+[functions.health]
+verify_jwt = false
+
+[functions.list-orders]
 verify_jwt = false
 
 [functions.prepare-pickup]
 verify_jwt = false
 
+[functions.record-batch-receipt]
+verify_jwt = false
+
+[functions.record-tracking]
+verify_jwt = false
+
+[functions.resubmit-payment]
+verify_jwt = false
+
 [functions.scan-pickup]
+verify_jwt = false
+
+[functions.shipping-locations]
+verify_jwt = false
+
+[functions.shipping-rates]
+verify_jwt = false
+
+[functions.submit-balance-payment]
+verify_jwt = false
+
+[functions.verify-payment]
+verify_jwt = false
+
+[functions.whoami]
 verify_jwt = false
 
 [api]
