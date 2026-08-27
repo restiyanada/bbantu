@@ -442,17 +442,22 @@ export default function AdminBatchesPage() {
                 {batch.allowed_fulfilment_methods.join("+")}
               </p>
             </div>
-            <select
-              value={batch.status}
-              onChange={(e) => handleStatusChange(batch.id, e.target.value)}
-              className="rounded-md border bg-background px-2 py-1 text-xs"
-            >
-              {BATCH_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            <div className="text-right">
+              <select
+                value={batch.status}
+                onChange={(e) => handleStatusChange(batch.id, e.target.value)}
+                className="rounded-md border bg-background px-2 py-1 text-xs"
+              >
+                {BATCH_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-gray-500 mt-1 max-w-[160px]">
+                {batch.status === "OPEN" ? "Visible to customers now." : "Only OPEN batches show at checkout."}
+              </p>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             {batch.batch_items.map((item) => {

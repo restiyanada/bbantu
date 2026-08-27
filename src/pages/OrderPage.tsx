@@ -18,6 +18,7 @@ interface OrderRow {
   amount_paid: string;
   fulfilment_method: string | null;
   created_at: string;
+  batch_id: string | null;
 }
 
 interface OrderItemRow {
@@ -46,6 +47,7 @@ type LoadState =
       items: OrderItemRow[];
       payments: PaymentRow[];
       pickupToken: string | null;
+      batchName: string | null;
     };
 
 export default function OrderPage() {
@@ -82,7 +84,9 @@ export default function OrderPage() {
 
       const { data: order, error: orderError } = await client
         .from("orders")
-        .select("id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at")
+        .select(
+          "id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
+        )
         .eq("access_token", token)
         .maybeSingle();
 
@@ -97,7 +101,7 @@ export default function OrderPage() {
         return;
       }
 
-      const [itemsResult, paymentsResult, pickupResult] = await Promise.all([
+      const [itemsResult, paymentsResult, pickupResult, batchResult] = await Promise.all([
         client
           .from("order_items")
           .select("quantity, unit_price, product_variants(name)")
@@ -108,6 +112,11 @@ export default function OrderPage() {
           .eq("order_id", order.id)
           .order("submitted_at", { ascending: false }),
         client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
+        // Ready-stock orders have no batch — batches table itself has no RLS
+        // (public catalog, same as products), so a plain read is fine here.
+        order.batch_id
+          ? supabase.from("batches").select("name").eq("id", order.batch_id).maybeSingle()
+          : Promise.resolve({ data: null }),
       ]);
 
       if (cancelled) return;
@@ -118,6 +127,7 @@ export default function OrderPage() {
         items: (itemsResult.data as OrderItemRow[] | null) ?? [],
         payments: paymentsResult.data ?? [],
         pickupToken: pickupResult.data?.token ?? null,
+        batchName: (batchResult.data as { name: string } | null)?.name ?? null,
       });
     }
 
@@ -242,7 +252,7 @@ export default function OrderPage() {
     setReloadKey((k) => k + 1);
   }
 
-  const { order, items, payments, pickupToken } = state;
+  const { order, items, payments, pickupToken, batchName } = state;
   const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
   const total = Number(order.merchandise_subtotal) + shippingCost;
   const balanceDue = total - Number(order.amount_paid);
@@ -256,6 +266,7 @@ export default function OrderPage() {
           </h1>
           <Badge variant={statusBadgeVariant(order.status)}>{order.status.replaceAll("_", " ")}</Badge>
         </div>
+        {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
         <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
       </div>
 

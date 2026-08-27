@@ -32,6 +32,30 @@ interface VariantDraft {
   price: string;
 }
 
+/**
+ * Formats a price as the admin types it, Indonesian-style: "." as the
+ * thousands separator, "," as the decimal separator (opposite of en-US,
+ * matches formatIDR's toLocaleString("id-ID") used everywhere else in the
+ * app). Only digits and at most one comma survive — pasting "Rp 150.000"
+ * still works, since punctuation just gets stripped and re-inserted.
+ */
+function formatPriceDisplay(raw: string): string {
+  const cleaned = raw.replace(/[^0-9,]/g, "");
+  const firstComma = cleaned.indexOf(",");
+  const intPart = firstComma === -1 ? cleaned : cleaned.slice(0, firstComma);
+  const decPart = firstComma === -1 ? undefined : cleaned.slice(firstComma + 1).replace(/,/g, "").slice(0, 2);
+  const digitsOnly = intPart.replace(/\./g, "");
+  const withThousands = digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return decPart !== undefined ? `${withThousands},${decPart}` : withThousands;
+}
+
+/** Reverses formatPriceDisplay back into the plain decimal string ("150000.50") the DB column expects. */
+function parsePriceForSubmit(display: string): string {
+  const [intPart, decPart] = display.split(",");
+  const digitsOnly = (intPart ?? "").replace(/\./g, "");
+  return decPart ? `${digitsOnly}.${decPart}` : digitsOnly;
+}
+
 // Raw PostgREST column names — these queries go straight through
 // supabase-js, not drizzle (same convention as OrderPage.tsx).
 interface RawVariantRow {
@@ -125,7 +149,8 @@ export default function AdminProductsPage() {
   }
 
   function updateVariant(index: number, field: keyof VariantDraft, value: string) {
-    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, [field]: value } : v)));
+    const nextValue = field === "price" ? formatPriceDisplay(value) : value;
+    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, [field]: nextValue } : v)));
   }
 
   function addVariantRow() {
@@ -140,7 +165,7 @@ export default function AdminProductsPage() {
     setSubmitError(null);
 
     const cleanVariants = variants
-      .map((v) => ({ name: v.name.trim(), price: v.price.trim() }))
+      .map((v) => ({ name: v.name.trim(), price: parsePriceForSubmit(v.price.trim()) }))
       .filter((v) => v.name && v.price);
 
     if (cleanVariants.length === 0) {
@@ -276,7 +301,7 @@ export default function AdminProductsPage() {
                   <input
                     value={variant.price}
                     onChange={(e) => updateVariant(i, "price", e.target.value)}
-                    placeholder="Price (IDR)"
+                    placeholder="e.g. 150.000"
                     inputMode="decimal"
                     className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                   />

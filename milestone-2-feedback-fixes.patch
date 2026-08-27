@@ -1,0 +1,178 @@
+diff --git a/src/pages/AdminBatchesPage.tsx b/src/pages/AdminBatchesPage.tsx
+index f9d368b..21cf223 100644
+--- a/src/pages/AdminBatchesPage.tsx
++++ b/src/pages/AdminBatchesPage.tsx
+@@ -442,17 +442,22 @@ export default function AdminBatchesPage() {
+                 {batch.allowed_fulfilment_methods.join("+")}
+               </p>
+             </div>
+-            <select
+-              value={batch.status}
+-              onChange={(e) => handleStatusChange(batch.id, e.target.value)}
+-              className="rounded-md border bg-background px-2 py-1 text-xs"
+-            >
+-              {BATCH_STATUSES.map((s) => (
+-                <option key={s} value={s}>
+-                  {s}
+-                </option>
+-              ))}
+-            </select>
++            <div className="text-right">
++              <select
++                value={batch.status}
++                onChange={(e) => handleStatusChange(batch.id, e.target.value)}
++                className="rounded-md border bg-background px-2 py-1 text-xs"
++              >
++                {BATCH_STATUSES.map((s) => (
++                  <option key={s} value={s}>
++                    {s}
++                  </option>
++                ))}
++              </select>
++              <p className="text-[11px] text-gray-500 mt-1 max-w-[160px]">
++                {batch.status === "OPEN" ? "Visible to customers now." : "Only OPEN batches show at checkout."}
++              </p>
++            </div>
+           </CardHeader>
+           <CardContent className="space-y-3">
+             {batch.batch_items.map((item) => {
+diff --git a/src/pages/AdminProductsPage.tsx b/src/pages/AdminProductsPage.tsx
+index 40064ab..0b26cc1 100644
+--- a/src/pages/AdminProductsPage.tsx
++++ b/src/pages/AdminProductsPage.tsx
+@@ -32,6 +32,30 @@ interface VariantDraft {
+   price: string;
+ }
+ 
++/**
++ * Formats a price as the admin types it, Indonesian-style: "." as the
++ * thousands separator, "," as the decimal separator (opposite of en-US,
++ * matches formatIDR's toLocaleString("id-ID") used everywhere else in the
++ * app). Only digits and at most one comma survive — pasting "Rp 150.000"
++ * still works, since punctuation just gets stripped and re-inserted.
++ */
++function formatPriceDisplay(raw: string): string {
++  const cleaned = raw.replace(/[^0-9,]/g, "");
++  const firstComma = cleaned.indexOf(",");
++  const intPart = firstComma === -1 ? cleaned : cleaned.slice(0, firstComma);
++  const decPart = firstComma === -1 ? undefined : cleaned.slice(firstComma + 1).replace(/,/g, "").slice(0, 2);
++  const digitsOnly = intPart.replace(/\./g, "");
++  const withThousands = digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
++  return decPart !== undefined ? `${withThousands},${decPart}` : withThousands;
++}
++
++/** Reverses formatPriceDisplay back into the plain decimal string ("150000.50") the DB column expects. */
++function parsePriceForSubmit(display: string): string {
++  const [intPart, decPart] = display.split(",");
++  const digitsOnly = (intPart ?? "").replace(/\./g, "");
++  return decPart ? `${digitsOnly}.${decPart}` : digitsOnly;
++}
++
+ // Raw PostgREST column names — these queries go straight through
+ // supabase-js, not drizzle (same convention as OrderPage.tsx).
+ interface RawVariantRow {
+@@ -125,7 +149,8 @@ export default function AdminProductsPage() {
+   }
+ 
+   function updateVariant(index: number, field: keyof VariantDraft, value: string) {
+-    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, [field]: value } : v)));
++    const nextValue = field === "price" ? formatPriceDisplay(value) : value;
++    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, [field]: nextValue } : v)));
+   }
+ 
+   function addVariantRow() {
+@@ -140,7 +165,7 @@ export default function AdminProductsPage() {
+     setSubmitError(null);
+ 
+     const cleanVariants = variants
+-      .map((v) => ({ name: v.name.trim(), price: v.price.trim() }))
++      .map((v) => ({ name: v.name.trim(), price: parsePriceForSubmit(v.price.trim()) }))
+       .filter((v) => v.name && v.price);
+ 
+     if (cleanVariants.length === 0) {
+@@ -276,7 +301,7 @@ export default function AdminProductsPage() {
+                   <input
+                     value={variant.price}
+                     onChange={(e) => updateVariant(i, "price", e.target.value)}
+-                    placeholder="Price (IDR)"
++                    placeholder="e.g. 150.000"
+                     inputMode="decimal"
+                     className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                   />
+diff --git a/src/pages/OrderPage.tsx b/src/pages/OrderPage.tsx
+index b4e942b..a09415e 100644
+--- a/src/pages/OrderPage.tsx
++++ b/src/pages/OrderPage.tsx
+@@ -18,6 +18,7 @@ interface OrderRow {
+   amount_paid: string;
+   fulfilment_method: string | null;
+   created_at: string;
++  batch_id: string | null;
+ }
+ 
+ interface OrderItemRow {
+@@ -46,6 +47,7 @@ type LoadState =
+       items: OrderItemRow[];
+       payments: PaymentRow[];
+       pickupToken: string | null;
++      batchName: string | null;
+     };
+ 
+ export default function OrderPage() {
+@@ -82,7 +84,9 @@ export default function OrderPage() {
+ 
+       const { data: order, error: orderError } = await client
+         .from("orders")
+-        .select("id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at")
++        .select(
++          "id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
++        )
+         .eq("access_token", token)
+         .maybeSingle();
+ 
+@@ -97,7 +101,7 @@ export default function OrderPage() {
+         return;
+       }
+ 
+-      const [itemsResult, paymentsResult, pickupResult] = await Promise.all([
++      const [itemsResult, paymentsResult, pickupResult, batchResult] = await Promise.all([
+         client
+           .from("order_items")
+           .select("quantity, unit_price, product_variants(name)")
+@@ -108,6 +112,11 @@ export default function OrderPage() {
+           .eq("order_id", order.id)
+           .order("submitted_at", { ascending: false }),
+         client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
++        // Ready-stock orders have no batch — batches table itself has no RLS
++        // (public catalog, same as products), so a plain read is fine here.
++        order.batch_id
++          ? supabase.from("batches").select("name").eq("id", order.batch_id).maybeSingle()
++          : Promise.resolve({ data: null }),
+       ]);
+ 
+       if (cancelled) return;
+@@ -118,6 +127,7 @@ export default function OrderPage() {
+         items: (itemsResult.data as OrderItemRow[] | null) ?? [],
+         payments: paymentsResult.data ?? [],
+         pickupToken: pickupResult.data?.token ?? null,
++        batchName: (batchResult.data as { name: string } | null)?.name ?? null,
+       });
+     }
+ 
+@@ -242,7 +252,7 @@ export default function OrderPage() {
+     setReloadKey((k) => k + 1);
+   }
+ 
+-  const { order, items, payments, pickupToken } = state;
++  const { order, items, payments, pickupToken, batchName } = state;
+   const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
+   const total = Number(order.merchandise_subtotal) + shippingCost;
+   const balanceDue = total - Number(order.amount_paid);
+@@ -256,6 +266,7 @@ export default function OrderPage() {
+           </h1>
+           <Badge variant={statusBadgeVariant(order.status)}>{order.status.replaceAll("_", " ")}</Badge>
+         </div>
++        {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
+         <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+       </div>
+ 
