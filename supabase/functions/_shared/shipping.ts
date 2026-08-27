@@ -131,10 +131,10 @@ export function computeWeightKg(items: WeighableItem[]): number {
 }
 
 export interface JneRate {
-  serviceCode: string; // "REG" | "YES"
+  serviceCode: string; // e.g. "REG23", "YES23", "JTR<130" — real JNE codes vary by route/weight, not just REG/YES
   serviceName: string;
-  etd: string; // e.g. "1-3" (days)
-  price: number; // IDR, the actual chargeable amount (rates response's `total_price`)
+  etd: string | null; // some services (e.g. same-day/instant couriers) return no ETD at all
+  price: number; // IDR, the actual chargeable amount
 }
 
 export interface RateQuoteParams {
@@ -158,8 +158,9 @@ export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
         courier_code: string;
         service_code: string;
         service_name: string;
-        etd: string;
-        total_price: number;
+        etd: string | null;
+        price: number;
+        handling_fee?: number;
       }>;
     };
   }>("/courier/v2/rates", {
@@ -168,19 +169,18 @@ export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
     weight: String(params.weightKg),
   });
 
-  // TEMPORARY DEBUG — remove once the real field name for price is
-  // confirmed from these logs (2026-08-27: prices are coming back as
-  // undefined/NaN for at least some JNE service rows on real routes,
-  // meaning `total_price` isn't reliably the right field — need to see
-  // the actual raw shape rather than guess a second time).
-  console.log("[shipping-rates DEBUG] raw api.co.id rates response:", JSON.stringify(body));
-
   return body.data.rates
     .filter((r) => r.courier_code === "jne")
     .map((r) => ({
       serviceCode: r.service_code,
       serviceName: r.service_name,
       etd: r.etd,
-      price: r.total_price,
+      // The real response (confirmed 2026-08-27 against a live account) has
+      // no `total_price` field at all — that was a wrong assumption carried
+      // over from a generic example in the provider's docs. The actual
+      // chargeable amount is `price` plus `handling_fee` (insurance_fee only
+      // appears when `insurance=true` is passed, which this integration
+      // doesn't use, so it's never present here).
+      price: r.price + (r.handling_fee ?? 0),
     }));
 }

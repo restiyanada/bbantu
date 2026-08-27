@@ -62,7 +62,7 @@ interface LocationOption {
 interface JneRateOption {
   serviceCode: string;
   serviceName: string;
-  etd: string;
+  etd: string | null;
   price: number;
 }
 
@@ -113,8 +113,6 @@ export default function HomePage() {
   const [selectedCityCode, setSelectedCityCode] = useState("");
   const [selectedDistrict, setSelectedDistrict] = useState<LocationOption | null>(null);
   const [addressDetail, setAddressDetail] = useState("");
-  const [recipientName, setRecipientName] = useState("");
-  const [recipientPhone, setRecipientPhone] = useState("");
   const [locationError, setLocationError] = useState<string | null>(null);
 
   const [rates, setRates] = useState<JneRateOption[] | null>(null);
@@ -141,6 +139,7 @@ export default function HomePage() {
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<CustomerValues>({ resolver: zodResolver(customerSchema) });
 
@@ -400,14 +399,6 @@ export default function HomePage() {
         setSubmitError("Please complete the delivery address.");
         return;
       }
-      if (!PHONE_PATTERN.test(recipientPhone.trim())) {
-        setSubmitError("Recipient phone number must be 8–15 digits, numbers only.");
-        return;
-      }
-      if (!NAME_PATTERN.test(recipientName.trim()) || !recipientName.trim()) {
-        setSubmitError("Recipient name can only contain letters.");
-        return;
-      }
       if (!selectedServiceCode) {
         setSubmitError("Please get a shipping rate and pick an option before submitting.");
         return;
@@ -424,9 +415,12 @@ export default function HomePage() {
         ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
         ...(fulfilmentMethod === "SHIPPING"
           ? {
+              // Recipient is the same person filling out "Your details" —
+              // no separate name/phone entry, per feedback that asking twice
+              // was redundant. Already validated by customerSchema above.
               shipping: {
-                recipientName: recipientName.trim(),
-                recipientPhone: recipientPhone.trim(),
+                recipientName: customer.name,
+                recipientPhone: customer.phone,
                 address: addressDetail.trim(),
                 destinationDistrictCode: selectedDistrict!.code,
                 destinationDistrictName: selectedDistrict!.name,
@@ -713,24 +707,13 @@ export default function HomePage() {
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs text-gray-500">Recipient name</label>
-                      <input
-                        value={recipientName}
-                        onChange={(e) => setRecipientName(e.target.value)}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-500">Recipient phone</label>
-                      <input
-                        value={recipientPhone}
-                        onChange={(e) => setRecipientPhone(e.target.value)}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-                      />
-                    </div>
-                  </div>
+                  {/* Recipient is whoever filled in "Your details" above —
+                      no separate name/phone entry. This just reflects those
+                      fields live so it's clear who the package is going to. */}
+                  <p className="text-xs text-gray-500">
+                    Shipping to <span className="font-medium text-gray-700">{watch("name") || "—"}</span> ·{" "}
+                    {watch("phone") || "—"}
+                  </p>
 
                   <Button
                     type="button"
@@ -756,7 +739,8 @@ export default function HomePage() {
                               checked={selectedServiceCode === rate.serviceCode}
                               onChange={() => setSelectedServiceCode(rate.serviceCode)}
                             />
-                            JNE {rate.serviceName} <span className="text-gray-500">· {rate.etd} days</span>
+                            JNE {rate.serviceName}
+                            {rate.etd && <span className="text-gray-500"> · {rate.etd} days</span>}
                           </span>
                           <span className="font-medium">{formatIDR(rate.price)}</span>
                         </label>
