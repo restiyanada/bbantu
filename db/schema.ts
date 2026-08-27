@@ -102,6 +102,13 @@ export const productVariants = pgTable("product_variants", {
     .references(() => products.id),
   name: text("name").notNull(), // e.g. size/design
   price: numeric("price", { precision: 12, scale: 2 }).notNull(),
+  // Milestone 3: needed to compute package weight for shipping-rate lookups
+  // (§15.2 — api.co.id's rate endpoint requires a weight in kg). Nullable
+  // rather than required, since every variant from Milestone 1/2 was created
+  // without one — supabase/functions/_shared/shipping.ts falls back to a
+  // documented default per item when this is unset, rather than rejecting
+  // checkout for products nobody has gotten around to weighing yet.
+  weightGrams: integer("weight_grams"),
 });
 
 // Milestone 1: a single global row (admin edits it directly via SQL console
@@ -116,6 +123,22 @@ export const paymentSettings = pgTable("payment_settings", {
   bankName: text("bank_name").notNull(),
   accountNumber: text("account_number").notNull(),
   accountHolderName: text("account_holder_name").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Milestone 3: the business's own shipping-from location, needed as the
+// `origin_district_code` input to every rate lookup (§15.2). Single global
+// row, admin-edited directly via SQL console — same precedent as
+// payment_settings above (no per-batch origin; this is one physical
+// business, not a multi-warehouse marketplace). No RLS: nothing here is
+// customer PII, and the browser never reads this table directly anyway —
+// only supabase/functions/shipping-rates does, via the service-role
+// connection, so the origin code/address never needs to reach the client.
+export const shippingSettings = pgTable("shipping_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  originDistrictCode: text("origin_district_code").notNull(), // api.co.id kecamatan code, e.g. "317405"
+  originDistrictName: text("origin_district_name").notNull(), // human-readable, for the shipping label later
+  originAddress: text("origin_address").notNull(), // street-level, for the shipping label later
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -291,21 +314,49 @@ export const inventoryTransactions = pgTable("inventory_transactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const shipments = pgTable("shipments", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orderId: uuid("order_id")
-    .notNull()
-    .references(() => orders.id)
-    .unique(),
-  courier: text("courier").notNull().default("JNE"),
-  service: text("service"),
-  recipientName: text("recipient_name").notNull(),
-  recipientPhone: text("recipient_phone").notNull(),
-  address: text("address").notNull(),
-  cost: numeric("cost", { precision: 12, scale: 2 }),
-  costOverrideReason: text("cost_override_reason"), // §26 audited override
-  trackingNumber: text("tracking_number"),
-});
+export const shipments = pgTable(
+  "shipments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id)
+      .unique(),
+    courier: text("courier").notNull().default("JNE"),
+    service: text("service"),
+    recipientName: text("recipient_name").notNull(),
+    recipientPhone: text("recipient_phone").notNull(),
+    address: text("address").notNull(),
+    // Milestone 3: api.co.id's rate endpoint is district-code based (§15.1/
+    // §15.2), not a free-text address — these are what create-order's
+    // server-side rate re-verification actually calls the API with.
+    // destinationDistrictName is stored purely for human display (order
+    // page, admin screen, and the future shipping label) — the code is
+    // what the shipping service itself uses.
+    destinationDistrictCode: text("destination_district_code").notNull(),
+    destinationDistrictName: text("destination_district_name").notNull(),
+    // Snapshot of the computed order weight (grams) at the time this
+    // shipment was created — product_variants.weightGrams could change
+    // later; the rate that was actually quoted/charged should stay
+    // reconstructable from this row rather than drifting with future edits.
+    weightGrams: integer("weight_grams").notNull(),
+    cost: numeric("cost", { precision: 12, scale: 2 }),
+    costOverrideReason: text("cost_override_reason"), // §26 audited override
+    trackingNumber: text("tracking_number"),
+  },
+  (table) => [
+    // Guest order page needs to show courier/service/tracking (§16) — same
+    // access-token-matched pattern as orders/order_items/payments/pickup_tokens.
+    // This table previously had no RLS at all, which (unlike the deliberately
+    // deferred inventory/batches gap noted in architecture.md) is a real hole
+    // worth closing now: it holds a customer's recipient name/phone/address.
+    pgPolicy("guest_can_read_own_shipment", {
+      for: "select",
+      to: "anon",
+      using: sql`exists (select 1 from ${orders} where ${orders.id} = ${table.orderId} and ${orders.accessToken} = ${requestAccessToken})`,
+    }),
+  ]
+).enableRLS();
 
 export const pickupTokens = pgTable(
   "pickup_tokens",

@@ -34,6 +34,15 @@ interface PaymentRow {
   rejection_reason: string | null;
 }
 
+interface ShipmentRow {
+  courier: string;
+  service: string | null;
+  recipient_name: string;
+  address: string;
+  destination_district_name: string;
+  tracking_number: string | null;
+}
+
 const PROOF_BUCKET = "payment-proofs";
 const MAX_PROOF_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -47,6 +56,7 @@ type LoadState =
       items: OrderItemRow[];
       payments: PaymentRow[];
       pickupToken: string | null;
+      shipment: ShipmentRow | null;
       batchName: string | null;
     };
 
@@ -101,7 +111,7 @@ export default function OrderPage() {
         return;
       }
 
-      const [itemsResult, paymentsResult, pickupResult, batchResult] = await Promise.all([
+      const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
         client
           .from("order_items")
           .select("quantity, unit_price, product_variants(name)")
@@ -112,6 +122,11 @@ export default function OrderPage() {
           .eq("order_id", order.id)
           .order("submitted_at", { ascending: false }),
         client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
+        client
+          .from("shipments")
+          .select("courier, service, recipient_name, address, destination_district_name, tracking_number")
+          .eq("order_id", order.id)
+          .maybeSingle(),
         // Ready-stock orders have no batch — batches table itself has no RLS
         // (public catalog, same as products), so a plain read is fine here.
         order.batch_id
@@ -127,6 +142,7 @@ export default function OrderPage() {
         items: (itemsResult.data as OrderItemRow[] | null) ?? [],
         payments: paymentsResult.data ?? [],
         pickupToken: pickupResult.data?.token ?? null,
+        shipment: (shipmentResult.data as ShipmentRow | null) ?? null,
         batchName: (batchResult.data as { name: string } | null)?.name ?? null,
       });
     }
@@ -252,7 +268,7 @@ export default function OrderPage() {
     setReloadKey((k) => k + 1);
   }
 
-  const { order, items, payments, pickupToken, batchName } = state;
+  const { order, items, payments, pickupToken, shipment, batchName } = state;
   const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
   const total = Number(order.merchandise_subtotal) + shippingCost;
   const balanceDue = total - Number(order.amount_paid);
@@ -409,6 +425,39 @@ export default function OrderPage() {
                 for a follow-up pass — this page is scoped to reading real
                 order data, not building the QR-rendering component yet. */}
             <p className="font-mono text-xs break-all bg-gray-100 rounded p-2">{pickupToken}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {order.fulfilment_method === "SHIPPING" && shipment && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Shipping</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm space-y-1">
+            <div className="flex justify-between">
+              <span className="text-gray-500">Delivering to</span>
+              <span className="text-right">
+                {shipment.recipient_name}
+                <br />
+                {shipment.address}, {shipment.destination_district_name}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">Courier</span>
+              <span>
+                {shipment.courier}
+                {shipment.service ? ` — ${shipment.service}` : ""}
+              </span>
+            </div>
+            {shipment.tracking_number ? (
+              <div className="flex justify-between pt-2 mt-2 border-t">
+                <span className="text-gray-500">Tracking number</span>
+                <span className="font-mono">{shipment.tracking_number}</span>
+              </div>
+            ) : (
+              <p className="text-gray-500 pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
+            )}
           </CardContent>
         </Card>
       )}

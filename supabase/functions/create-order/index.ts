@@ -4,17 +4,30 @@
  * Milestone 1: READY_STOCK sales mode, FULL payment, PICKUP fulfilment only.
  * Milestone 2 adds PRE_ORDER: a client sends `batchId` to order from an open
  * batch instead of the general ready-stock catalogue, and can choose
- * `paymentType: "DP"` if that batch allows it (§8.2, §10.1). Fulfilment
- * method is still always forced to PICKUP server-side, for every sales mode
- * — shipping isn't implemented until Milestone 3, so it's rejected here
- * regardless of what a batch's `allowedFulfilmentMethods` nominally permits
- * (that field exists for the batch config screen; it doesn't mean shipping
- * actually works yet).
+ * `paymentType: "DP"` if that batch allows it (§8.2, §10.1).
+ *
+ * Milestone 3 adds SHIPPING fulfilment. Ready-stock orders may choose either
+ * method freely (no batch to restrict them); pre-order fulfilment is
+ * constrained by the batch's `allowedFulfilmentMethods` (§13.1, built in
+ * Milestone 2 but unenforced until now). A shipping quote is never trusted
+ * from the client — the same server-side-recompute principle as
+ * merchandiseSubtotal, extended to shipping cost: this endpoint re-derives
+ * the weight from `product_variants.weightGrams` and re-calls
+ * getJneRates() itself with the order's actual origin/destination/weight,
+ * rather than trusting whatever price the client echoes back from an
+ * earlier /shipping-rates call (a quote could theoretically be stale, or a
+ * client could simply lie about it).
  *
  * Price is computed here from `product_variants.price`, never trusted from
  * the request body (architecture.md "Security boundary"). For a DP order,
- * the amount actually charged now is 50% of that computed subtotal (§8.2 —
- * a single global rule, not configurable), not something the client sends.
+ * the amount actually charged now is 50% of that computed merchandise
+ * subtotal (§8.2 — a single global rule, not configurable) *plus the full
+ * shipping cost*, not something the client sends. Interpretation flagged,
+ * not explicit in the PRD: shipping is a real logistics cost known in full
+ * at checkout (unlike merchandise, it has no "wait for stock" reason to be
+ * deferred), so it's collected upfront alongside the deposit rather than
+ * split across the deposit/balance the way merchandise is. Revisit if this
+ * doesn't match how the business actually wants DP + shipping to interact.
  *
  * Pre-order stock availability is deliberately NOT checked here — §11.2:
  * "pre-order commitments are tracked even before physical stock exists".
@@ -43,8 +56,9 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents, centsToDecimalString } from "../_shared/http.ts";
-import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems } from "../../../db/schema.ts";
+import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
 
 // Letters (incl. common accented/Indonesian names), spaces, apostrophes,
 // hyphens — matches how the checkout form validates client-side; this is
@@ -87,6 +101,23 @@ const createOrderSchema = z.object({
   // Only meaningful when batchId is set — ready-stock orders are always
   // FULL (see below, ignored if sent for a non-batch order).
   paymentType: z.enum(["DP", "FULL"]).default("FULL"),
+  // Milestone 3. Defaults to PICKUP (Milestone 1/2 clients that don't send
+  // this at all keep working unchanged).
+  fulfilmentMethod: z.enum(["PICKUP", "SHIPPING"]).default("PICKUP"),
+  // Required (validated below, not by zod, so the error can name what's
+  // actually missing) when fulfilmentMethod is SHIPPING. serviceCode is
+  // whichever JNE service the customer picked from a prior /shipping-rates
+  // call — re-validated against a fresh rate lookup below, not trusted.
+  shipping: z
+    .object({
+      recipientName: z.string().trim().min(1, "Recipient name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
+      recipientPhone: z.string().trim().regex(PHONE_PATTERN, "Recipient phone must be 8–15 digits, numbers only."),
+      address: z.string().trim().min(1, "Delivery address is required."),
+      destinationDistrictCode: z.string().trim().min(1),
+      destinationDistrictName: z.string().trim().min(1),
+      serviceCode: z.enum(["REG", "YES"]),
+    })
+    .optional(),
 });
 
 Deno.serve(async (req) => {
@@ -105,6 +136,10 @@ Deno.serve(async (req) => {
       return json({ error: "Invalid request.", details: err.issues }, 400);
     }
     return json({ error: "Invalid JSON body." }, 400);
+  }
+
+  if (input.fulfilmentMethod === "SHIPPING" && !input.shipping) {
+    return json({ error: "Shipping details are required when shipping is the fulfilment method." }, 400);
   }
 
   // Merge duplicate variantIds into one line so quantity checks and the
@@ -152,6 +187,9 @@ Deno.serve(async (req) => {
         if (!batch.allowedPaymentTypes.includes(paymentType)) {
           throw new HttpError(400, `This batch doesn't accept ${paymentType} payment.`);
         }
+        if (!batch.allowedFulfilmentMethods.includes(input.fulfilmentMethod)) {
+          throw new HttpError(400, `This batch doesn't offer ${input.fulfilmentMethod.toLowerCase()} as a fulfilment method.`);
+        }
 
         const items = await tx.select().from(batchItems).where(eq(batchItems.batchId, batch.id));
         const batchVariantIds = new Set(items.map((i) => i.variantId));
@@ -185,9 +223,74 @@ Deno.serve(async (req) => {
       });
       const merchandiseSubtotal = centsToDecimalString(subtotalCents);
 
-      // §8.2 — DP is a single global rule (50% of order total), computed
-      // here from the server-side subtotal, never sent by the client.
-      const paymentAmountCents = paymentType === "DP" ? Math.round(subtotalCents * 0.5) : subtotalCents;
+      // ── Milestone 3: shipping cost, re-derived server-side ──
+      // `shipmentValues` stays null for PICKUP orders; for SHIPPING it holds
+      // everything needed for the shipments insert below, computed from a
+      // fresh rate lookup rather than trusted from the request.
+      let shippingCostCents = 0;
+      let shipmentValues: typeof shipments.$inferInsert | null = null;
+
+      if (input.fulfilmentMethod === "SHIPPING") {
+        const shippingInput = input.shipping!; // presence already validated above
+
+        const [origin] = await tx.select().from(shippingSettings).limit(1);
+        if (!origin) {
+          throw new HttpError(503, "Shipping isn't configured yet — please choose pickup instead.");
+        }
+
+        const weightKg = computeWeightKg(
+          variants.map((v) => ({ quantity: quantityByVariant.get(v.id)!, weightGrams: v.weightGrams }))
+        );
+
+        let rates;
+        try {
+          rates = await getJneRates({
+            originDistrictCode: origin.originDistrictCode,
+            destinationDistrictCode: shippingInput.destinationDistrictCode,
+            weightKg,
+          });
+        } catch (err) {
+          if (err instanceof ShippingProviderError) {
+            throw new HttpError(err.status >= 500 ? 503 : 502, err.message);
+          }
+          throw err;
+        }
+
+        // The customer picked this service code from an earlier
+        // /shipping-rates call — re-matched against a *fresh* lookup here,
+        // not the price that call returned. If the rate changed or JNE no
+        // longer serves this route in the meantime, this fails loudly
+        // rather than silently charging a stale/wrong amount.
+        const matchedRate = rates.find((r) => r.serviceCode === shippingInput.serviceCode);
+        if (!matchedRate) {
+          throw new HttpError(
+            409,
+            "That shipping option is no longer available for this address. Please get a new shipping quote and try again."
+          );
+        }
+
+        shippingCostCents = Math.round(matchedRate.price * 100);
+
+        shipmentValues = {
+          orderId: "", // filled in after the order row exists, below
+          courier: "JNE",
+          service: shippingInput.serviceCode,
+          recipientName: shippingInput.recipientName,
+          recipientPhone: shippingInput.recipientPhone,
+          address: shippingInput.address,
+          destinationDistrictCode: shippingInput.destinationDistrictCode,
+          destinationDistrictName: shippingInput.destinationDistrictName,
+          weightGrams: weightKg * 1000, // the rounded-up weight actually billed, not the raw sum
+          cost: centsToDecimalString(shippingCostCents),
+        };
+      }
+
+      // §8.2 — DP is a single global rule (50% of merchandise subtotal),
+      // computed here from the server-side subtotal, never sent by the
+      // client. Shipping (if any) is always collected in full alongside
+      // whatever's due now — see the file-level doc comment for why.
+      const paymentAmountCents =
+        (paymentType === "DP" ? Math.round(subtotalCents * 0.5) : subtotalCents) + shippingCostCents;
       const paymentAmount = centsToDecimalString(paymentAmountCents);
 
       const [customer] = await tx.insert(customers).values(input.customer).returning();
@@ -204,11 +307,15 @@ Deno.serve(async (req) => {
             batchId: isPreOrder ? input.batchId : null,
             status: "PAYMENT_PENDING",
             paymentType,
-            // Forced regardless of sales mode/batch config — shipping isn't
-            // built yet (Milestone 3). See file-level doc comment.
-            fulfilmentMethod: "PICKUP",
-            orderNumber: sql`nextval('pickup_order_seq')`,
+            fulfilmentMethod: input.fulfilmentMethod,
+            // Separate sequence per fulfilment type (db/schema.ts) so order
+            // numbers read as #01xxxx (pickup) / #02xxxx (shipping).
+            orderNumber:
+              input.fulfilmentMethod === "SHIPPING"
+                ? sql`nextval('shipping_order_seq')`
+                : sql`nextval('pickup_order_seq')`,
             merchandiseSubtotal,
+            shippingCost: shipmentValues ? shipmentValues.cost : null,
             submissionToken: input.submissionToken,
             accessToken,
           })
@@ -229,6 +336,10 @@ Deno.serve(async (req) => {
         }))
       );
 
+      if (shipmentValues) {
+        await tx.insert(shipments).values({ ...shipmentValues, orderId: insertedOrder.id });
+      }
+
       await tx.insert(payments).values({
         orderId: insertedOrder.id,
         amount: paymentAmount,
@@ -241,7 +352,13 @@ Deno.serve(async (req) => {
         entityType: "order",
         entityId: insertedOrder.id,
         action: "customer created order",
-        after: { status: insertedOrder.status, merchandiseSubtotal, paymentType, batchId: insertedOrder.batchId },
+        after: {
+          status: insertedOrder.status,
+          merchandiseSubtotal,
+          shippingCost: insertedOrder.shippingCost,
+          paymentType,
+          batchId: insertedOrder.batchId,
+        },
       });
 
       return insertedOrder;
@@ -253,6 +370,7 @@ Deno.serve(async (req) => {
         orderNumber: order.orderNumber,
         accessToken: order.accessToken,
         merchandiseSubtotal: order.merchandiseSubtotal,
+        shippingCost: order.shippingCost,
         status: order.status,
       },
       201

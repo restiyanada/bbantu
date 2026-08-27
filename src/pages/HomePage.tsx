@@ -37,6 +37,7 @@ interface RawBatch {
   id: string;
   name: string;
   allowed_payment_types: string[];
+  allowed_fulfilment_methods: string[];
 }
 
 interface SelectableItem {
@@ -49,7 +50,20 @@ interface BatchOption {
   id: string;
   name: string;
   allowedPaymentTypes: string[];
+  allowedFulfilmentMethods: string[];
   items: SelectableItem[];
+}
+
+// Milestone 3 — shipping address + rate quote.
+interface LocationOption {
+  code: string;
+  name: string;
+}
+interface JneRateOption {
+  serviceCode: string;
+  serviceName: string;
+  etd: string;
+  price: number;
 }
 
 const PROOF_BUCKET = "payment-proofs";
@@ -87,6 +101,27 @@ export default function HomePage() {
 
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
 
+  // Milestone 3 — fulfilment method + shipping address/rate quote state.
+  // Kept as plain useState, not folded into the react-hook-form `customer`
+  // resolver above — same convention already used for items/proof upload:
+  // only the customer name/phone/email block uses react-hook-form here.
+  const [fulfilmentMethod, setFulfilmentMethod] = useState<"PICKUP" | "SHIPPING">("PICKUP");
+  const [provinces, setProvinces] = useState<LocationOption[] | null>(null);
+  const [cities, setCities] = useState<LocationOption[] | null>(null);
+  const [districts, setDistricts] = useState<LocationOption[] | null>(null);
+  const [selectedProvinceCode, setSelectedProvinceCode] = useState("");
+  const [selectedCityCode, setSelectedCityCode] = useState("");
+  const [selectedDistrict, setSelectedDistrict] = useState<LocationOption | null>(null);
+  const [addressDetail, setAddressDetail] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const [rates, setRates] = useState<JneRateOption[] | null>(null);
+  const [selectedServiceCode, setSelectedServiceCode] = useState<string | null>(null);
+  const [rateLoading, setRateLoading] = useState(false);
+  const [rateError, setRateError] = useState<string | null>(null);
+
   // Payment proof upload state. `proofPath` is what actually gets sent to
   // create-order — a Storage path within PROOF_BUCKET, not a public URL (the
   // bucket has no public read at all, see supabase/storage_setup.sql).
@@ -120,7 +155,9 @@ export default function HomePage() {
         supabase.from("products").select("id, name, description, product_variants(id, name, price)").eq("active", true),
         supabase
           .from("batches")
-          .select("id, name, allowed_payment_types, batch_items(id, variant_id, product_variants(name, price, products(name)))")
+          .select(
+            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name)))"
+          )
           .eq("status", "OPEN"),
         supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
       ]);
@@ -144,6 +181,7 @@ export default function HomePage() {
           id: b.id,
           name: b.name,
           allowedPaymentTypes: b.allowed_payment_types,
+          allowedFulfilmentMethods: b.allowed_fulfilment_methods,
           items: b.batch_items.map((item) => ({
             variantId: item.variant_id,
             label: `${item.product_variants.products?.name ?? "Product"} — ${item.product_variants.name}`,
@@ -161,7 +199,116 @@ export default function HomePage() {
     };
   }, []);
 
+  // Milestone 3 — provinces are a small, rarely-changing, free-to-call list
+  // (§15.2), loaded once regardless of whether the customer ever picks
+  // Shipping, so the dropdown is instant if they do.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadProvinces() {
+      const { data, error } = await supabase.functions.invoke("shipping-locations", { body: { level: "provinces" } });
+      if (cancelled) return;
+      if (error || !data) {
+        setLocationError("Couldn't load shipping locations. Shipping may be unavailable right now.");
+        return;
+      }
+      setProvinces(data.items as LocationOption[]);
+    }
+    void loadProvinces();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleProvinceChange(code: string) {
+    setSelectedProvinceCode(code);
+    setSelectedCityCode("");
+    setSelectedDistrict(null);
+    setCities(null);
+    setDistricts(null);
+    setRates(null);
+    setSelectedServiceCode(null);
+    if (!code) return;
+
+    const { data, error } = await supabase.functions.invoke("shipping-locations", {
+      body: { level: "cities", provinceCode: code },
+    });
+    if (error || !data) {
+      setLocationError("Couldn't load cities for that province.");
+      return;
+    }
+    setLocationError(null);
+    setCities(data.items as LocationOption[]);
+  }
+
+  async function handleCityChange(code: string) {
+    setSelectedCityCode(code);
+    setSelectedDistrict(null);
+    setDistricts(null);
+    setRates(null);
+    setSelectedServiceCode(null);
+    if (!code) return;
+
+    const { data, error } = await supabase.functions.invoke("shipping-locations", {
+      body: { level: "districts", cityCode: code },
+    });
+    if (error || !data) {
+      setLocationError("Couldn't load districts for that city.");
+      return;
+    }
+    setLocationError(null);
+    setDistricts(data.items as LocationOption[]);
+  }
+
+  function handleDistrictChange(code: string) {
+    const district = districts?.find((d) => d.code === code) ?? null;
+    setSelectedDistrict(district);
+    setRates(null);
+    setSelectedServiceCode(null);
+  }
+
+  async function handleGetRate() {
+    if (!selectedDistrict) return;
+    const items = Object.entries(quantities)
+      .filter(([, qty]) => qty > 0)
+      .map(([variantId, quantity]) => ({ variantId, quantity }));
+    if (items.length === 0) {
+      setRateError("Add at least one item before getting a shipping rate.");
+      return;
+    }
+
+    setRateLoading(true);
+    setRateError(null);
+    setRates(null);
+    setSelectedServiceCode(null);
+
+    const { data, error } = await supabase.functions.invoke("shipping-rates", {
+      body: { destinationDistrictCode: selectedDistrict.code, items },
+    });
+
+    setRateLoading(false);
+
+    if (error || !data) {
+      setRateError(
+        (data as { error?: string } | null)?.error ?? "Couldn't get a shipping rate right now. Please try again."
+      );
+      return;
+    }
+
+    const fetchedRates = data.rates as JneRateOption[];
+    if (fetchedRates.length === 0) {
+      setRateError("JNE doesn't appear to deliver to that address — please double-check the district, or choose pickup instead.");
+      return;
+    }
+
+    setRates(fetchedRates);
+    setSelectedServiceCode(fetchedRates[0].serviceCode); // cheapest/first by default — customer can change it
+  }
+
   const activeBatch = activeSource === "READY_STOCK" ? null : batches?.find((b) => b.id === activeSource) ?? null;
+
+  // Ready stock has no batch to restrict it — Shipping is always offered.
+  // A pre-order batch only offers Shipping if it was configured to (§13.1).
+  const shippingAllowed = activeBatch ? activeBatch.allowedFulfilmentMethods.includes("SHIPPING") : true;
 
   // Unified list of what's orderable in the currently-active section, so
   // quantity state / subtotal math doesn't need two separate code paths.
@@ -177,6 +324,10 @@ export default function HomePage() {
     setQuantities({});
     setItemsError(null);
     setPaymentType("FULL");
+    setFulfilmentMethod("PICKUP");
+    setRates(null);
+    setSelectedServiceCode(null);
+    setRateError(null);
   }
 
   const subtotalCents = activeItems.reduce(
@@ -189,7 +340,15 @@ export default function HomePage() {
   const isPreOrder = activeSource !== "READY_STOCK";
   const effectivePaymentType = isPreOrder ? paymentType : "FULL";
   const depositCents = Math.round(subtotalCents * 0.5);
-  const amountDueNowCents = effectivePaymentType === "DP" ? depositCents : subtotalCents;
+
+  const selectedRate = rates?.find((r) => r.serviceCode === selectedServiceCode) ?? null;
+  const shippingCostCents = fulfilmentMethod === "SHIPPING" && selectedRate ? Math.round(selectedRate.price * 100) : 0;
+
+  // Shipping (when chosen) is always paid in full alongside whatever's due
+  // now — same design as create-order's server-side calc (see that file's
+  // doc comment for the reasoning and the open flag on this interpretation).
+  const amountDueNowCents = (effectivePaymentType === "DP" ? depositCents : subtotalCents) + shippingCostCents;
+  const grandTotalCents = subtotalCents + shippingCostCents;
 
   async function handleProofFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -236,13 +395,45 @@ export default function HomePage() {
       return;
     }
 
+    if (fulfilmentMethod === "SHIPPING") {
+      if (!selectedDistrict || !addressDetail.trim()) {
+        setSubmitError("Please complete the delivery address.");
+        return;
+      }
+      if (!PHONE_PATTERN.test(recipientPhone.trim())) {
+        setSubmitError("Recipient phone number must be 8–15 digits, numbers only.");
+        return;
+      }
+      if (!NAME_PATTERN.test(recipientName.trim()) || !recipientName.trim()) {
+        setSubmitError("Recipient name can only contain letters.");
+        return;
+      }
+      if (!selectedServiceCode) {
+        setSubmitError("Please get a shipping rate and pick an option before submitting.");
+        return;
+      }
+    }
+
     const { data, error } = await supabase.functions.invoke("create-order", {
       body: {
         customer,
         items,
         submissionToken,
         proofFileUrl: proofPath,
+        fulfilmentMethod,
         ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
+        ...(fulfilmentMethod === "SHIPPING"
+          ? {
+              shipping: {
+                recipientName: recipientName.trim(),
+                recipientPhone: recipientPhone.trim(),
+                address: addressDetail.trim(),
+                destinationDistrictCode: selectedDistrict!.code,
+                destinationDistrictName: selectedDistrict!.name,
+                serviceCode: selectedServiceCode,
+              },
+            }
+          : {}),
       },
     });
 
@@ -431,6 +622,153 @@ export default function HomePage() {
           </CardContent>
         </Card>
 
+        {hasItems && shippingAllowed && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Fulfilment</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <div className="flex gap-4">
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    checked={fulfilmentMethod === "PICKUP"}
+                    onChange={() => setFulfilmentMethod("PICKUP")}
+                  />
+                  Booth pickup
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    checked={fulfilmentMethod === "SHIPPING"}
+                    onChange={() => setFulfilmentMethod("SHIPPING")}
+                  />
+                  Shipping (JNE)
+                </label>
+              </div>
+
+              {fulfilmentMethod === "SHIPPING" && (
+                <div className="space-y-3 pt-2 border-t">
+                  {locationError && <p className="text-destructive text-xs">{locationError}</p>}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-xs text-gray-500">Province</label>
+                      <select
+                        value={selectedProvinceCode}
+                        onChange={(e) => void handleProvinceChange(e.target.value)}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                      >
+                        <option value="">
+                          {provinces === null ? "Loading…" : "Select province"}
+                        </option>
+                        {provinces?.map((p) => (
+                          <option key={p.code} value={p.code}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500">City / Regency</label>
+                      <select
+                        value={selectedCityCode}
+                        onChange={(e) => void handleCityChange(e.target.value)}
+                        disabled={!selectedProvinceCode}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
+                      >
+                        <option value="">{cities === null ? "—" : "Select city"}</option>
+                        {cities?.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500">District</label>
+                      <select
+                        value={selectedDistrict?.code ?? ""}
+                        onChange={(e) => handleDistrictChange(e.target.value)}
+                        disabled={!selectedCityCode}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
+                      >
+                        <option value="">{districts === null ? "—" : "Select district"}</option>
+                        {districts?.map((d) => (
+                          <option key={d.code} value={d.code}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-500">Street address, RT/RW, landmark, etc.</label>
+                    <textarea
+                      value={addressDetail}
+                      onChange={(e) => setAddressDetail(e.target.value)}
+                      rows={2}
+                      className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-gray-500">Recipient name</label>
+                      <input
+                        value={recipientName}
+                        onChange={(e) => setRecipientName(e.target.value)}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500">Recipient phone</label>
+                      <input
+                        value={recipientPhone}
+                        onChange={(e) => setRecipientPhone(e.target.value)}
+                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="info"
+                    size="sm"
+                    disabled={!selectedDistrict || rateLoading}
+                    onClick={() => void handleGetRate()}
+                  >
+                    {rateLoading ? "Getting rate…" : "Get shipping rate"}
+                  </Button>
+                  {rateError && <p className="text-destructive text-xs">{rateError}</p>}
+
+                  {rates && rates.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      {rates.map((rate) => (
+                        <label
+                          key={rate.serviceCode}
+                          className="flex items-center justify-between rounded-md border px-3 py-2 cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              checked={selectedServiceCode === rate.serviceCode}
+                              onChange={() => setSelectedServiceCode(rate.serviceCode)}
+                            />
+                            JNE {rate.serviceName} <span className="text-gray-500">· {rate.etd} days</span>
+                          </span>
+                          <span className="font-medium">{formatIDR(rate.price)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {hasItems && (
           <Card>
             <CardHeader>
@@ -438,19 +776,39 @@ export default function HomePage() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex justify-between">
-                <span>Order total</span>
+                <span>Merchandise subtotal</span>
                 <span className="font-medium">{formatIDR(subtotal)}</span>
+              </div>
+              {fulfilmentMethod === "SHIPPING" && selectedRate && (
+                <div className="flex justify-between">
+                  <span>Shipping (JNE {selectedRate.serviceName})</span>
+                  <span className="font-medium">{formatIDR(selectedRate.price)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-medium pt-1 border-t">
+                <span>Order total</span>
+                <span>{formatIDR((grandTotalCents / 100).toFixed(2))}</span>
               </div>
 
               {effectivePaymentType === "DP" ? (
                 <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
                   <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
                   <div className="flex justify-between text-amber-900">
-                    <span>Pay now (50% deposit)</span>
-                    <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
+                    <span>Merchandise deposit (50%)</span>
+                    <span>{formatIDR((depositCents / 100).toFixed(2))}</span>
+                  </div>
+                  {fulfilmentMethod === "SHIPPING" && selectedRate && (
+                    <div className="flex justify-between text-amber-900">
+                      <span>Shipping (paid in full now)</span>
+                      <span>{formatIDR(selectedRate.price)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-amber-900 font-semibold pt-1 border-t border-amber-200">
+                    <span>Pay now</span>
+                    <span>{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
                   </div>
                   <div className="flex justify-between text-amber-800">
-                    <span>Remaining balance (due later, once ready)</span>
+                    <span>Remaining merchandise balance (due later, once ready)</span>
                     <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
                   </div>
                   <p className="text-xs text-amber-700 pt-1">
@@ -510,7 +868,12 @@ export default function HomePage() {
 
         {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-        <Button type="submit" disabled={isSubmitting || !proofPath || proofUploading}>
+        <Button
+          type="submit"
+          disabled={
+            isSubmitting || !proofPath || proofUploading || (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
+          }
+        >
           {isSubmitting ? "Placing order…" : "Place order"}
         </Button>
       </form>

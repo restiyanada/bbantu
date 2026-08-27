@@ -21,7 +21,7 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse } from "../_shared/http.ts";
 import { getSignedProofUrl } from "../_shared/storage.ts";
-import { orders, customers, payments } from "../../../db/schema.ts";
+import { orders, customers, payments, shipments } from "../../../db/schema.ts";
 
 Deno.serve(async (req) => {
   const preflight = handleCors(req);
@@ -52,6 +52,13 @@ Deno.serve(async (req) => {
       .limit(100);
 
     const orderIds = rows.map((r) => r.id);
+
+    // Milestone 3 — only SHIPPING orders have a row here, so this is a
+    // straightforward map-by-orderId, same shape as pendingByOrder below.
+    const shipmentRows =
+      orderIds.length > 0 ? await db.select().from(shipments).where(inArray(shipments.orderId, orderIds)) : [];
+    const shipmentByOrder = new Map(shipmentRows.map((s) => [s.orderId, s]));
+
     const pendingPayments =
       orderIds.length > 0
         ? await db
@@ -76,11 +83,13 @@ Deno.serve(async (req) => {
 
     const result = await Promise.all(
       rows.map(async (row) => {
+        const shipment = shipmentByOrder.get(row.id) ?? null;
+
         const pending = pendingByOrder.get(row.id);
-        if (!pending) return { ...row, pendingPayment: null };
+        if (!pending) return { ...row, pendingPayment: null, shipment };
 
         const proofUrl = await getSignedProofUrl(pending.proofFileUrl);
-        return { ...row, pendingPayment: { ...pending, proofUrl } };
+        return { ...row, pendingPayment: { ...pending, proofUrl }, shipment };
       })
     );
 

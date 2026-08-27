@@ -11,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
+import { TrackingForm } from "@/components/tracking-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Link } from "react-router-dom";
 
@@ -26,6 +27,17 @@ interface PendingPayment {
   proofUrl: string | null;
 }
 
+interface ShipmentInfo {
+  recipientName: string;
+  recipientPhone: string;
+  address: string;
+  destinationDistrictName: string;
+  courier: string;
+  service: string | null;
+  cost: string | null;
+  trackingNumber: string | null;
+}
+
 interface OrderRow {
   id: string;
   orderNumber: number | null;
@@ -39,6 +51,7 @@ interface OrderRow {
   customerName: string;
   customerPhone: string;
   pendingPayment: PendingPayment | null;
+  shipment: ShipmentInfo | null;
 }
 
 const columnHelper = createColumnHelper<OrderRow>();
@@ -48,6 +61,7 @@ export default function AdminDashboardPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [trackingEntryId, setTrackingEntryId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const loadOrders = useCallback(async () => {
@@ -101,9 +115,31 @@ export default function AdminDashboardPage() {
     });
     setActioningId(null);
     if (error) {
-      setActionError("Couldn't prepare that order for pickup. Please try again.");
+      setActionError("Couldn't prepare that order. Please try again.");
       return;
     }
+    await loadOrders();
+  }
+
+  async function handleRecordTracking(
+    orderId: string,
+    values: { trackingNumber: string; costOverride?: string; costOverrideReason?: string }
+  ) {
+    setActionError(null);
+    setActioningId(orderId);
+    const { error } = await supabase.functions.invoke("record-tracking", {
+      body: {
+        orderId,
+        trackingNumber: values.trackingNumber,
+        ...(values.costOverride ? { costOverride: Number(values.costOverride), costOverrideReason: values.costOverrideReason } : {}),
+      },
+    });
+    setActioningId(null);
+    if (error) {
+      setActionError("Couldn't record tracking for that order. Please try again.");
+      return;
+    }
+    setTrackingEntryId(null);
     await loadOrders();
   }
 
@@ -157,6 +193,43 @@ export default function AdminDashboardPage() {
       },
     }),
     columnHelper.display({
+      id: "shipment",
+      header: "Shipping",
+      cell: ({ row }) => {
+        const shipment = row.original.shipment;
+        if (!shipment) return <span className="text-gray-400 text-sm">—</span>;
+        return (
+          <Dialog>
+            <DialogTrigger asChild>
+              <button type="button" className="text-xs text-blue-600 underline">
+                View
+              </button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Shipment details</DialogTitle>
+              </DialogHeader>
+              <div className="text-sm space-y-1">
+                <p>
+                  <span className="font-medium">{shipment.recipientName}</span> — {shipment.recipientPhone}
+                </p>
+                <p className="text-gray-600">
+                  {shipment.address}, {shipment.destinationDistrictName}
+                </p>
+                <p className="text-gray-600 pt-2 mt-2 border-t">
+                  {shipment.courier}
+                  {shipment.service ? ` — ${shipment.service}` : ""} · {formatIDR(shipment.cost ?? "0")}
+                </p>
+                {shipment.trackingNumber && (
+                  <p className="font-mono text-xs">Tracking: {shipment.trackingNumber}</p>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        );
+      },
+    }),
+    columnHelper.display({
       id: "actions",
       header: "Actions",
       cell: ({ row }) => {
@@ -174,6 +247,25 @@ export default function AdminDashboardPage() {
                 type="button"
                 className="text-xs text-gray-500 underline"
                 onClick={() => setRejectingId(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          );
+        }
+
+        if (trackingEntryId === order.id) {
+          return (
+            <div className="space-y-2">
+              <TrackingForm
+                currentCost={order.shipment?.cost ?? null}
+                submitting={isActioning}
+                onSubmit={(values) => handleRecordTracking(order.id, values)}
+              />
+              <button
+                type="button"
+                className="text-xs text-gray-500 underline"
+                onClick={() => setTrackingEntryId(null)}
               >
                 Cancel
               </button>
@@ -200,9 +292,22 @@ export default function AdminDashboardPage() {
         }
 
         if (order.status === "READY_FOR_FULFILMENT") {
+          // Same underlying prepare-pickup Edge Function handles both —
+          // it already branches on fulfilmentMethod internally (Milestone 1
+          // designed READY_FOR_PICKUP/READY_TO_SHIP as siblings under one
+          // PREPARE_FOR_FULFILMENT event). Only the label differs here.
+          const label = order.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup";
           return (
             <Button size="sm" variant="info" disabled={isActioning} onClick={() => handlePreparePickup(order.id)}>
-              {isActioning ? "Preparing…" : "Prepare for pickup"}
+              {isActioning ? "Preparing…" : label}
+            </Button>
+          );
+        }
+
+        if (order.status === "READY_TO_SHIP") {
+          return (
+            <Button size="sm" variant="info" onClick={() => setTrackingEntryId(order.id)}>
+              Record tracking
             </Button>
           );
         }

@@ -1,0 +1,1715 @@
+diff --git a/db/schema.ts b/db/schema.ts
+index 114cb3a..da3812f 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -102,6 +102,13 @@ export const productVariants = pgTable("product_variants", {
+     .references(() => products.id),
+   name: text("name").notNull(), // e.g. size/design
+   price: numeric("price", { precision: 12, scale: 2 }).notNull(),
++  // Milestone 3: needed to compute package weight for shipping-rate lookups
++  // (§15.2 — api.co.id's rate endpoint requires a weight in kg). Nullable
++  // rather than required, since every variant from Milestone 1/2 was created
++  // without one — supabase/functions/_shared/shipping.ts falls back to a
++  // documented default per item when this is unset, rather than rejecting
++  // checkout for products nobody has gotten around to weighing yet.
++  weightGrams: integer("weight_grams"),
+ });
+ 
+ // Milestone 1: a single global row (admin edits it directly via SQL console
+@@ -119,6 +126,22 @@ export const paymentSettings = pgTable("payment_settings", {
+   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+ });
+ 
++// Milestone 3: the business's own shipping-from location, needed as the
++// `origin_district_code` input to every rate lookup (§15.2). Single global
++// row, admin-edited directly via SQL console — same precedent as
++// payment_settings above (no per-batch origin; this is one physical
++// business, not a multi-warehouse marketplace). No RLS: nothing here is
++// customer PII, and the browser never reads this table directly anyway —
++// only supabase/functions/shipping-rates does, via the service-role
++// connection, so the origin code/address never needs to reach the client.
++export const shippingSettings = pgTable("shipping_settings", {
++  id: uuid("id").primaryKey().defaultRandom(),
++  originDistrictCode: text("origin_district_code").notNull(), // api.co.id kecamatan code, e.g. "317405"
++  originDistrictName: text("origin_district_name").notNull(), // human-readable, for the shipping label later
++  originAddress: text("origin_address").notNull(), // street-level, for the shipping label later
++  updatedAt: timestamp("updated_at").notNull().defaultNow(),
++});
++
+ export const batches = pgTable("batches", {
+   id: uuid("id").primaryKey().defaultRandom(),
+   name: text("name").notNull(),
+@@ -291,21 +314,49 @@ export const inventoryTransactions = pgTable("inventory_transactions", {
+   createdAt: timestamp("created_at").notNull().defaultNow(),
+ });
+ 
+-export const shipments = pgTable("shipments", {
+-  id: uuid("id").primaryKey().defaultRandom(),
+-  orderId: uuid("order_id")
+-    .notNull()
+-    .references(() => orders.id)
+-    .unique(),
+-  courier: text("courier").notNull().default("JNE"),
+-  service: text("service"),
+-  recipientName: text("recipient_name").notNull(),
+-  recipientPhone: text("recipient_phone").notNull(),
+-  address: text("address").notNull(),
+-  cost: numeric("cost", { precision: 12, scale: 2 }),
+-  costOverrideReason: text("cost_override_reason"), // §26 audited override
+-  trackingNumber: text("tracking_number"),
+-});
++export const shipments = pgTable(
++  "shipments",
++  {
++    id: uuid("id").primaryKey().defaultRandom(),
++    orderId: uuid("order_id")
++      .notNull()
++      .references(() => orders.id)
++      .unique(),
++    courier: text("courier").notNull().default("JNE"),
++    service: text("service"),
++    recipientName: text("recipient_name").notNull(),
++    recipientPhone: text("recipient_phone").notNull(),
++    address: text("address").notNull(),
++    // Milestone 3: api.co.id's rate endpoint is district-code based (§15.1/
++    // §15.2), not a free-text address — these are what create-order's
++    // server-side rate re-verification actually calls the API with.
++    // destinationDistrictName is stored purely for human display (order
++    // page, admin screen, and the future shipping label) — the code is
++    // what the shipping service itself uses.
++    destinationDistrictCode: text("destination_district_code").notNull(),
++    destinationDistrictName: text("destination_district_name").notNull(),
++    // Snapshot of the computed order weight (grams) at the time this
++    // shipment was created — product_variants.weightGrams could change
++    // later; the rate that was actually quoted/charged should stay
++    // reconstructable from this row rather than drifting with future edits.
++    weightGrams: integer("weight_grams").notNull(),
++    cost: numeric("cost", { precision: 12, scale: 2 }),
++    costOverrideReason: text("cost_override_reason"), // §26 audited override
++    trackingNumber: text("tracking_number"),
++  },
++  (table) => [
++    // Guest order page needs to show courier/service/tracking (§16) — same
++    // access-token-matched pattern as orders/order_items/payments/pickup_tokens.
++    // This table previously had no RLS at all, which (unlike the deliberately
++    // deferred inventory/batches gap noted in architecture.md) is a real hole
++    // worth closing now: it holds a customer's recipient name/phone/address.
++    pgPolicy("guest_can_read_own_shipment", {
++      for: "select",
++      to: "anon",
++      using: sql`exists (select 1 from ${orders} where ${orders.id} = ${table.orderId} and ${orders.accessToken} = ${requestAccessToken})`,
++    }),
++  ]
++).enableRLS();
+ 
+ export const pickupTokens = pgTable(
+   "pickup_tokens",
+diff --git a/src/components/tracking-form.tsx b/src/components/tracking-form.tsx
+new file mode 100644
+index 0000000..5c1c559
+--- /dev/null
++++ b/src/components/tracking-form.tsx
+@@ -0,0 +1,73 @@
++import { useForm } from "react-hook-form";
++import { zodResolver } from "@hookform/resolvers/zod";
++import { z } from "zod";
++import { Button } from "@/components/ui/button";
++
++// §26 "Shipping cost can be manually corrected, but the override must be
++// audited" — costOverrideReason is required whenever costOverride is
++// filled in, same shape as rejectPaymentSchema requiring a reason. Both are
++// optional together — most orders will just record a tracking number with
++// no cost change at all.
++const recordTrackingSchema = z
++  .object({
++    trackingNumber: z.string().trim().min(1, "Tracking number is required."),
++    costOverride: z.string().trim().optional(),
++    costOverrideReason: z.string().trim().optional(),
++  })
++  .refine((val) => !val.costOverride || (val.costOverrideReason ?? "").length > 0, {
++    message: "A reason is required when overriding the shipping cost.",
++    path: ["costOverrideReason"],
++  });
++
++export type RecordTrackingValues = z.infer<typeof recordTrackingSchema>;
++
++interface TrackingFormProps {
++  currentCost: string | null;
++  onSubmit: (values: RecordTrackingValues) => void | Promise<void>;
++  submitting?: boolean;
++}
++
++export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingFormProps) {
++  const {
++    register,
++    handleSubmit,
++    formState: { errors },
++  } = useForm<RecordTrackingValues>({ resolver: zodResolver(recordTrackingSchema) });
++
++  return (
++    <form onSubmit={handleSubmit(onSubmit)} className="space-y-2 w-64">
++      <div>
++        <label className="text-xs font-medium">Tracking number</label>
++        <input
++          {...register("trackingNumber")}
++          className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
++        />
++        {errors.trackingNumber && (
++          <p className="text-destructive text-xs mt-1">{errors.trackingNumber.message}</p>
++        )}
++      </div>
++      <details className="text-xs">
++        <summary className="cursor-pointer text-gray-500">Override cost (currently {currentCost ?? "—"})</summary>
++        <div className="mt-2 space-y-2">
++          <input
++            {...register("costOverride")}
++            placeholder="New cost (IDR)"
++            inputMode="decimal"
++            className="w-full rounded-md border bg-background px-2 py-1 text-sm"
++          />
++          <input
++            {...register("costOverrideReason")}
++            placeholder="Reason (required if overriding)"
++            className="w-full rounded-md border bg-background px-2 py-1 text-sm"
++          />
++          {errors.costOverrideReason && (
++            <p className="text-destructive text-xs">{errors.costOverrideReason.message}</p>
++          )}
++        </div>
++      </details>
++      <Button type="submit" size="sm" variant="success" disabled={submitting}>
++        {submitting ? "Saving…" : "Mark shipped"}
++      </Button>
++    </form>
++  );
++}
+diff --git a/src/pages/AdminDashboardPage.tsx b/src/pages/AdminDashboardPage.tsx
+index 8429858..4f9cf10 100644
+--- a/src/pages/AdminDashboardPage.tsx
++++ b/src/pages/AdminDashboardPage.tsx
+@@ -11,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+ import { Badge } from "@/components/ui/badge";
+ import { Button } from "@/components/ui/button";
+ import { PaymentRejectionForm } from "@/components/payment-rejection-form";
++import { TrackingForm } from "@/components/tracking-form";
+ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+ import { Link } from "react-router-dom";
+ 
+@@ -26,6 +27,17 @@ interface PendingPayment {
+   proofUrl: string | null;
+ }
+ 
++interface ShipmentInfo {
++  recipientName: string;
++  recipientPhone: string;
++  address: string;
++  destinationDistrictName: string;
++  courier: string;
++  service: string | null;
++  cost: string | null;
++  trackingNumber: string | null;
++}
++
+ interface OrderRow {
+   id: string;
+   orderNumber: number | null;
+@@ -39,6 +51,7 @@ interface OrderRow {
+   customerName: string;
+   customerPhone: string;
+   pendingPayment: PendingPayment | null;
++  shipment: ShipmentInfo | null;
+ }
+ 
+ const columnHelper = createColumnHelper<OrderRow>();
+@@ -48,6 +61,7 @@ export default function AdminDashboardPage() {
+   const [loadError, setLoadError] = useState<string | null>(null);
+   const [actioningId, setActioningId] = useState<string | null>(null);
+   const [rejectingId, setRejectingId] = useState<string | null>(null);
++  const [trackingEntryId, setTrackingEntryId] = useState<string | null>(null);
+   const [actionError, setActionError] = useState<string | null>(null);
+ 
+   const loadOrders = useCallback(async () => {
+@@ -101,9 +115,31 @@ export default function AdminDashboardPage() {
+     });
+     setActioningId(null);
+     if (error) {
+-      setActionError("Couldn't prepare that order for pickup. Please try again.");
++      setActionError("Couldn't prepare that order. Please try again.");
++      return;
++    }
++    await loadOrders();
++  }
++
++  async function handleRecordTracking(
++    orderId: string,
++    values: { trackingNumber: string; costOverride?: string; costOverrideReason?: string }
++  ) {
++    setActionError(null);
++    setActioningId(orderId);
++    const { error } = await supabase.functions.invoke("record-tracking", {
++      body: {
++        orderId,
++        trackingNumber: values.trackingNumber,
++        ...(values.costOverride ? { costOverride: Number(values.costOverride), costOverrideReason: values.costOverrideReason } : {}),
++      },
++    });
++    setActioningId(null);
++    if (error) {
++      setActionError("Couldn't record tracking for that order. Please try again.");
+       return;
+     }
++    setTrackingEntryId(null);
+     await loadOrders();
+   }
+ 
+@@ -156,6 +192,43 @@ export default function AdminDashboardPage() {
+         );
+       },
+     }),
++    columnHelper.display({
++      id: "shipment",
++      header: "Shipping",
++      cell: ({ row }) => {
++        const shipment = row.original.shipment;
++        if (!shipment) return <span className="text-gray-400 text-sm">—</span>;
++        return (
++          <Dialog>
++            <DialogTrigger asChild>
++              <button type="button" className="text-xs text-blue-600 underline">
++                View
++              </button>
++            </DialogTrigger>
++            <DialogContent>
++              <DialogHeader>
++                <DialogTitle>Shipment details</DialogTitle>
++              </DialogHeader>
++              <div className="text-sm space-y-1">
++                <p>
++                  <span className="font-medium">{shipment.recipientName}</span> — {shipment.recipientPhone}
++                </p>
++                <p className="text-gray-600">
++                  {shipment.address}, {shipment.destinationDistrictName}
++                </p>
++                <p className="text-gray-600 pt-2 mt-2 border-t">
++                  {shipment.courier}
++                  {shipment.service ? ` — ${shipment.service}` : ""} · {formatIDR(shipment.cost ?? "0")}
++                </p>
++                {shipment.trackingNumber && (
++                  <p className="font-mono text-xs">Tracking: {shipment.trackingNumber}</p>
++                )}
++              </div>
++            </DialogContent>
++          </Dialog>
++        );
++      },
++    }),
+     columnHelper.display({
+       id: "actions",
+       header: "Actions",
+@@ -181,6 +254,25 @@ export default function AdminDashboardPage() {
+           );
+         }
+ 
++        if (trackingEntryId === order.id) {
++          return (
++            <div className="space-y-2">
++              <TrackingForm
++                currentCost={order.shipment?.cost ?? null}
++                submitting={isActioning}
++                onSubmit={(values) => handleRecordTracking(order.id, values)}
++              />
++              <button
++                type="button"
++                className="text-xs text-gray-500 underline"
++                onClick={() => setTrackingEntryId(null)}
++              >
++                Cancel
++              </button>
++            </div>
++          );
++        }
++
+         if (order.pendingPayment) {
+           return (
+             <div className="flex gap-2">
+@@ -200,9 +292,22 @@ export default function AdminDashboardPage() {
+         }
+ 
+         if (order.status === "READY_FOR_FULFILMENT") {
++          // Same underlying prepare-pickup Edge Function handles both —
++          // it already branches on fulfilmentMethod internally (Milestone 1
++          // designed READY_FOR_PICKUP/READY_TO_SHIP as siblings under one
++          // PREPARE_FOR_FULFILMENT event). Only the label differs here.
++          const label = order.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup";
+           return (
+             <Button size="sm" variant="info" disabled={isActioning} onClick={() => handlePreparePickup(order.id)}>
+-              {isActioning ? "Preparing…" : "Prepare for pickup"}
++              {isActioning ? "Preparing…" : label}
++            </Button>
++          );
++        }
++
++        if (order.status === "READY_TO_SHIP") {
++          return (
++            <Button size="sm" variant="info" onClick={() => setTrackingEntryId(order.id)}>
++              Record tracking
+             </Button>
+           );
+         }
+diff --git a/src/pages/HomePage.tsx b/src/pages/HomePage.tsx
+index ce431df..714919d 100644
+--- a/src/pages/HomePage.tsx
++++ b/src/pages/HomePage.tsx
+@@ -37,6 +37,7 @@ interface RawBatch {
+   id: string;
+   name: string;
+   allowed_payment_types: string[];
++  allowed_fulfilment_methods: string[];
+ }
+ 
+ interface SelectableItem {
+@@ -49,9 +50,22 @@ interface BatchOption {
+   id: string;
+   name: string;
+   allowedPaymentTypes: string[];
++  allowedFulfilmentMethods: string[];
+   items: SelectableItem[];
+ }
+ 
++// Milestone 3 — shipping address + rate quote.
++interface LocationOption {
++  code: string;
++  name: string;
++}
++interface JneRateOption {
++  serviceCode: string;
++  serviceName: string;
++  etd: string;
++  price: number;
++}
++
+ const PROOF_BUCKET = "payment-proofs";
+ const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
+ const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
+@@ -87,6 +101,27 @@ export default function HomePage() {
+ 
+   const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
+ 
++  // Milestone 3 — fulfilment method + shipping address/rate quote state.
++  // Kept as plain useState, not folded into the react-hook-form `customer`
++  // resolver above — same convention already used for items/proof upload:
++  // only the customer name/phone/email block uses react-hook-form here.
++  const [fulfilmentMethod, setFulfilmentMethod] = useState<"PICKUP" | "SHIPPING">("PICKUP");
++  const [provinces, setProvinces] = useState<LocationOption[] | null>(null);
++  const [cities, setCities] = useState<LocationOption[] | null>(null);
++  const [districts, setDistricts] = useState<LocationOption[] | null>(null);
++  const [selectedProvinceCode, setSelectedProvinceCode] = useState("");
++  const [selectedCityCode, setSelectedCityCode] = useState("");
++  const [selectedDistrict, setSelectedDistrict] = useState<LocationOption | null>(null);
++  const [addressDetail, setAddressDetail] = useState("");
++  const [recipientName, setRecipientName] = useState("");
++  const [recipientPhone, setRecipientPhone] = useState("");
++  const [locationError, setLocationError] = useState<string | null>(null);
++
++  const [rates, setRates] = useState<JneRateOption[] | null>(null);
++  const [selectedServiceCode, setSelectedServiceCode] = useState<string | null>(null);
++  const [rateLoading, setRateLoading] = useState(false);
++  const [rateError, setRateError] = useState<string | null>(null);
++
+   // Payment proof upload state. `proofPath` is what actually gets sent to
+   // create-order — a Storage path within PROOF_BUCKET, not a public URL (the
+   // bucket has no public read at all, see supabase/storage_setup.sql).
+@@ -120,7 +155,9 @@ export default function HomePage() {
+         supabase.from("products").select("id, name, description, product_variants(id, name, price)").eq("active", true),
+         supabase
+           .from("batches")
+-          .select("id, name, allowed_payment_types, batch_items(id, variant_id, product_variants(name, price, products(name)))")
++          .select(
++            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name)))"
++          )
+           .eq("status", "OPEN"),
+         supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
+       ]);
+@@ -144,6 +181,7 @@ export default function HomePage() {
+           id: b.id,
+           name: b.name,
+           allowedPaymentTypes: b.allowed_payment_types,
++          allowedFulfilmentMethods: b.allowed_fulfilment_methods,
+           items: b.batch_items.map((item) => ({
+             variantId: item.variant_id,
+             label: `${item.product_variants.products?.name ?? "Product"} — ${item.product_variants.name}`,
+@@ -161,8 +199,117 @@ export default function HomePage() {
+     };
+   }, []);
+ 
++  // Milestone 3 — provinces are a small, rarely-changing, free-to-call list
++  // (§15.2), loaded once regardless of whether the customer ever picks
++  // Shipping, so the dropdown is instant if they do.
++  useEffect(() => {
++    let cancelled = false;
++    async function loadProvinces() {
++      const { data, error } = await supabase.functions.invoke("shipping-locations", { body: { level: "provinces" } });
++      if (cancelled) return;
++      if (error || !data) {
++        setLocationError("Couldn't load shipping locations. Shipping may be unavailable right now.");
++        return;
++      }
++      setProvinces(data.items as LocationOption[]);
++    }
++    void loadProvinces();
++    return () => {
++      cancelled = true;
++    };
++  }, []);
++
++  async function handleProvinceChange(code: string) {
++    setSelectedProvinceCode(code);
++    setSelectedCityCode("");
++    setSelectedDistrict(null);
++    setCities(null);
++    setDistricts(null);
++    setRates(null);
++    setSelectedServiceCode(null);
++    if (!code) return;
++
++    const { data, error } = await supabase.functions.invoke("shipping-locations", {
++      body: { level: "cities", provinceCode: code },
++    });
++    if (error || !data) {
++      setLocationError("Couldn't load cities for that province.");
++      return;
++    }
++    setLocationError(null);
++    setCities(data.items as LocationOption[]);
++  }
++
++  async function handleCityChange(code: string) {
++    setSelectedCityCode(code);
++    setSelectedDistrict(null);
++    setDistricts(null);
++    setRates(null);
++    setSelectedServiceCode(null);
++    if (!code) return;
++
++    const { data, error } = await supabase.functions.invoke("shipping-locations", {
++      body: { level: "districts", cityCode: code },
++    });
++    if (error || !data) {
++      setLocationError("Couldn't load districts for that city.");
++      return;
++    }
++    setLocationError(null);
++    setDistricts(data.items as LocationOption[]);
++  }
++
++  function handleDistrictChange(code: string) {
++    const district = districts?.find((d) => d.code === code) ?? null;
++    setSelectedDistrict(district);
++    setRates(null);
++    setSelectedServiceCode(null);
++  }
++
++  async function handleGetRate() {
++    if (!selectedDistrict) return;
++    const items = Object.entries(quantities)
++      .filter(([, qty]) => qty > 0)
++      .map(([variantId, quantity]) => ({ variantId, quantity }));
++    if (items.length === 0) {
++      setRateError("Add at least one item before getting a shipping rate.");
++      return;
++    }
++
++    setRateLoading(true);
++    setRateError(null);
++    setRates(null);
++    setSelectedServiceCode(null);
++
++    const { data, error } = await supabase.functions.invoke("shipping-rates", {
++      body: { destinationDistrictCode: selectedDistrict.code, items },
++    });
++
++    setRateLoading(false);
++
++    if (error || !data) {
++      setRateError(
++        (data as { error?: string } | null)?.error ?? "Couldn't get a shipping rate right now. Please try again."
++      );
++      return;
++    }
++
++    const fetchedRates = data.rates as JneRateOption[];
++    if (fetchedRates.length === 0) {
++      setRateError("JNE doesn't appear to deliver to that address — please double-check the district, or choose pickup instead.");
++      return;
++    }
++
++    setRates(fetchedRates);
++    setSelectedServiceCode(fetchedRates[0].serviceCode); // cheapest/first by default — customer can change it
++  }
++
+   const activeBatch = activeSource === "READY_STOCK" ? null : batches?.find((b) => b.id === activeSource) ?? null;
+ 
++  // Ready stock has no batch to restrict it — Shipping is always offered.
++  // A pre-order batch only offers Shipping if it was configured to (§13.1).
++  const shippingAllowed = activeBatch ? activeBatch.allowedFulfilmentMethods.includes("SHIPPING") : true;
++
+   // Unified list of what's orderable in the currently-active section, so
+   // quantity state / subtotal math doesn't need two separate code paths.
+   const activeItems: SelectableItem[] =
+@@ -177,6 +324,10 @@ export default function HomePage() {
+     setQuantities({});
+     setItemsError(null);
+     setPaymentType("FULL");
++    setFulfilmentMethod("PICKUP");
++    setRates(null);
++    setSelectedServiceCode(null);
++    setRateError(null);
+   }
+ 
+   const subtotalCents = activeItems.reduce(
+@@ -189,7 +340,15 @@ export default function HomePage() {
+   const isPreOrder = activeSource !== "READY_STOCK";
+   const effectivePaymentType = isPreOrder ? paymentType : "FULL";
+   const depositCents = Math.round(subtotalCents * 0.5);
+-  const amountDueNowCents = effectivePaymentType === "DP" ? depositCents : subtotalCents;
++
++  const selectedRate = rates?.find((r) => r.serviceCode === selectedServiceCode) ?? null;
++  const shippingCostCents = fulfilmentMethod === "SHIPPING" && selectedRate ? Math.round(selectedRate.price * 100) : 0;
++
++  // Shipping (when chosen) is always paid in full alongside whatever's due
++  // now — same design as create-order's server-side calc (see that file's
++  // doc comment for the reasoning and the open flag on this interpretation).
++  const amountDueNowCents = (effectivePaymentType === "DP" ? depositCents : subtotalCents) + shippingCostCents;
++  const grandTotalCents = subtotalCents + shippingCostCents;
+ 
+   async function handleProofFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+     const file = e.target.files?.[0];
+@@ -236,13 +395,45 @@ export default function HomePage() {
+       return;
+     }
+ 
++    if (fulfilmentMethod === "SHIPPING") {
++      if (!selectedDistrict || !addressDetail.trim()) {
++        setSubmitError("Please complete the delivery address.");
++        return;
++      }
++      if (!PHONE_PATTERN.test(recipientPhone.trim())) {
++        setSubmitError("Recipient phone number must be 8–15 digits, numbers only.");
++        return;
++      }
++      if (!NAME_PATTERN.test(recipientName.trim()) || !recipientName.trim()) {
++        setSubmitError("Recipient name can only contain letters.");
++        return;
++      }
++      if (!selectedServiceCode) {
++        setSubmitError("Please get a shipping rate and pick an option before submitting.");
++        return;
++      }
++    }
++
+     const { data, error } = await supabase.functions.invoke("create-order", {
+       body: {
+         customer,
+         items,
+         submissionToken,
+         proofFileUrl: proofPath,
++        fulfilmentMethod,
+         ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
++        ...(fulfilmentMethod === "SHIPPING"
++          ? {
++              shipping: {
++                recipientName: recipientName.trim(),
++                recipientPhone: recipientPhone.trim(),
++                address: addressDetail.trim(),
++                destinationDistrictCode: selectedDistrict!.code,
++                destinationDistrictName: selectedDistrict!.name,
++                serviceCode: selectedServiceCode,
++              },
++            }
++          : {}),
+       },
+     });
+ 
+@@ -431,6 +622,153 @@ export default function HomePage() {
+           </CardContent>
+         </Card>
+ 
++        {hasItems && shippingAllowed && (
++          <Card>
++            <CardHeader>
++              <CardTitle>Fulfilment</CardTitle>
++            </CardHeader>
++            <CardContent className="space-y-4 text-sm">
++              <div className="flex gap-4">
++                <label className="flex items-center gap-1.5">
++                  <input
++                    type="radio"
++                    checked={fulfilmentMethod === "PICKUP"}
++                    onChange={() => setFulfilmentMethod("PICKUP")}
++                  />
++                  Booth pickup
++                </label>
++                <label className="flex items-center gap-1.5">
++                  <input
++                    type="radio"
++                    checked={fulfilmentMethod === "SHIPPING"}
++                    onChange={() => setFulfilmentMethod("SHIPPING")}
++                  />
++                  Shipping (JNE)
++                </label>
++              </div>
++
++              {fulfilmentMethod === "SHIPPING" && (
++                <div className="space-y-3 pt-2 border-t">
++                  {locationError && <p className="text-destructive text-xs">{locationError}</p>}
++
++                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
++                    <div>
++                      <label className="text-xs text-gray-500">Province</label>
++                      <select
++                        value={selectedProvinceCode}
++                        onChange={(e) => void handleProvinceChange(e.target.value)}
++                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
++                      >
++                        <option value="">
++                          {provinces === null ? "Loading…" : "Select province"}
++                        </option>
++                        {provinces?.map((p) => (
++                          <option key={p.code} value={p.code}>
++                            {p.name}
++                          </option>
++                        ))}
++                      </select>
++                    </div>
++                    <div>
++                      <label className="text-xs text-gray-500">City / Regency</label>
++                      <select
++                        value={selectedCityCode}
++                        onChange={(e) => void handleCityChange(e.target.value)}
++                        disabled={!selectedProvinceCode}
++                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
++                      >
++                        <option value="">{cities === null ? "—" : "Select city"}</option>
++                        {cities?.map((c) => (
++                          <option key={c.code} value={c.code}>
++                            {c.name}
++                          </option>
++                        ))}
++                      </select>
++                    </div>
++                    <div>
++                      <label className="text-xs text-gray-500">District</label>
++                      <select
++                        value={selectedDistrict?.code ?? ""}
++                        onChange={(e) => handleDistrictChange(e.target.value)}
++                        disabled={!selectedCityCode}
++                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
++                      >
++                        <option value="">{districts === null ? "—" : "Select district"}</option>
++                        {districts?.map((d) => (
++                          <option key={d.code} value={d.code}>
++                            {d.name}
++                          </option>
++                        ))}
++                      </select>
++                    </div>
++                  </div>
++
++                  <div>
++                    <label className="text-xs text-gray-500">Street address, RT/RW, landmark, etc.</label>
++                    <textarea
++                      value={addressDetail}
++                      onChange={(e) => setAddressDetail(e.target.value)}
++                      rows={2}
++                      className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
++                    />
++                  </div>
++
++                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
++                    <div>
++                      <label className="text-xs text-gray-500">Recipient name</label>
++                      <input
++                        value={recipientName}
++                        onChange={(e) => setRecipientName(e.target.value)}
++                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
++                      />
++                    </div>
++                    <div>
++                      <label className="text-xs text-gray-500">Recipient phone</label>
++                      <input
++                        value={recipientPhone}
++                        onChange={(e) => setRecipientPhone(e.target.value)}
++                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
++                      />
++                    </div>
++                  </div>
++
++                  <Button
++                    type="button"
++                    variant="info"
++                    size="sm"
++                    disabled={!selectedDistrict || rateLoading}
++                    onClick={() => void handleGetRate()}
++                  >
++                    {rateLoading ? "Getting rate…" : "Get shipping rate"}
++                  </Button>
++                  {rateError && <p className="text-destructive text-xs">{rateError}</p>}
++
++                  {rates && rates.length > 0 && (
++                    <div className="space-y-1.5 pt-1">
++                      {rates.map((rate) => (
++                        <label
++                          key={rate.serviceCode}
++                          className="flex items-center justify-between rounded-md border px-3 py-2 cursor-pointer"
++                        >
++                          <span className="flex items-center gap-2">
++                            <input
++                              type="radio"
++                              checked={selectedServiceCode === rate.serviceCode}
++                              onChange={() => setSelectedServiceCode(rate.serviceCode)}
++                            />
++                            JNE {rate.serviceName} <span className="text-gray-500">· {rate.etd} days</span>
++                          </span>
++                          <span className="font-medium">{formatIDR(rate.price)}</span>
++                        </label>
++                      ))}
++                    </div>
++                  )}
++                </div>
++              )}
++            </CardContent>
++          </Card>
++        )}
++
+         {hasItems && (
+           <Card>
+             <CardHeader>
+@@ -438,19 +776,39 @@ export default function HomePage() {
+             </CardHeader>
+             <CardContent className="space-y-3 text-sm">
+               <div className="flex justify-between">
+-                <span>Order total</span>
++                <span>Merchandise subtotal</span>
+                 <span className="font-medium">{formatIDR(subtotal)}</span>
+               </div>
++              {fulfilmentMethod === "SHIPPING" && selectedRate && (
++                <div className="flex justify-between">
++                  <span>Shipping (JNE {selectedRate.serviceName})</span>
++                  <span className="font-medium">{formatIDR(selectedRate.price)}</span>
++                </div>
++              )}
++              <div className="flex justify-between font-medium pt-1 border-t">
++                <span>Order total</span>
++                <span>{formatIDR((grandTotalCents / 100).toFixed(2))}</span>
++              </div>
+ 
+               {effectivePaymentType === "DP" ? (
+                 <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
+                   <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
+                   <div className="flex justify-between text-amber-900">
+-                    <span>Pay now (50% deposit)</span>
+-                    <span className="font-semibold">{formatIDR((depositCents / 100).toFixed(2))}</span>
++                    <span>Merchandise deposit (50%)</span>
++                    <span>{formatIDR((depositCents / 100).toFixed(2))}</span>
++                  </div>
++                  {fulfilmentMethod === "SHIPPING" && selectedRate && (
++                    <div className="flex justify-between text-amber-900">
++                      <span>Shipping (paid in full now)</span>
++                      <span>{formatIDR(selectedRate.price)}</span>
++                    </div>
++                  )}
++                  <div className="flex justify-between text-amber-900 font-semibold pt-1 border-t border-amber-200">
++                    <span>Pay now</span>
++                    <span>{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                   </div>
+                   <div className="flex justify-between text-amber-800">
+-                    <span>Remaining balance (due later, once ready)</span>
++                    <span>Remaining merchandise balance (due later, once ready)</span>
+                     <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+                   </div>
+                   <p className="text-xs text-amber-700 pt-1">
+@@ -510,7 +868,12 @@ export default function HomePage() {
+ 
+         {submitError && <p className="text-destructive text-sm">{submitError}</p>}
+ 
+-        <Button type="submit" disabled={isSubmitting || !proofPath || proofUploading}>
++        <Button
++          type="submit"
++          disabled={
++            isSubmitting || !proofPath || proofUploading || (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
++          }
++        >
+           {isSubmitting ? "Placing order…" : "Place order"}
+         </Button>
+       </form>
+diff --git a/src/pages/OrderPage.tsx b/src/pages/OrderPage.tsx
+index a09415e..c82aa06 100644
+--- a/src/pages/OrderPage.tsx
++++ b/src/pages/OrderPage.tsx
+@@ -34,6 +34,15 @@ interface PaymentRow {
+   rejection_reason: string | null;
+ }
+ 
++interface ShipmentRow {
++  courier: string;
++  service: string | null;
++  recipient_name: string;
++  address: string;
++  destination_district_name: string;
++  tracking_number: string | null;
++}
++
+ const PROOF_BUCKET = "payment-proofs";
+ const MAX_PROOF_BYTES = 5 * 1024 * 1024;
+ const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
+@@ -47,6 +56,7 @@ type LoadState =
+       items: OrderItemRow[];
+       payments: PaymentRow[];
+       pickupToken: string | null;
++      shipment: ShipmentRow | null;
+       batchName: string | null;
+     };
+ 
+@@ -101,7 +111,7 @@ export default function OrderPage() {
+         return;
+       }
+ 
+-      const [itemsResult, paymentsResult, pickupResult, batchResult] = await Promise.all([
++      const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
+         client
+           .from("order_items")
+           .select("quantity, unit_price, product_variants(name)")
+@@ -112,6 +122,11 @@ export default function OrderPage() {
+           .eq("order_id", order.id)
+           .order("submitted_at", { ascending: false }),
+         client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
++        client
++          .from("shipments")
++          .select("courier, service, recipient_name, address, destination_district_name, tracking_number")
++          .eq("order_id", order.id)
++          .maybeSingle(),
+         // Ready-stock orders have no batch — batches table itself has no RLS
+         // (public catalog, same as products), so a plain read is fine here.
+         order.batch_id
+@@ -127,6 +142,7 @@ export default function OrderPage() {
+         items: (itemsResult.data as OrderItemRow[] | null) ?? [],
+         payments: paymentsResult.data ?? [],
+         pickupToken: pickupResult.data?.token ?? null,
++        shipment: (shipmentResult.data as ShipmentRow | null) ?? null,
+         batchName: (batchResult.data as { name: string } | null)?.name ?? null,
+       });
+     }
+@@ -252,7 +268,7 @@ export default function OrderPage() {
+     setReloadKey((k) => k + 1);
+   }
+ 
+-  const { order, items, payments, pickupToken, batchName } = state;
++  const { order, items, payments, pickupToken, shipment, batchName } = state;
+   const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
+   const total = Number(order.merchandise_subtotal) + shippingCost;
+   const balanceDue = total - Number(order.amount_paid);
+@@ -412,6 +428,39 @@ export default function OrderPage() {
+           </CardContent>
+         </Card>
+       )}
++
++      {order.fulfilment_method === "SHIPPING" && shipment && (
++        <Card>
++          <CardHeader>
++            <CardTitle>Shipping</CardTitle>
++          </CardHeader>
++          <CardContent className="text-sm space-y-1">
++            <div className="flex justify-between">
++              <span className="text-gray-500">Delivering to</span>
++              <span className="text-right">
++                {shipment.recipient_name}
++                <br />
++                {shipment.address}, {shipment.destination_district_name}
++              </span>
++            </div>
++            <div className="flex justify-between">
++              <span className="text-gray-500">Courier</span>
++              <span>
++                {shipment.courier}
++                {shipment.service ? ` — ${shipment.service}` : ""}
++              </span>
++            </div>
++            {shipment.tracking_number ? (
++              <div className="flex justify-between pt-2 mt-2 border-t">
++                <span className="text-gray-500">Tracking number</span>
++                <span className="font-mono">{shipment.tracking_number}</span>
++              </div>
++            ) : (
++              <p className="text-gray-500 pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
++            )}
++          </CardContent>
++        </Card>
++      )}
+     </main>
+   );
+ }
+diff --git a/supabase/functions/_shared/shipping.ts b/supabase/functions/_shared/shipping.ts
+new file mode 100644
+index 0000000..3930411
+--- /dev/null
++++ b/supabase/functions/_shared/shipping.ts
+@@ -0,0 +1,179 @@
++/**
++ * Shipping-rate provider client (Milestone 3, §15) — api.co.id's "Cek Ongkir
++ * v2" API (https://docs.api.co.id/api/indonesia-courier-rates).
++ *
++ * Kept as one small module of plain functions, not a class/interface with
++ * multiple implementations — architecture.md/§15.1 ask for courier
++ * integration to be "isolated behind a shipping service so another courier
++ * can be added later", which this satisfies (every Edge Function that needs
++ * a rate or a location lookup imports from here, never fetches api.co.id
++ * directly). Building an actual pluggable-provider abstraction now, with only
++ * one provider ever wired up, would be exactly the "dead flexibility"
++ * CLAUDE.md warns against — add that shape later if/when a second provider
++ * is actually being integrated, not speculatively now.
++ *
++ * Requires a `SHIPPING_API_KEY` secret (api.co.id dashboard → API key):
++ *   supabase secrets set SHIPPING_API_KEY=...
++ *
++ * MVP scope note (confirmed): api.co.id's /courier/v2/rates returns 9
++ * couriers at once, but PRD's Recommended MVP Scope (§28) names JNE only —
++ * "Multiple couriers" is explicitly Future (§29). getJneRates() filters the
++ * response down to courier_code === "jne" for that reason; the other 8
++ * couriers' rates are simply discarded, not exposed anywhere.
++ */
++
++const BASE_URL = "https://use.api.co.id";
++
++function apiKey(): string {
++  const key = Deno.env.get("SHIPPING_API_KEY");
++  if (!key) {
++    throw new Error("SHIPPING_API_KEY must be set as a Supabase Edge Function secret.");
++  }
++  return key;
++}
++
++export class ShippingProviderError extends Error {
++  constructor(
++    message: string,
++    public readonly status: number
++  ) {
++    super(message);
++    this.name = "ShippingProviderError";
++  }
++}
++
++async function apiCoIdGet<T>(path: string, params: Record<string, string>): Promise<T> {
++  const url = new URL(path, BASE_URL);
++  for (const [key, value] of Object.entries(params)) {
++    url.searchParams.set(key, value);
++  }
++
++  let res: Response;
++  try {
++    res = await fetch(url, { headers: { "x-api-co-id": apiKey() } });
++  } catch {
++    // §15.2/§23 — a courier/network failure must not take down the rest of
++    // checkout. Callers turn this into "shipping is temporarily unavailable"
++    // rather than a 500, and the customer can still choose pickup.
++    throw new ShippingProviderError("Couldn't reach the shipping rate provider.", 503);
++  }
++
++  if (!res.ok) {
++    // api.co.id's documented error shape: { message: "..." } alongside the
++    // HTTP status (400 bad params, 401 bad key, 402 insufficient balance,
++    // 429 rate limited). Surface the status so callers can distinguish "our
++    // config is wrong" (401/402 — an admin problem) from "try again" (429/503).
++    let message = `Shipping provider returned ${res.status}.`;
++    try {
++      const body = await res.json();
++      if (typeof body?.message === "string") message = body.message;
++    } catch {
++      // ignore — keep the generic message
++    }
++    throw new ShippingProviderError(message, res.status);
++  }
++
++  return res.json() as Promise<T>;
++}
++
++export interface Province {
++  code: string;
++  name: string;
++}
++export interface City {
++  code: string;
++  name: string;
++}
++export interface District {
++  code: string;
++  name: string;
++}
++
++export async function getProvinces(): Promise<Province[]> {
++  const body = await apiCoIdGet<{ data: Province[] }>("/courier/v1/locations/provinces", {});
++  return body.data;
++}
++
++export async function getCities(provinceCode: string): Promise<City[]> {
++  const body = await apiCoIdGet<{ data: City[] }>("/courier/v1/locations/cities", { province: provinceCode });
++  return body.data;
++}
++
++export async function getDistricts(cityCode: string): Promise<District[]> {
++  const body = await apiCoIdGet<{ data: District[] }>("/courier/v1/locations/districts", { city: cityCode });
++  return body.data;
++}
++
++// Assumption, flagged rather than silently baked in: no product created so
++// far (Milestone 1/2) has ever set weightGrams, and the PRD doesn't specify
++// a unit-economics default. 500g/item is a rough "small merch item" estimate
++// (a hoodie or tote bag, matching the PRD's own MOQ example products) —
++// good enough to get a real quote rather than blocking checkout entirely,
++// but worth an admin actually setting real weights per product soon.
++export const DEFAULT_ITEM_WEIGHT_GRAMS = 500;
++
++export interface WeighableItem {
++  quantity: number;
++  weightGrams: number | null;
++}
++
++/**
++ * Total package weight in whole kilograms, rounded up — api.co.id's example
++ * requests use whole-kg weights, and rounding up (never down) means the
++ * quote is never an underestimate of what the courier will actually charge.
++ */
++export function computeWeightKg(items: WeighableItem[]): number {
++  const totalGrams = items.reduce(
++    (sum, item) => sum + (item.weightGrams ?? DEFAULT_ITEM_WEIGHT_GRAMS) * item.quantity,
++    0
++  );
++  return Math.max(1, Math.ceil(totalGrams / 1000));
++}
++
++export interface JneRate {
++  serviceCode: string; // "REG" | "YES"
++  serviceName: string;
++  etd: string; // e.g. "1-3" (days)
++  price: number; // IDR, the actual chargeable amount (rates response's `total_price`)
++}
++
++export interface RateQuoteParams {
++  originDistrictCode: string;
++  destinationDistrictCode: string;
++  /** Whole kilograms — round up before calling, api.co.id bills per the value sent. */
++  weightKg: number;
++}
++
++/**
++ * Calls the paid rates endpoint (~Rp5/successful call) and returns only the
++ * JNE rows — see the MVP scope note at the top of this file. Throws
++ * ShippingProviderError if the call fails outright; returns an empty array
++ * (not an error) if JNE simply doesn't serve this route — that's a valid,
++ * displayable outcome ("no rate available for this address"), not a failure.
++ */
++export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
++  const body = await apiCoIdGet<{
++    data: {
++      rates: Array<{
++        courier_code: string;
++        service_code: string;
++        service_name: string;
++        etd: string;
++        total_price: number;
++      }>;
++    };
++  }>("/courier/v2/rates", {
++    origin_district_code: params.originDistrictCode,
++    destination_district_code: params.destinationDistrictCode,
++    weight: String(params.weightKg),
++  });
++
++  return body.data.rates
++    .filter((r) => r.courier_code === "jne")
++    .map((r) => ({
++      serviceCode: r.service_code,
++      serviceName: r.service_name,
++      etd: r.etd,
++      price: r.total_price,
++    }));
++}
+diff --git a/supabase/functions/create-order/index.ts b/supabase/functions/create-order/index.ts
+index 67bda76..33e1bd7 100644
+--- a/supabase/functions/create-order/index.ts
++++ b/supabase/functions/create-order/index.ts
+@@ -4,17 +4,30 @@
+  * Milestone 1: READY_STOCK sales mode, FULL payment, PICKUP fulfilment only.
+  * Milestone 2 adds PRE_ORDER: a client sends `batchId` to order from an open
+  * batch instead of the general ready-stock catalogue, and can choose
+- * `paymentType: "DP"` if that batch allows it (§8.2, §10.1). Fulfilment
+- * method is still always forced to PICKUP server-side, for every sales mode
+- * — shipping isn't implemented until Milestone 3, so it's rejected here
+- * regardless of what a batch's `allowedFulfilmentMethods` nominally permits
+- * (that field exists for the batch config screen; it doesn't mean shipping
+- * actually works yet).
++ * `paymentType: "DP"` if that batch allows it (§8.2, §10.1).
++ *
++ * Milestone 3 adds SHIPPING fulfilment. Ready-stock orders may choose either
++ * method freely (no batch to restrict them); pre-order fulfilment is
++ * constrained by the batch's `allowedFulfilmentMethods` (§13.1, built in
++ * Milestone 2 but unenforced until now). A shipping quote is never trusted
++ * from the client — the same server-side-recompute principle as
++ * merchandiseSubtotal, extended to shipping cost: this endpoint re-derives
++ * the weight from `product_variants.weightGrams` and re-calls
++ * getJneRates() itself with the order's actual origin/destination/weight,
++ * rather than trusting whatever price the client echoes back from an
++ * earlier /shipping-rates call (a quote could theoretically be stale, or a
++ * client could simply lie about it).
+  *
+  * Price is computed here from `product_variants.price`, never trusted from
+  * the request body (architecture.md "Security boundary"). For a DP order,
+- * the amount actually charged now is 50% of that computed subtotal (§8.2 —
+- * a single global rule, not configurable), not something the client sends.
++ * the amount actually charged now is 50% of that computed merchandise
++ * subtotal (§8.2 — a single global rule, not configurable) *plus the full
++ * shipping cost*, not something the client sends. Interpretation flagged,
++ * not explicit in the PRD: shipping is a real logistics cost known in full
++ * at checkout (unlike merchandise, it has no "wait for stock" reason to be
++ * deferred), so it's collected upfront alongside the deposit rather than
++ * split across the deposit/balance the way merchandise is. Revisit if this
++ * doesn't match how the business actually wants DP + shipping to interact.
+  *
+  * Pre-order stock availability is deliberately NOT checked here — §11.2:
+  * "pre-order commitments are tracked even before physical stock exists".
+@@ -43,8 +56,9 @@ import { z } from "zod";
+ import { db } from "../_shared/db.ts";
+ import { handleCors } from "../_shared/cors.ts";
+ import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents, centsToDecimalString } from "../_shared/http.ts";
+-import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems } from "../../../db/schema.ts";
++import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
+ import { logAudit } from "../../../lib/audit.ts";
++import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
+ 
+ // Letters (incl. common accented/Indonesian names), spaces, apostrophes,
+ // hyphens — matches how the checkout form validates client-side; this is
+@@ -87,6 +101,23 @@ const createOrderSchema = z.object({
+   // Only meaningful when batchId is set — ready-stock orders are always
+   // FULL (see below, ignored if sent for a non-batch order).
+   paymentType: z.enum(["DP", "FULL"]).default("FULL"),
++  // Milestone 3. Defaults to PICKUP (Milestone 1/2 clients that don't send
++  // this at all keep working unchanged).
++  fulfilmentMethod: z.enum(["PICKUP", "SHIPPING"]).default("PICKUP"),
++  // Required (validated below, not by zod, so the error can name what's
++  // actually missing) when fulfilmentMethod is SHIPPING. serviceCode is
++  // whichever JNE service the customer picked from a prior /shipping-rates
++  // call — re-validated against a fresh rate lookup below, not trusted.
++  shipping: z
++    .object({
++      recipientName: z.string().trim().min(1, "Recipient name is required.").regex(NAME_PATTERN, "Name can only contain letters."),
++      recipientPhone: z.string().trim().regex(PHONE_PATTERN, "Recipient phone must be 8–15 digits, numbers only."),
++      address: z.string().trim().min(1, "Delivery address is required."),
++      destinationDistrictCode: z.string().trim().min(1),
++      destinationDistrictName: z.string().trim().min(1),
++      serviceCode: z.enum(["REG", "YES"]),
++    })
++    .optional(),
+ });
+ 
+ Deno.serve(async (req) => {
+@@ -107,6 +138,10 @@ Deno.serve(async (req) => {
+     return json({ error: "Invalid JSON body." }, 400);
+   }
+ 
++  if (input.fulfilmentMethod === "SHIPPING" && !input.shipping) {
++    return json({ error: "Shipping details are required when shipping is the fulfilment method." }, 400);
++  }
++
+   // Merge duplicate variantIds into one line so quantity checks and the
+   // subtotal are computed once per variant, not once per submitted row.
+   const quantityByVariant = new Map<string, number>();
+@@ -152,6 +187,9 @@ Deno.serve(async (req) => {
+         if (!batch.allowedPaymentTypes.includes(paymentType)) {
+           throw new HttpError(400, `This batch doesn't accept ${paymentType} payment.`);
+         }
++        if (!batch.allowedFulfilmentMethods.includes(input.fulfilmentMethod)) {
++          throw new HttpError(400, `This batch doesn't offer ${input.fulfilmentMethod.toLowerCase()} as a fulfilment method.`);
++        }
+ 
+         const items = await tx.select().from(batchItems).where(eq(batchItems.batchId, batch.id));
+         const batchVariantIds = new Set(items.map((i) => i.variantId));
+@@ -185,9 +223,74 @@ Deno.serve(async (req) => {
+       });
+       const merchandiseSubtotal = centsToDecimalString(subtotalCents);
+ 
+-      // §8.2 — DP is a single global rule (50% of order total), computed
+-      // here from the server-side subtotal, never sent by the client.
+-      const paymentAmountCents = paymentType === "DP" ? Math.round(subtotalCents * 0.5) : subtotalCents;
++      // ── Milestone 3: shipping cost, re-derived server-side ──
++      // `shipmentValues` stays null for PICKUP orders; for SHIPPING it holds
++      // everything needed for the shipments insert below, computed from a
++      // fresh rate lookup rather than trusted from the request.
++      let shippingCostCents = 0;
++      let shipmentValues: typeof shipments.$inferInsert | null = null;
++
++      if (input.fulfilmentMethod === "SHIPPING") {
++        const shippingInput = input.shipping!; // presence already validated above
++
++        const [origin] = await tx.select().from(shippingSettings).limit(1);
++        if (!origin) {
++          throw new HttpError(503, "Shipping isn't configured yet — please choose pickup instead.");
++        }
++
++        const weightKg = computeWeightKg(
++          variants.map((v) => ({ quantity: quantityByVariant.get(v.id)!, weightGrams: v.weightGrams }))
++        );
++
++        let rates;
++        try {
++          rates = await getJneRates({
++            originDistrictCode: origin.originDistrictCode,
++            destinationDistrictCode: shippingInput.destinationDistrictCode,
++            weightKg,
++          });
++        } catch (err) {
++          if (err instanceof ShippingProviderError) {
++            throw new HttpError(err.status >= 500 ? 503 : 502, err.message);
++          }
++          throw err;
++        }
++
++        // The customer picked this service code from an earlier
++        // /shipping-rates call — re-matched against a *fresh* lookup here,
++        // not the price that call returned. If the rate changed or JNE no
++        // longer serves this route in the meantime, this fails loudly
++        // rather than silently charging a stale/wrong amount.
++        const matchedRate = rates.find((r) => r.serviceCode === shippingInput.serviceCode);
++        if (!matchedRate) {
++          throw new HttpError(
++            409,
++            "That shipping option is no longer available for this address. Please get a new shipping quote and try again."
++          );
++        }
++
++        shippingCostCents = Math.round(matchedRate.price * 100);
++
++        shipmentValues = {
++          orderId: "", // filled in after the order row exists, below
++          courier: "JNE",
++          service: shippingInput.serviceCode,
++          recipientName: shippingInput.recipientName,
++          recipientPhone: shippingInput.recipientPhone,
++          address: shippingInput.address,
++          destinationDistrictCode: shippingInput.destinationDistrictCode,
++          destinationDistrictName: shippingInput.destinationDistrictName,
++          weightGrams: weightKg * 1000, // the rounded-up weight actually billed, not the raw sum
++          cost: centsToDecimalString(shippingCostCents),
++        };
++      }
++
++      // §8.2 — DP is a single global rule (50% of merchandise subtotal),
++      // computed here from the server-side subtotal, never sent by the
++      // client. Shipping (if any) is always collected in full alongside
++      // whatever's due now — see the file-level doc comment for why.
++      const paymentAmountCents =
++        (paymentType === "DP" ? Math.round(subtotalCents * 0.5) : subtotalCents) + shippingCostCents;
+       const paymentAmount = centsToDecimalString(paymentAmountCents);
+ 
+       const [customer] = await tx.insert(customers).values(input.customer).returning();
+@@ -204,11 +307,15 @@ Deno.serve(async (req) => {
+             batchId: isPreOrder ? input.batchId : null,
+             status: "PAYMENT_PENDING",
+             paymentType,
+-            // Forced regardless of sales mode/batch config — shipping isn't
+-            // built yet (Milestone 3). See file-level doc comment.
+-            fulfilmentMethod: "PICKUP",
+-            orderNumber: sql`nextval('pickup_order_seq')`,
++            fulfilmentMethod: input.fulfilmentMethod,
++            // Separate sequence per fulfilment type (db/schema.ts) so order
++            // numbers read as #01xxxx (pickup) / #02xxxx (shipping).
++            orderNumber:
++              input.fulfilmentMethod === "SHIPPING"
++                ? sql`nextval('shipping_order_seq')`
++                : sql`nextval('pickup_order_seq')`,
+             merchandiseSubtotal,
++            shippingCost: shipmentValues ? shipmentValues.cost : null,
+             submissionToken: input.submissionToken,
+             accessToken,
+           })
+@@ -229,6 +336,10 @@ Deno.serve(async (req) => {
+         }))
+       );
+ 
++      if (shipmentValues) {
++        await tx.insert(shipments).values({ ...shipmentValues, orderId: insertedOrder.id });
++      }
++
+       await tx.insert(payments).values({
+         orderId: insertedOrder.id,
+         amount: paymentAmount,
+@@ -241,7 +352,13 @@ Deno.serve(async (req) => {
+         entityType: "order",
+         entityId: insertedOrder.id,
+         action: "customer created order",
+-        after: { status: insertedOrder.status, merchandiseSubtotal, paymentType, batchId: insertedOrder.batchId },
++        after: {
++          status: insertedOrder.status,
++          merchandiseSubtotal,
++          shippingCost: insertedOrder.shippingCost,
++          paymentType,
++          batchId: insertedOrder.batchId,
++        },
+       });
+ 
+       return insertedOrder;
+@@ -253,6 +370,7 @@ Deno.serve(async (req) => {
+         orderNumber: order.orderNumber,
+         accessToken: order.accessToken,
+         merchandiseSubtotal: order.merchandiseSubtotal,
++        shippingCost: order.shippingCost,
+         status: order.status,
+       },
+       201
+diff --git a/supabase/functions/list-orders/index.ts b/supabase/functions/list-orders/index.ts
+index e949d75..36458af 100644
+--- a/supabase/functions/list-orders/index.ts
++++ b/supabase/functions/list-orders/index.ts
+@@ -21,7 +21,7 @@ import { db } from "../_shared/db.ts";
+ import { handleCors } from "../_shared/cors.ts";
+ import { json, errorResponse } from "../_shared/http.ts";
+ import { getSignedProofUrl } from "../_shared/storage.ts";
+-import { orders, customers, payments } from "../../../db/schema.ts";
++import { orders, customers, payments, shipments } from "../../../db/schema.ts";
+ 
+ Deno.serve(async (req) => {
+   const preflight = handleCors(req);
+@@ -52,6 +52,13 @@ Deno.serve(async (req) => {
+       .limit(100);
+ 
+     const orderIds = rows.map((r) => r.id);
++
++    // Milestone 3 — only SHIPPING orders have a row here, so this is a
++    // straightforward map-by-orderId, same shape as pendingByOrder below.
++    const shipmentRows =
++      orderIds.length > 0 ? await db.select().from(shipments).where(inArray(shipments.orderId, orderIds)) : [];
++    const shipmentByOrder = new Map(shipmentRows.map((s) => [s.orderId, s]));
++
+     const pendingPayments =
+       orderIds.length > 0
+         ? await db
+@@ -76,11 +83,13 @@ Deno.serve(async (req) => {
+ 
+     const result = await Promise.all(
+       rows.map(async (row) => {
++        const shipment = shipmentByOrder.get(row.id) ?? null;
++
+         const pending = pendingByOrder.get(row.id);
+-        if (!pending) return { ...row, pendingPayment: null };
++        if (!pending) return { ...row, pendingPayment: null, shipment };
+ 
+         const proofUrl = await getSignedProofUrl(pending.proofFileUrl);
+-        return { ...row, pendingPayment: { ...pending, proofUrl } };
++        return { ...row, pendingPayment: { ...pending, proofUrl }, shipment };
+       })
+     );
+ 
+diff --git a/supabase/functions/record-tracking/index.ts b/supabase/functions/record-tracking/index.ts
+new file mode 100644
+index 0000000..49dc5b5
+--- /dev/null
++++ b/supabase/functions/record-tracking/index.ts
+@@ -0,0 +1,136 @@
++/**
++ * POST /record-tracking — admin records a courier tracking number for a
++ * packed shipping order, transitioning READY_TO_SHIP → SHIPPED (§15.3).
++ *
++ * Optionally corrects the shipment's cost first (§26 "Shipping cost can be
++ * manually corrected, but the override must be audited") — a reason is
++ * required whenever a cost override is sent, matching how
++ * payment-rejection-form.tsx enforces §8.3's "rejection reason required"
++ * rule for the same kind of "admin overrides something, must say why" shape.
++ *
++ * Labeling/printing the shipping sticker (§15.4) is intentionally NOT part
++ * of this endpoint or this milestone's scope yet — flagged as a deliberate
++ * gap, not an oversight (see architecture.md).
++ *
++ * ⚠️ Same auth caveat as verify-payment/prepare-pickup/scan-pickup — no real
++ * admin auth until Milestone 4. Do not expose this function's URL outside
++ * trusted testing.
++ */
++
++import { eq } from "drizzle-orm";
++import { z } from "zod";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { HttpError, json, errorResponse, centsToDecimalString } from "../_shared/http.ts";
++import { orders, shipments } from "../../../db/schema.ts";
++import { transitionOrder } from "../../../lib/orders.ts";
++import { logAudit } from "../../../lib/audit.ts";
++
++// Milestone 4 replaces this with the authenticated admin's ID.
++const HARDCODED_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
++
++const recordTrackingSchema = z
++  .object({
++    orderId: z.string().uuid(),
++    trackingNumber: z.string().trim().min(1, "Tracking number is required."),
++    costOverride: z.number().positive().optional(),
++    costOverrideReason: z.string().trim().min(1).optional(),
++  })
++  .superRefine((val, ctx) => {
++    if (val.costOverride !== undefined && !val.costOverrideReason) {
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        path: ["costOverrideReason"],
++        message: "A reason is required when overriding the shipping cost (§26).",
++      });
++    }
++  });
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  let input: z.infer<typeof recordTrackingSchema>;
++  try {
++    input = recordTrackingSchema.parse(await req.json());
++  } catch (err) {
++    if (err instanceof z.ZodError) {
++      return json({ error: "Invalid request.", details: err.issues }, 400);
++    }
++    return json({ error: "Invalid JSON body." }, 400);
++  }
++
++  try {
++    const result = await db.transaction(async (tx) => {
++      const [order] = await tx.select().from(orders).where(eq(orders.id, input.orderId));
++      if (!order) {
++        throw new HttpError(404, "Order not found.");
++      }
++      if (order.fulfilmentMethod !== "SHIPPING") {
++        throw new HttpError(409, "This order isn't a shipping order.");
++      }
++
++      const [shipment] = await tx.select().from(shipments).where(eq(shipments.orderId, input.orderId));
++      if (!shipment) {
++        throw new HttpError(404, "No shipment record found for this order.");
++      }
++
++      if (input.costOverride !== undefined) {
++        const newCost = centsToDecimalString(Math.round(input.costOverride * 100));
++
++        await tx
++          .update(shipments)
++          .set({ cost: newCost, costOverrideReason: input.costOverrideReason })
++          .where(eq(shipments.id, shipment.id));
++
++        // orders.shippingCost is kept in sync with shipments.cost — the
++        // customer's order page reads the former directly (no join) for its
++        // total, so an override here must update both or the two would
++        // silently disagree.
++        await tx.update(orders).set({ shippingCost: newCost }).where(eq(orders.id, order.id));
++
++        await logAudit(tx, {
++          actorId: HARDCODED_ADMIN_ID,
++          entityType: "shipment",
++          entityId: shipment.id,
++          action: "shipping cost changed",
++          before: { cost: shipment.cost },
++          after: { cost: newCost, reason: input.costOverrideReason },
++        });
++      }
++
++      await tx
++        .update(shipments)
++        .set({ trackingNumber: input.trackingNumber })
++        .where(eq(shipments.id, shipment.id));
++
++      await logAudit(tx, {
++        actorId: HARDCODED_ADMIN_ID,
++        entityType: "shipment",
++        entityId: shipment.id,
++        action: "tracking added",
++        after: { trackingNumber: input.trackingNumber },
++      });
++
++      // Only valid from READY_TO_SHIP (lib/order-state-machine.ts) — a
++      // PICKUP order or one not yet packed is rejected here with a 409,
++      // not by a redundant manual status check.
++      const { to } = await transitionOrder(tx, {
++        orderId: order.id,
++        event: "TRACKING_RECORDED",
++        actorId: HARDCODED_ADMIN_ID,
++        stockAvailable: true, // unused by this transition
++      });
++
++      return { status: to };
++    });
++
++    return json({ orderId: input.orderId, ...result });
++  } catch (err) {
++    return errorResponse(err, "Unexpected error recording tracking.");
++  }
++});
+diff --git a/supabase/functions/shipping-locations/index.ts b/supabase/functions/shipping-locations/index.ts
+new file mode 100644
+index 0000000..1f246dd
+--- /dev/null
++++ b/supabase/functions/shipping-locations/index.ts
+@@ -0,0 +1,63 @@
++/**
++ * POST /shipping-locations — province/city/district lookups for the
++ * shipping address form (§15.2 needs a district code, not a free-text
++ * address, as input to a rate lookup).
++ *
++ * These three api.co.id endpoints are free (no per-call charge, per their
++ * pricing page) — but the API key still can't go in the browser bundle, so
++ * this is a thin proxy purely to keep SHIPPING_API_KEY server-side. No DB
++ * access at all, unlike every other function in this project — there's
++ * nothing here that's a business-rule computation, just a secret-holding
++ * relay (architecture.md's Edge-Function rule of thumb is about bypassing
++ * RLS / trusting business data, not about proxying a third-party API key,
++ * but the API key still can't be exposed either way).
++ *
++ * { level: "provinces" }
++ * { level: "cities", provinceCode }
++ * { level: "districts", cityCode }
++ */
++
++import { z } from "zod";
++import { handleCors } from "../_shared/cors.ts";
++import { json, errorResponse, HttpError } from "../_shared/http.ts";
++import { getProvinces, getCities, getDistricts, ShippingProviderError } from "../_shared/shipping.ts";
++
++const locationsSchema = z.union([
++  z.object({ level: z.literal("provinces") }),
++  z.object({ level: z.literal("cities"), provinceCode: z.string().min(1) }),
++  z.object({ level: z.literal("districts"), cityCode: z.string().min(1) }),
++]);
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  let input: z.infer<typeof locationsSchema>;
++  try {
++    input = locationsSchema.parse(await req.json());
++  } catch (err) {
++    if (err instanceof z.ZodError) {
++      return json({ error: "Invalid request.", details: err.issues }, 400);
++    }
++    return json({ error: "Invalid JSON body." }, 400);
++  }
++
++  try {
++    if (input.level === "provinces") {
++      return json({ items: await getProvinces() });
++    }
++    if (input.level === "cities") {
++      return json({ items: await getCities(input.provinceCode) });
++    }
++    return json({ items: await getDistricts(input.cityCode) });
++  } catch (err) {
++    if (err instanceof ShippingProviderError) {
++      return errorResponse(new HttpError(err.status >= 500 ? 503 : 502, err.message), "");
++    }
++    return errorResponse(err, "Unexpected error looking up shipping locations.");
++  }
++});
+diff --git a/supabase/functions/shipping-rates/index.ts b/supabase/functions/shipping-rates/index.ts
+new file mode 100644
+index 0000000..b98474c
+--- /dev/null
++++ b/supabase/functions/shipping-rates/index.ts
+@@ -0,0 +1,89 @@
++/**
++ * POST /shipping-rates — live JNE rate quote for the checkout shipping form
++ * (§15.2, §15.3 "Shipping option/rate calculated").
++ *
++ * Weight is computed here from product_variants.weightGrams, never trusted
++ * from the client — same "never trust a price from the browser" principle
++ * architecture.md states for merchandiseSubtotal, extended to weight since
++ * weight is what actually drives the price here. This is a quote only: it
++ * does not write anything. create-order re-calls getJneRates() itself with
++ * the same inputs when the order is actually placed, rather than trusting
++ * whatever rate this endpoint returned a few seconds/minutes earlier — see
++ * that file's doc comment.
++ *
++ * Deliberately manual (a "Get shipping rate" button in the UI), not
++ * recalculated on every keystroke — api.co.id charges ~Rp5/successful call,
++ * and there's a free-tier request budget too, so this is only called once
++ * the customer has actually picked a destination district and is ready to
++ * see a price.
++ */
++
++import { inArray } from "drizzle-orm";
++import { z } from "zod";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { HttpError, json, errorResponse } from "../_shared/http.ts";
++import { productVariants, shippingSettings } from "../../../db/schema.ts";
++import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
++
++const rateRequestSchema = z.object({
++  destinationDistrictCode: z.string().trim().min(1, "Destination district is required."),
++  items: z
++    .array(
++      z.object({
++        variantId: z.string().uuid(),
++        quantity: z.number().int().positive(),
++      })
++    )
++    .min(1, "At least one item is required."),
++});
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  let input: z.infer<typeof rateRequestSchema>;
++  try {
++    input = rateRequestSchema.parse(await req.json());
++  } catch (err) {
++    if (err instanceof z.ZodError) {
++      return json({ error: "Invalid request.", details: err.issues }, 400);
++    }
++    return json({ error: "Invalid JSON body." }, 400);
++  }
++
++  try {
++    const [origin] = await db.select().from(shippingSettings).limit(1);
++    if (!origin) {
++      throw new HttpError(503, "Shipping isn't configured yet — please contact us or choose pickup instead.");
++    }
++
++    const variantIds = [...new Set(input.items.map((i) => i.variantId))];
++    const variants = await db.select().from(productVariants).where(inArray(productVariants.id, variantIds));
++    if (variants.length !== variantIds.length) {
++      throw new HttpError(400, "One or more items reference a product variant that doesn't exist.");
++    }
++    const weightByVariant = new Map(variants.map((v) => [v.id, v.weightGrams]));
++
++    const weightKg = computeWeightKg(
++      input.items.map((item) => ({ quantity: item.quantity, weightGrams: weightByVariant.get(item.variantId) ?? null }))
++    );
++
++    const rates = await getJneRates({
++      originDistrictCode: origin.originDistrictCode,
++      destinationDistrictCode: input.destinationDistrictCode,
++      weightKg,
++    });
++
++    return json({ rates, weightKg, originDistrictName: origin.originDistrictName });
++  } catch (err) {
++    if (err instanceof ShippingProviderError) {
++      return errorResponse(new HttpError(err.status >= 500 ? 503 : 502, err.message), "");
++    }
++    return errorResponse(err, "Unexpected error getting shipping rates.");
++  }
++});

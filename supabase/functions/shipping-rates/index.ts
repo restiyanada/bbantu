@@ -1,0 +1,89 @@
+/**
+ * POST /shipping-rates — live JNE rate quote for the checkout shipping form
+ * (§15.2, §15.3 "Shipping option/rate calculated").
+ *
+ * Weight is computed here from product_variants.weightGrams, never trusted
+ * from the client — same "never trust a price from the browser" principle
+ * architecture.md states for merchandiseSubtotal, extended to weight since
+ * weight is what actually drives the price here. This is a quote only: it
+ * does not write anything. create-order re-calls getJneRates() itself with
+ * the same inputs when the order is actually placed, rather than trusting
+ * whatever rate this endpoint returned a few seconds/minutes earlier — see
+ * that file's doc comment.
+ *
+ * Deliberately manual (a "Get shipping rate" button in the UI), not
+ * recalculated on every keystroke — api.co.id charges ~Rp5/successful call,
+ * and there's a free-tier request budget too, so this is only called once
+ * the customer has actually picked a destination district and is ready to
+ * see a price.
+ */
+
+import { inArray } from "drizzle-orm";
+import { z } from "zod";
+import { db } from "../_shared/db.ts";
+import { handleCors } from "../_shared/cors.ts";
+import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { productVariants, shippingSettings } from "../../../db/schema.ts";
+import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
+
+const rateRequestSchema = z.object({
+  destinationDistrictCode: z.string().trim().min(1, "Destination district is required."),
+  items: z
+    .array(
+      z.object({
+        variantId: z.string().uuid(),
+        quantity: z.number().int().positive(),
+      })
+    )
+    .min(1, "At least one item is required."),
+});
+
+Deno.serve(async (req) => {
+  const preflight = handleCors(req);
+  if (preflight) return preflight;
+
+  if (req.method !== "POST") {
+    return json({ error: "Method not allowed." }, 405);
+  }
+
+  let input: z.infer<typeof rateRequestSchema>;
+  try {
+    input = rateRequestSchema.parse(await req.json());
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return json({ error: "Invalid request.", details: err.issues }, 400);
+    }
+    return json({ error: "Invalid JSON body." }, 400);
+  }
+
+  try {
+    const [origin] = await db.select().from(shippingSettings).limit(1);
+    if (!origin) {
+      throw new HttpError(503, "Shipping isn't configured yet — please contact us or choose pickup instead.");
+    }
+
+    const variantIds = [...new Set(input.items.map((i) => i.variantId))];
+    const variants = await db.select().from(productVariants).where(inArray(productVariants.id, variantIds));
+    if (variants.length !== variantIds.length) {
+      throw new HttpError(400, "One or more items reference a product variant that doesn't exist.");
+    }
+    const weightByVariant = new Map(variants.map((v) => [v.id, v.weightGrams]));
+
+    const weightKg = computeWeightKg(
+      input.items.map((item) => ({ quantity: item.quantity, weightGrams: weightByVariant.get(item.variantId) ?? null }))
+    );
+
+    const rates = await getJneRates({
+      originDistrictCode: origin.originDistrictCode,
+      destinationDistrictCode: input.destinationDistrictCode,
+      weightKg,
+    });
+
+    return json({ rates, weightKg, originDistrictName: origin.originDistrictName });
+  } catch (err) {
+    if (err instanceof ShippingProviderError) {
+      return errorResponse(new HttpError(err.status >= 500 ? 503 : 502, err.message), "");
+    }
+    return errorResponse(err, "Unexpected error getting shipping rates.");
+  }
+});
