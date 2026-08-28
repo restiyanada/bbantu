@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label, RequiredMark, OptionalMark } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import AdminLayout from "@/components/AdminLayout";
 
 const IMAGE_BUCKET = "product-images";
@@ -339,7 +340,21 @@ export default function AdminProductsPage() {
             </Button>
           </div>
         )}
-        {products === null && !loadError && <p className="text-muted-foreground text-sm">Loading products…</p>}
+        {products === null && !loadError && (
+          <Card>
+            <CardContent className="space-y-4">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex gap-3">
+                  <Skeleton className="h-16 w-16 rounded-lg shrink-0" />
+                  <div className="flex-1 space-y-2 pt-1">
+                    <Skeleton className="h-4 w-1/3" />
+                    <Skeleton className="h-3 w-1/4" />
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {products !== null && (
           <Card>

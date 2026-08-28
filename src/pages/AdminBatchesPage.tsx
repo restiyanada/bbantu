@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import AdminLayout from "@/components/AdminLayout";
 
 const BATCH_STATUSES = [
@@ -415,7 +416,21 @@ export default function AdminBatchesPage() {
       {receiptError && <p className="text-destructive text-sm">{receiptError}</p>}
       {receiptMessage && <p className="text-green-700 text-sm">{receiptMessage}</p>}
 
-      {batches === null && !loadError && <p className="text-muted-foreground text-sm">Loading batches…</p>}
+      {batches === null && !loadError && (
+        <div className="space-y-6">
+          {[0, 1].map((i) => (
+            <Card key={i}>
+              <CardHeader>
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-3 w-56 mt-1" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-14 w-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {batches?.map((batch) => (
         <Card key={batch.id}>

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { TrackingForm } from "@/components/tracking-form";
 import { DataTable, type DataTableFilter } from "@/components/data-table";
+import { Skeleton } from "@/components/ui/skeleton";
 import AdminLayout from "@/components/AdminLayout";
 import { ShippingLabel, type ShippingLabelSender } from "@/components/shipping-label";
 
@@ -302,13 +303,21 @@ export default function AdminDashboardPage() {
           </p>
         </div>
 
-        {orders !== null && (
+        {orders !== null ? (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatTile label="Total orders" value={stats.total} />
             <StatTile label="Needs payment review" value={stats.needsReview} tone={stats.needsReview > 0 ? "warning" : undefined} />
             <StatTile label="Ready to fulfil" value={stats.readyToFulfil} tone="info" />
             <StatTile label="Completed" value={stats.completed} tone="success" />
           </div>
+        ) : (
+          !loadError && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-[70px] rounded-2xl" />
+              ))}
+            </div>
+          )
         )}
 
         {loadError && (
@@ -322,7 +331,15 @@ export default function AdminDashboardPage() {
         )}
         {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 
-        {orders === null && !loadError && <p className="text-muted-foreground text-sm">Loading orders…</p>}
+        {orders === null && !loadError && (
+          <Card>
+            <CardContent className="pt-6 space-y-3">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {orders !== null && (
           <Card>

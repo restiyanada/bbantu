@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 import { Input, Textarea, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 interface VariantRow {
@@ -565,7 +566,20 @@ export default function HomePage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 {loadError && <p className="text-destructive text-sm">{loadError}</p>}
-                {!loadError && products === null && <p className="text-muted-foreground text-sm">Loading items…</p>}
+                {!loadError && products === null && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[0, 1].map((i) => (
+                      <div key={i} className="rounded-lg border bg-card overflow-hidden">
+                        <Skeleton className="aspect-[4/3] rounded-none" />
+                        <div className="p-3 space-y-2">
+                          <Skeleton className="h-4 w-2/3" />
+                          <Skeleton className="h-3 w-1/2" />
+                          <Skeleton className="h-7 w-full mt-2" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {activeSource === "READY_STOCK" && products !== null && products.length === 0 && (
                   <p className="text-muted-foreground text-sm">Nothing available to order right now.</p>
                 )}
