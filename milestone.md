@@ -319,7 +319,7 @@ Not built/verified in this pass:
   (existing orders have `access_token` from before hashing too — those
   need a real backfill plan, not just new orders working correctly).
 
-Milestone 6 — Remaining edge cases — DONE (live verification pending)
+Milestone 6 — Remaining edge cases — DONE (deployed; fulfilledAt backfill + end-to-end smoke tests still pending)
 
 30. Order access recovery via phone+email (§16, §27) — Edge Function, since
     matching phone+email isn't a simple RLS row match.
@@ -395,19 +395,30 @@ Milestone 6 — Remaining edge cases — DONE (live verification pending)
     message instead, matching RequireAdmin's own "not authorized" shape.
 
 Not built/verified in this pass:
-- Live end-to-end verification against the real Supabase project — same
-  gap as every milestone before it. Needs: `db:push` (or run migrations
-  0005/0006 by hand), the one-time pg_cron schedule step for
-  cleanup-payment-proofs (mirrors what Milestone 5 already set up for
-  send-queued-emails — same Vault secret, no new one needed), deploy
-  `recover-order-access`, `cleanup-payment-proofs`, and `list-audit-logs`.
 - `orders.fulfilledAt` is only stamped going forward from this migration —
   orders that already reached SHIPPED/PICKED_UP before this deploys will
   have `fulfilledAt = NULL` and never become eligible for proof cleanup
-  under the current logic. A one-time backfill (best guess: use each
-  order's last relevant `audit_logs` row, or the shipment/pickup_token's
-  own timestamp) is a real decision for whoever verifies this live, not
-  something to guess at here.
-- Web Push (Milestone 5, item 28) — still not built, noted again here so
-  it doesn't quietly fall off the list.
+  under the current logic. Resolved: a one-time backfill query derives it
+  from each order's own `audit_logs` row (`transitionOrder` already writes
+  one for every status change, with the exact timestamp) rather than
+  guessing from a side table. **Status: written, not yet run** — still an
+  open step as of this note.
+- Web Push (Milestone 5, item 28) — deliberately deferred, not forgotten:
+  decided during Milestone 6 handoff to skip it for now and keep it as an
+  explicit open item rather than build it alongside these three unrelated
+  edge cases. Still fully unbuilt — no `push_subscriptions` table, no VAPID
+  keys, no subscribe prompt on the order page, no send step wired into the
+  events the email queue already triggers on (§17a.2: payment rejected,
+  balance due, ready for fulfilment — not order confirmed, email-only for
+  that one). Whoever picks this up next should treat it as its own
+  self-contained milestone, not a Milestone 6 addendum.
+
+Deployed (as of this note): `db:push` run, all three new functions
+(`recover-order-access`, `cleanup-payment-proofs`, `list-audit-logs`)
+deployed, `cleanup-payment-proofs`'s pg_cron schedule confirmed live
+(job id 2, daily 03:00). Not yet smoke-tested end-to-end against real
+data — the three checks noted when this was handed off (a real
+phone+order-number lookup, an admin loading `/admin/audit-log`, and one
+manual `cleanup-payment-proofs` invoke) haven't been confirmed done.
+
 
