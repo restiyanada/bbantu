@@ -1,0 +1,3320 @@
+From 393b761bedc95ffe9444a8cec3f44a5424d740b5 Mon Sep 17 00:00:00 2001
+From: Resti <15180778+restiyanada@users.noreply.github.com>
+Date: Fri, 28 Aug 2026 05:48:18 +0000
+Subject: [PATCH] Milestone 6: order access recovery, payment proof retention,
+ audit log viewer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- recover-order-access (§16.2): deviates from the PRD's phone+email pair —
+  recovers by phone + order number instead, since the order number is
+  already sent through every other channel (order page, all 4 emails), so
+  matching it exactly is a lower bar than remembering which email was
+  typed at checkout. Trade-off flagged, not hidden: order number is
+  sequential per fulfilment type, not a real identity signal the way email
+  is — rate limiting is the actual defense here, not the choice of fields.
+  Reuses Milestone 5's accessTokenEncrypted decrypt path. Rate limited
+  (§16.1/§27's 10 req/min/IP, flagged as an open gap since Milestone 1,
+  never built until now) via new access_recovery_attempts table +
+  lib/rate-limit.ts. lib/order-number.ts gained parseOrderNumber, the
+  inverse of the existing formatOrderNumber. Frontend: /orders/find,
+  linked from HomePage.
+- cleanup-payment-proofs (§8/§19): 30 days after order fulfilment
+  (SHIPPED/PICKED_UP), not upload time. New orders.fulfilledAt (stamped by
+  scan-pickup/record-tracking) and payments.proofDeletedAt (idempotency)
+  columns. Pure eligibility logic in lib/proof-retention.ts. Scheduled
+  daily via pg_cron (0006 migration).
+- list-audit-logs + AdminAuditLogPage (§20): not a direct RLS read as
+  milestone.md originally planned — admin_users (needed for actor names)
+  is deliberately not directly readable by anyone, so this follows
+  list-orders' existing service-role-Edge-Function precedent instead.
+  Closed a real pre-existing gap while here: audit_logs had no RLS at all.
+
+71/71 tests pass (23 new), typecheck clean (tsc -b + deno check on every
+touched/new Edge Function), oxlint clean, production build succeeds.
+
+Not done: Web Push (Milestone 5 item 28, still open), live verification
+against the real Supabase project, and a backfill plan for fulfilledAt on
+orders that reached SHIPPED/PICKED_UP before this migration — see
+milestone.md for details on all three.
+---
+ .../0005_milestone6_recovery_and_audit.sql    |   15 +
+ .../0006_milestone6_cleanup_schedule.sql      |   34 +
+ db/migrations/meta/0004_snapshot.json         | 1621 +++++++++++++++++
+ db/migrations/meta/_journal.json              |    7 +
+ db/schema.ts                                  |   42 +-
+ lib/order-number.test.ts                      |   59 +
+ lib/order-number.ts                           |   24 +
+ lib/orders.test.ts                            |    1 +
+ lib/proof-retention.test.ts                   |   47 +
+ lib/proof-retention.ts                        |   46 +
+ lib/rate-limit.test.ts                        |   34 +
+ lib/rate-limit.ts                             |   28 +
+ milestone.md                                  |  413 +++++
+ src/App.tsx                                   |   11 +
+ src/pages/AdminAuditLogPage.tsx               |  113 ++
+ src/pages/AdminDashboardPage.tsx              |    3 +
+ src/pages/FindOrderPage.tsx                   |  137 ++
+ src/pages/HomePage.tsx                        |    7 +-
+ supabase/config.toml                          |   14 +
+ supabase/functions/_shared/http.ts            |   15 +
+ supabase/functions/_shared/storage.ts         |   12 +
+ .../functions/cleanup-payment-proofs/index.ts |   78 +
+ supabase/functions/list-audit-logs/index.ts   |   59 +
+ supabase/functions/record-tracking/index.ts   |    5 +
+ .../functions/recover-order-access/index.ts   |  140 ++
+ supabase/functions/scan-pickup/index.ts       |    4 +
+ 26 files changed, 2967 insertions(+), 2 deletions(-)
+ create mode 100644 db/migrations/0005_milestone6_recovery_and_audit.sql
+ create mode 100644 db/migrations/0006_milestone6_cleanup_schedule.sql
+ create mode 100644 db/migrations/meta/0004_snapshot.json
+ create mode 100644 lib/order-number.test.ts
+ create mode 100644 lib/proof-retention.test.ts
+ create mode 100644 lib/proof-retention.ts
+ create mode 100644 lib/rate-limit.test.ts
+ create mode 100644 lib/rate-limit.ts
+ create mode 100644 milestone.md
+ create mode 100644 src/pages/AdminAuditLogPage.tsx
+ create mode 100644 src/pages/FindOrderPage.tsx
+ create mode 100644 supabase/functions/cleanup-payment-proofs/index.ts
+ create mode 100644 supabase/functions/list-audit-logs/index.ts
+ create mode 100644 supabase/functions/recover-order-access/index.ts
+
+diff --git a/db/migrations/0005_milestone6_recovery_and_audit.sql b/db/migrations/0005_milestone6_recovery_and_audit.sql
+new file mode 100644
+index 0000000..dc8be3d
+--- /dev/null
++++ b/db/migrations/0005_milestone6_recovery_and_audit.sql
+@@ -0,0 +1,15 @@
++-- Milestone 6: numbered 0005 (not 0004) even though the journal's previous
++-- entry is 0003 — 0004_milestone5_email_worker_schedule.sql already exists
++-- on disk as a hand-written, non-journal-tracked file (pg_cron setup, no
++-- schema.ts changes for drizzle-kit to have generated it from). Skipping to
++-- 0005 avoids two unrelated files both prefixed "0004_".
++CREATE TABLE "access_recovery_attempts" (
++	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
++	"ip_address" text NOT NULL,
++	"created_at" timestamp DEFAULT now() NOT NULL
++);
++--> statement-breakpoint
++ALTER TABLE "access_recovery_attempts" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
++ALTER TABLE "audit_logs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
++ALTER TABLE "orders" ADD COLUMN "fulfilled_at" timestamp;--> statement-breakpoint
++ALTER TABLE "payments" ADD COLUMN "proof_deleted_at" timestamp;
+\ No newline at end of file
+diff --git a/db/migrations/0006_milestone6_cleanup_schedule.sql b/db/migrations/0006_milestone6_cleanup_schedule.sql
+new file mode 100644
+index 0000000..6618646
+--- /dev/null
++++ b/db/migrations/0006_milestone6_cleanup_schedule.sql
+@@ -0,0 +1,34 @@
++-- Milestone 6 (§8/§19) — schedules
++-- supabase/functions/cleanup-payment-proofs to run automatically once a
++-- day via pg_cron + pg_net. Same pattern as
++-- 0004_milestone5_email_worker_schedule.sql for send-queued-emails —
++-- hand-written, not drizzle-generated (no schema.ts change here), and
++-- deliberately not added to meta/_journal.json for the same reason 0004
++-- wasn't: `db:push` diffs schema.ts directly and never replays this file,
++-- so it's documentation of a one-time manual step, run once by hand in the
++-- SQL editor after the pg_cron/pg_net extensions and the
++-- edge_function_service_role_key Vault secret already exist (both already
++-- set up for the email worker — nothing new to create here).
++--
++-- Daily, not every 5 minutes like the email worker: this job has no
++-- user-facing latency requirement (a proof sitting an extra few hours past
++-- its 30-day mark is not a problem the way a delayed BALANCE_DUE email
++-- would be), so a lighter schedule is enough.
++--
++-- Safe to re-run: cron.schedule() updates the existing job by name rather
++-- than erroring on a duplicate.
++
++select cron.schedule(
++  'cleanup-payment-proofs',
++  '0 3 * * *',
++  $$
++  select net.http_post(
++    url := 'https://lhvxjgbjjamwatsmxiyc.supabase.co/functions/v1/cleanup-payment-proofs',
++    headers := jsonb_build_object(
++      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'edge_function_service_role_key'),
++      'Content-Type', 'application/json'
++    ),
++    body := '{}'::jsonb
++  ) as request_id;
++  $$
++);
+diff --git a/db/migrations/meta/0004_snapshot.json b/db/migrations/meta/0004_snapshot.json
+new file mode 100644
+index 0000000..cad4b25
+--- /dev/null
++++ b/db/migrations/meta/0004_snapshot.json
+@@ -0,0 +1,1621 @@
++{
++  "id": "e410b99d-585c-49c9-bf5c-37cb108dd72f",
++  "prevId": "4ebafc67-ade7-44a9-bfc9-8b07df22e0b6",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.access_recovery_attempts": {
++      "name": "access_recovery_attempts",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "ip_address": {
++          "name": "ip_address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.admin_users": {
++      "name": "admin_users",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "email": {
++          "name": "email",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "can_verify_payments": {
++          "name": "can_verify_payments",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_scan_confirm_pickup": {
++          "name": "can_scan_confirm_pickup",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_manage_products_batches": {
++          "name": "can_manage_products_batches",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_adjust_inventory": {
++          "name": "can_adjust_inventory",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_manage_shipping": {
++          "name": "can_manage_shipping",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_view_audit_log": {
++          "name": "can_view_audit_log",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "admin_users_email_unique": {
++          "name": "admin_users_email_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "email"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.audit_logs": {
++      "name": "audit_logs",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "actor_id": {
++          "name": "actor_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "entity_type": {
++          "name": "entity_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "entity_id": {
++          "name": "entity_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "action": {
++          "name": "action",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "before_value": {
++          "name": "before_value",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "after_value": {
++          "name": "after_value",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "audit_logs_actor_id_admin_users_id_fk": {
++          "name": "audit_logs_actor_id_admin_users_id_fk",
++          "tableFrom": "audit_logs",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "actor_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.batch_items": {
++      "name": "batch_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "batch_id": {
++          "name": "batch_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "moq": {
++          "name": "moq",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "procured_quantity": {
++          "name": "procured_quantity",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "batch_items_batch_id_batches_id_fk": {
++          "name": "batch_items_batch_id_batches_id_fk",
++          "tableFrom": "batch_items",
++          "tableTo": "batches",
++          "columnsFrom": [
++            "batch_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "batch_items_variant_id_product_variants_id_fk": {
++          "name": "batch_items_variant_id_product_variants_id_fk",
++          "tableFrom": "batch_items",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_batch_items": {
++          "name": "anyone_can_read_batch_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_batch_items": {
++          "name": "staff_can_manage_batch_items",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.batches": {
++      "name": "batches",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "open_at": {
++          "name": "open_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "close_at": {
++          "name": "close_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "batch_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'DRAFT'"
++        },
++        "allowed_payment_types": {
++          "name": "allowed_payment_types",
++          "type": "payment_type[]",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "allowed_fulfilment_methods": {
++          "name": "allowed_fulfilment_methods",
++          "type": "fulfilment_method[]",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_batches": {
++          "name": "anyone_can_read_batches",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_batches": {
++          "name": "staff_can_manage_batches",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.customers": {
++      "name": "customers",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "phone": {
++          "name": "phone",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "email": {
++          "name": "email",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.emails": {
++      "name": "emails",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "to_address": {
++          "name": "to_address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "template": {
++          "name": "template",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "priority": {
++          "name": "priority",
++          "type": "email_priority",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "email_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'QUEUED'"
++        },
++        "queued_at": {
++          "name": "queued_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "sent_at": {
++          "name": "sent_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "emails_order_id_orders_id_fk": {
++          "name": "emails_order_id_orders_id_fk",
++          "tableFrom": "emails",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.inventory": {
++      "name": "inventory",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "on_hand": {
++          "name": "on_hand",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "reserved": {
++          "name": "reserved",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "inventory_variant_id_product_variants_id_fk": {
++          "name": "inventory_variant_id_product_variants_id_fk",
++          "tableFrom": "inventory",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "inventory_variant_id_unique": {
++          "name": "inventory_variant_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "variant_id"
++          ]
++        }
++      },
++      "policies": {
++        "staff_can_read_inventory": {
++          "name": "staff_can_read_inventory",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        },
++        "staff_can_create_inventory_rows": {
++          "name": "staff_can_create_inventory_rows",
++          "as": "PERMISSIVE",
++          "for": "INSERT",
++          "to": [
++            "authenticated"
++          ],
++          "withCheck": "exists (\n        select 1 from \"admin_users\"\n        where \"admin_users\".\"email\" = (auth.jwt() ->> 'email')\n          and (\"admin_users\".\"can_manage_products_batches\" = true or \"admin_users\".\"can_adjust_inventory\" = true)\n      )"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.inventory_transactions": {
++      "name": "inventory_transactions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity_delta": {
++          "name": "quantity_delta",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reason": {
++          "name": "reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_by": {
++          "name": "created_by",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "inventory_transactions_variant_id_product_variants_id_fk": {
++          "name": "inventory_transactions_variant_id_product_variants_id_fk",
++          "tableFrom": "inventory_transactions",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "inventory_transactions_created_by_admin_users_id_fk": {
++          "name": "inventory_transactions_created_by_admin_users_id_fk",
++          "tableFrom": "inventory_transactions",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "created_by"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.order_items": {
++      "name": "order_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity": {
++          "name": "quantity",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "unit_price": {
++          "name": "unit_price",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "order_items_order_id_orders_id_fk": {
++          "name": "order_items_order_id_orders_id_fk",
++          "tableFrom": "order_items",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "order_items_variant_id_product_variants_id_fk": {
++          "name": "order_items_variant_id_product_variants_id_fk",
++          "tableFrom": "order_items",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "guest_can_read_own_order_items": {
++          "name": "guest_can_read_own_order_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"order_items\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        },
++        "staff_can_read_all_order_items": {
++          "name": "staff_can_read_all_order_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.orders": {
++      "name": "orders",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "customer_id": {
++          "name": "customer_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "sales_mode": {
++          "name": "sales_mode",
++          "type": "sales_mode",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "batch_id": {
++          "name": "batch_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "status": {
++          "name": "status",
++          "type": "order_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'PAYMENT_PENDING'"
++        },
++        "payment_type": {
++          "name": "payment_type",
++          "type": "payment_type",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "fulfilment_method": {
++          "name": "fulfilment_method",
++          "type": "fulfilment_method",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "order_number": {
++          "name": "order_number",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "reserved_at": {
++          "name": "reserved_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "merchandise_subtotal": {
++          "name": "merchandise_subtotal",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "shipping_cost": {
++          "name": "shipping_cost",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "amount_paid": {
++          "name": "amount_paid",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'0'"
++        },
++        "submission_token": {
++          "name": "submission_token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "access_token": {
++          "name": "access_token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "access_token_encrypted": {
++          "name": "access_token_encrypted",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "fulfilled_at": {
++          "name": "fulfilled_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "orders_customer_id_customers_id_fk": {
++          "name": "orders_customer_id_customers_id_fk",
++          "tableFrom": "orders",
++          "tableTo": "customers",
++          "columnsFrom": [
++            "customer_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "orders_batch_id_batches_id_fk": {
++          "name": "orders_batch_id_batches_id_fk",
++          "tableFrom": "orders",
++          "tableTo": "batches",
++          "columnsFrom": [
++            "batch_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "orders_submission_token_unique": {
++          "name": "orders_submission_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "submission_token"
++          ]
++        },
++        "orders_access_token_unique": {
++          "name": "orders_access_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "access_token"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_order": {
++          "name": "guest_can_read_own_order",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "\"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')"
++        },
++        "staff_can_read_all_orders": {
++          "name": "staff_can_read_all_orders",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.payment_settings": {
++      "name": "payment_settings",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "bank_name": {
++          "name": "bank_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "account_number": {
++          "name": "account_number",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "account_holder_name": {
++          "name": "account_holder_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.payments": {
++      "name": "payments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "amount": {
++          "name": "amount",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "proof_file_url": {
++          "name": "proof_file_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "payment_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'PENDING'"
++        },
++        "submitted_at": {
++          "name": "submitted_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "verified_by": {
++          "name": "verified_by",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "verified_at": {
++          "name": "verified_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "rejection_reason": {
++          "name": "rejection_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "proof_deleted_at": {
++          "name": "proof_deleted_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "payments_order_id_orders_id_fk": {
++          "name": "payments_order_id_orders_id_fk",
++          "tableFrom": "payments",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "payments_verified_by_admin_users_id_fk": {
++          "name": "payments_verified_by_admin_users_id_fk",
++          "tableFrom": "payments",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "verified_by"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "guest_can_read_own_order_payments": {
++          "name": "guest_can_read_own_order_payments",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"payments\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.pickup_tokens": {
++      "name": "pickup_tokens",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "token": {
++          "name": "token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "pickup_tokens_order_id_orders_id_fk": {
++          "name": "pickup_tokens_order_id_orders_id_fk",
++          "tableFrom": "pickup_tokens",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "pickup_tokens_order_id_unique": {
++          "name": "pickup_tokens_order_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "order_id"
++          ]
++        },
++        "pickup_tokens_token_unique": {
++          "name": "pickup_tokens_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "token"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_pickup_token": {
++          "name": "guest_can_read_own_pickup_token",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"pickup_tokens\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.product_variants": {
++      "name": "product_variants",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "product_id": {
++          "name": "product_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "price": {
++          "name": "price",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "weight_grams": {
++          "name": "weight_grams",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "product_variants_product_id_products_id_fk": {
++          "name": "product_variants_product_id_products_id_fk",
++          "tableFrom": "product_variants",
++          "tableTo": "products",
++          "columnsFrom": [
++            "product_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_product_variants": {
++          "name": "anyone_can_read_product_variants",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_product_variants": {
++          "name": "staff_can_manage_product_variants",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.products": {
++      "name": "products",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "image_url": {
++          "name": "image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "active": {
++          "name": "active",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_products": {
++          "name": "anyone_can_read_products",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_products": {
++          "name": "staff_can_manage_products",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.shipments": {
++      "name": "shipments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "courier": {
++          "name": "courier",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'JNE'"
++        },
++        "service": {
++          "name": "service",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "recipient_name": {
++          "name": "recipient_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipient_phone": {
++          "name": "recipient_phone",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "address": {
++          "name": "address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "destination_district_code": {
++          "name": "destination_district_code",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "destination_district_name": {
++          "name": "destination_district_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "weight_grams": {
++          "name": "weight_grams",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cost": {
++          "name": "cost",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cost_override_reason": {
++          "name": "cost_override_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "tracking_number": {
++          "name": "tracking_number",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "shipments_order_id_orders_id_fk": {
++          "name": "shipments_order_id_orders_id_fk",
++          "tableFrom": "shipments",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "shipments_order_id_unique": {
++          "name": "shipments_order_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "order_id"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_shipment": {
++          "name": "guest_can_read_own_shipment",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"shipments\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.shipping_settings": {
++      "name": "shipping_settings",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "origin_district_code": {
++          "name": "origin_district_code",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_district_name": {
++          "name": "origin_district_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_address": {
++          "name": "origin_address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {
++    "public.batch_status": {
++      "name": "batch_status",
++      "schema": "public",
++      "values": [
++        "DRAFT",
++        "OPEN",
++        "CLOSED",
++        "PROCUREMENT",
++        "AWAITING_STOCK",
++        "RECEIVED",
++        "FULFILMENT",
++        "COMPLETED"
++      ]
++    },
++    "public.email_priority": {
++      "name": "email_priority",
++      "schema": "public",
++      "values": [
++        "P0",
++        "P1",
++        "P2"
++      ]
++    },
++    "public.email_status": {
++      "name": "email_status",
++      "schema": "public",
++      "values": [
++        "QUEUED",
++        "SENT",
++        "FAILED"
++      ]
++    },
++    "public.fulfilment_method": {
++      "name": "fulfilment_method",
++      "schema": "public",
++      "values": [
++        "PICKUP",
++        "SHIPPING"
++      ]
++    },
++    "public.order_status": {
++      "name": "order_status",
++      "schema": "public",
++      "values": [
++        "PAYMENT_PENDING",
++        "PAYMENT_VERIFIED",
++        "RESERVED",
++        "AWAITING_STOCK",
++        "BALANCE_DUE",
++        "READY_FOR_FULFILMENT",
++        "READY_FOR_PICKUP",
++        "PICKED_UP",
++        "READY_TO_SHIP",
++        "SHIPPED",
++        "COMPLETED",
++        "CANCELLED",
++        "REFUND_REQUIRED"
++      ]
++    },
++    "public.payment_status": {
++      "name": "payment_status",
++      "schema": "public",
++      "values": [
++        "PENDING",
++        "VERIFIED",
++        "REJECTED"
++      ]
++    },
++    "public.payment_type": {
++      "name": "payment_type",
++      "schema": "public",
++      "values": [
++        "DP",
++        "FULL"
++      ]
++    },
++    "public.sales_mode": {
++      "name": "sales_mode",
++      "schema": "public",
++      "values": [
++        "PRE_ORDER",
++        "READY_STOCK"
++      ]
++    }
++  },
++  "schemas": {},
++  "sequences": {
++    "public.pickup_order_seq": {
++      "name": "pickup_order_seq",
++      "schema": "public",
++      "increment": "1",
++      "startWith": "1",
++      "minValue": "1",
++      "maxValue": "9223372036854775807",
++      "cache": "1",
++      "cycle": false
++    },
++    "public.shipping_order_seq": {
++      "name": "shipping_order_seq",
++      "schema": "public",
++      "increment": "1",
++      "startWith": "1",
++      "minValue": "1",
++      "maxValue": "9223372036854775807",
++      "cache": "1",
++      "cycle": false
++    }
++  },
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/db/migrations/meta/_journal.json b/db/migrations/meta/_journal.json
+index b4ff7fa..127b0e2 100644
+--- a/db/migrations/meta/_journal.json
++++ b/db/migrations/meta/_journal.json
+@@ -29,6 +29,13 @@
+       "when": 1787858802570,
+       "tag": "0003_milestone5_email_and_link_security",
+       "breakpoints": true
++    },
++    {
++      "idx": 4,
++      "version": "7",
++      "when": 1787893283317,
++      "tag": "0005_milestone6_recovery_and_audit",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/db/schema.ts b/db/schema.ts
+index 76b7f5a..1225363 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -365,6 +365,15 @@ export const orders = pgTable(
+     // usable only by code holding the encryption key (the email worker),
+     // not by anything reading the database directly.
+     accessTokenEncrypted: text("access_token_encrypted"),
++    // Milestone 6 (§8/§19 payment-proof retention): stamped the instant an
++    // order reaches a completed fulfilment state (PICKED_UP or SHIPPED) —
++    // same reasoning as reservedAt above, its own column rather than
++    // reusing createdAt, because the retention job needs "time since
++    // fulfilled", not "time since ordered". Set at the two call sites of
++    // that transition (scan-pickup, record-tracking), not inside
++    // transitionOrder itself — matching how reservedAt is stamped by its
++    // callers (verify-payment, record-batch-receipt) rather than centrally.
++    fulfilledAt: timestamp("fulfilled_at"),
+     createdAt: timestamp("created_at").notNull().defaultNow(),
+   },
+   (table) => [
+@@ -431,6 +440,13 @@ export const payments = pgTable(
+     verifiedBy: uuid("verified_by").references(() => adminUsers.id),
+     verifiedAt: timestamp("verified_at"),
+     rejectionReason: text("rejection_reason"),
++    // Milestone 6 (§8/§19): stamped once the retention job has deleted (or
++    // confirmed already-deleted) this row's storage object, 30+ days after
++    // the order's fulfilledAt. proofFileUrl itself stays NOT NULL and
++    // unchanged — it still documents which path *used to* hold a file —
++    // so a separate marker is what makes the cleanup job idempotent
++    // (query "not yet processed", not "try to delete forever").
++    proofDeletedAt: timestamp("proof_deleted_at"),
+   },
+   (table) => [
+     pgPolicy("guest_can_read_own_order_payments", {
+@@ -571,6 +587,17 @@ export const emails = pgTable("emails", {
+   sentAt: timestamp("sent_at"),
+ }).enableRLS();
+ 
++// Milestone 6: this table had no RLS at all before now — the same kind of
++// open hole products/batches/inventory had before Milestone 4, and emails
++// had before Milestone 5 — meaning any caller holding the public anon key
++// could read (or write) the full operational audit trail directly. No
++// policies added (same deny-all posture as emails/admin_users): the new
++// admin UI reads this via supabase/functions/list-audit-logs, which uses
++// the service-role connection and does its own canViewAuditLog check
++// (§18.4) rather than a row-level policy — audit_logs also needs actor
++// names joined from admin_users, and admin_users itself is deliberately
++// not directly readable (see its own comment above), so a service-role
++// Edge Function is the only way to assemble that join regardless.
+ export const auditLogs = pgTable("audit_logs", {
+   id: uuid("id").primaryKey().defaultRandom(),
+   actorId: uuid("actor_id").references(() => adminUsers.id),
+@@ -580,6 +607,19 @@ export const auditLogs = pgTable("audit_logs", {
+   beforeValue: jsonb("before_value"),
+   afterValue: jsonb("after_value"),
+   createdAt: timestamp("created_at").notNull().defaultNow(),
+-});
++}).enableRLS();
++
++// Milestone 6 (§16.1/§27 — "10 requests per minute per IP"): backs the
++// per-IP rate limit on recover-order-access. A guest phone+email lookup
++// is a much lower-entropy guessing surface than the 32-byte access token,
++// so the same limit the PRD requires for token-based access is applied
++// here too (lib/rate-limit.ts has the actual threshold logic). Written to
++// and read from only by that one Edge Function's service-role connection —
++// same deny-all RLS posture as emails/audit_logs above.
++export const accessRecoveryAttempts = pgTable("access_recovery_attempts", {
++  id: uuid("id").primaryKey().defaultRandom(),
++  ipAddress: text("ip_address").notNull(),
++  createdAt: timestamp("created_at").notNull().defaultNow(),
++}).enableRLS();
+ 
+ 
+diff --git a/lib/order-number.test.ts b/lib/order-number.test.ts
+new file mode 100644
+index 0000000..21697d3
+--- /dev/null
++++ b/lib/order-number.test.ts
+@@ -0,0 +1,59 @@
++import { describe, it, expect } from "vitest";
++import { formatOrderNumber, parseOrderNumber } from "./order-number";
++
++describe("formatOrderNumber", () => {
++  it("formats a pickup order", () => {
++    expect(formatOrderNumber("PICKUP", 7, "fallback-uuid")).toBe("#010007");
++  });
++
++  it("formats a shipping order", () => {
++    expect(formatOrderNumber("SHIPPING", 7, "fallback-uuid")).toBe("#020007");
++  });
++
++  it("doesn't truncate beyond 4 digits", () => {
++    expect(formatOrderNumber("PICKUP", 10007, "fallback-uuid")).toBe("#0110007");
++  });
++
++  it("falls back to a short id slice when orderNumber or fulfilmentMethod is missing", () => {
++    expect(formatOrderNumber(null, null, "abcdefgh-1234")).toBe("abcdefgh");
++    expect(formatOrderNumber(null, 7, "abcdefgh-1234")).toBe("abcdefgh");
++    expect(formatOrderNumber("PICKUP", null, "abcdefgh-1234")).toBe("abcdefgh");
++  });
++});
++
++describe("parseOrderNumber (§16.2, Milestone 6 recovery)", () => {
++  it("parses a pickup order number", () => {
++    expect(parseOrderNumber("#010007")).toEqual({ fulfilmentMethod: "PICKUP", orderNumber: 7 });
++  });
++
++  it("parses a shipping order number", () => {
++    expect(parseOrderNumber("#020007")).toEqual({ fulfilmentMethod: "SHIPPING", orderNumber: 7 });
++  });
++
++  it("accepts the input without a leading #", () => {
++    expect(parseOrderNumber("010007")).toEqual({ fulfilmentMethod: "PICKUP", orderNumber: 7 });
++  });
++
++  it("tolerates surrounding whitespace", () => {
++    expect(parseOrderNumber("  #010007  ")).toEqual({ fulfilmentMethod: "PICKUP", orderNumber: 7 });
++  });
++
++  it("round-trips with formatOrderNumber", () => {
++    const formatted = formatOrderNumber("SHIPPING", 42, "fallback");
++    expect(parseOrderNumber(formatted)).toEqual({ fulfilmentMethod: "SHIPPING", orderNumber: 42 });
++  });
++
++  it("rejects an unknown type code", () => {
++    expect(parseOrderNumber("#030007")).toBeNull();
++  });
++
++  it("rejects malformed input", () => {
++    expect(parseOrderNumber("not-an-order-number")).toBeNull();
++    expect(parseOrderNumber("#01")).toBeNull();
++    expect(parseOrderNumber("")).toBeNull();
++  });
++
++  it("rejects the short-id fallback form (not a stable identifier to recover by)", () => {
++    expect(parseOrderNumber("abcdefgh")).toBeNull();
++  });
++});
+diff --git a/lib/order-number.ts b/lib/order-number.ts
+index 3b80fb7..0d9c551 100644
+--- a/lib/order-number.ts
++++ b/lib/order-number.ts
+@@ -19,3 +19,27 @@ export function formatOrderNumber(
+   const typeCode = fulfilmentMethod === "SHIPPING" ? "02" : "01";
+   return `#${typeCode}${String(orderNumber).padStart(4, "0")}`;
+ }
++
++export interface ParsedOrderNumber {
++  fulfilmentMethod: "PICKUP" | "SHIPPING";
++  orderNumber: number;
++}
++
++/**
++ * Inverse of formatOrderNumber — Milestone 6 (§16.2 order access recovery,
++ * item 30). Accepts exactly what a customer would see and copy/paste back
++ * (leading "#" optional, at least 4 digits after the 2-digit type code) —
++ * deliberately not the fallbackId short-id-slice form above, which only
++ * appears for orders that haven't had a fulfilment method chosen yet and
++ * isn't a stable identifier to recover by.
++ */
++export function parseOrderNumber(input: string): ParsedOrderNumber | null {
++  const trimmed = input.trim().replace(/^#/, "");
++  const match = /^(01|02)(\d{4,})$/.exec(trimmed);
++  if (!match) return null;
++
++  return {
++    fulfilmentMethod: match[1] === "02" ? "SHIPPING" : "PICKUP",
++    orderNumber: Number.parseInt(match[2], 10),
++  };
++}
+diff --git a/lib/orders.test.ts b/lib/orders.test.ts
+index 3541df3..c165999 100644
+--- a/lib/orders.test.ts
++++ b/lib/orders.test.ts
+@@ -56,6 +56,7 @@ function baseOrder(overrides: Partial<OrderRow> = {}): OrderRow {
+     submissionToken: "tok-1",
+     accessToken: "acc-1",
+     accessTokenEncrypted: null,
++    fulfilledAt: null,
+     createdAt: new Date(),
+     ...overrides,
+   };
+diff --git a/lib/proof-retention.test.ts b/lib/proof-retention.test.ts
+new file mode 100644
+index 0000000..2d8f2ff
+--- /dev/null
++++ b/lib/proof-retention.test.ts
+@@ -0,0 +1,47 @@
++import { describe, it, expect } from "vitest";
++import { isEligibleForDeletion, selectEligibleForDeletion, RETENTION_DAYS } from "./proof-retention";
++
++const DAY_MS = 24 * 60 * 60 * 1000;
++const NOW = new Date("2026-08-28T00:00:00.000Z");
++
++describe("payment proof retention (§8/§19 — 30 days after fulfilment)", () => {
++  it("not eligible when the order was never fulfilled", () => {
++    expect(isEligibleForDeletion({ paymentId: "p1", fulfilledAt: null, proofDeletedAt: null }, NOW)).toBe(false);
++  });
++
++  it("not eligible before 30 days have passed", () => {
++    const fulfilledAt = new Date(NOW.getTime() - 29 * DAY_MS);
++    expect(isEligibleForDeletion({ paymentId: "p1", fulfilledAt, proofDeletedAt: null }, NOW)).toBe(false);
++  });
++
++  it("eligible exactly at 30 days", () => {
++    const fulfilledAt = new Date(NOW.getTime() - RETENTION_DAYS * DAY_MS);
++    expect(isEligibleForDeletion({ paymentId: "p1", fulfilledAt, proofDeletedAt: null }, NOW)).toBe(true);
++  });
++
++  it("eligible well past 30 days", () => {
++    const fulfilledAt = new Date(NOW.getTime() - 90 * DAY_MS);
++    expect(isEligibleForDeletion({ paymentId: "p1", fulfilledAt, proofDeletedAt: null }, NOW)).toBe(true);
++  });
++
++  it("not eligible if already deleted, no matter how old", () => {
++    const fulfilledAt = new Date(NOW.getTime() - 90 * DAY_MS);
++    const proofDeletedAt = new Date(NOW.getTime() - 1 * DAY_MS);
++    expect(isEligibleForDeletion({ paymentId: "p1", fulfilledAt, proofDeletedAt }, NOW)).toBe(false);
++  });
++
++  it("selectEligibleForDeletion filters a mixed batch correctly", () => {
++    const candidates = [
++      { paymentId: "not-fulfilled", fulfilledAt: null, proofDeletedAt: null },
++      { paymentId: "too-recent", fulfilledAt: new Date(NOW.getTime() - 5 * DAY_MS), proofDeletedAt: null },
++      { paymentId: "eligible", fulfilledAt: new Date(NOW.getTime() - 45 * DAY_MS), proofDeletedAt: null },
++      {
++        paymentId: "already-deleted",
++        fulfilledAt: new Date(NOW.getTime() - 45 * DAY_MS),
++        proofDeletedAt: new Date(NOW.getTime() - 1 * DAY_MS),
++      },
++    ];
++    const result = selectEligibleForDeletion(candidates, NOW);
++    expect(result.map((c) => c.paymentId)).toEqual(["eligible"]);
++  });
++});
+diff --git a/lib/proof-retention.ts b/lib/proof-retention.ts
+new file mode 100644
+index 0000000..be23b9a
+--- /dev/null
++++ b/lib/proof-retention.ts
+@@ -0,0 +1,46 @@
++/**
++ * Payment proof retention — PRD §8/§19: "Uploaded payment proof files are
++ * retained for 30 days after the related order reaches a completed
++ * fulfilment state (SHIPPED or PICKED_UP), then purged." (Milestone 6.)
++ *
++ * Pure decision logic, no DB/storage access — same split as
++ * lib/batch-allocation.ts. The 30-day clock starts at orders.fulfilledAt
++ * (stamped by scan-pickup/record-tracking), not at proof upload time or
++ * order-creation time.
++ */
++
++export const RETENTION_DAYS = 30;
++
++export interface RetentionCandidate {
++  paymentId: string;
++  /** Null means the order hasn't reached SHIPPED/PICKED_UP yet — never eligible. */
++  fulfilledAt: Date | null;
++  /** Already processed by a prior run — never eligible again. */
++  proofDeletedAt: Date | null;
++}
++
++/**
++ * True when this payment's proof file should be deleted: the order is
++ * fulfilled, at least RETENTION_DAYS have passed since then, and it hasn't
++ * already been deleted.
++ */
++export function isEligibleForDeletion(
++  candidate: RetentionCandidate,
++  now: Date,
++  retentionDays: number = RETENTION_DAYS
++): boolean {
++  if (candidate.proofDeletedAt !== null) return false;
++  if (candidate.fulfilledAt === null) return false;
++
++  const cutoff = new Date(candidate.fulfilledAt.getTime() + retentionDays * 24 * 60 * 60 * 1000);
++  return now >= cutoff;
++}
++
++/** Filters a batch of candidates down to the ones eligible for deletion right now. */
++export function selectEligibleForDeletion(
++  candidates: RetentionCandidate[],
++  now: Date,
++  retentionDays: number = RETENTION_DAYS
++): RetentionCandidate[] {
++  return candidates.filter((c) => isEligibleForDeletion(c, now, retentionDays));
++}
+diff --git a/lib/rate-limit.test.ts b/lib/rate-limit.test.ts
+new file mode 100644
+index 0000000..619fbfb
+--- /dev/null
++++ b/lib/rate-limit.test.ts
+@@ -0,0 +1,34 @@
++import { describe, it, expect } from "vitest";
++import { isRateLimited, windowStart, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS } from "./rate-limit";
++
++describe("rate limiting (§16.1/§27 — 10 requests per minute per IP)", () => {
++  it("allows requests below the limit", () => {
++    expect(isRateLimited(0)).toBe(false);
++    expect(isRateLimited(9)).toBe(false);
++  });
++
++  it("blocks once prior attempts reach the max", () => {
++    expect(isRateLimited(10)).toBe(true);
++    expect(isRateLimited(11)).toBe(true);
++  });
++
++  it("the 11th attempt in a window is the first one blocked (10 are allowed through)", () => {
++    // Simulates 10 successive requests, checking the gate before each.
++    let allowedCount = 0;
++    for (let priorAttempts = 0; priorAttempts < 11; priorAttempts++) {
++      if (!isRateLimited(priorAttempts)) allowedCount++;
++    }
++    expect(allowedCount).toBe(RATE_LIMIT_MAX_REQUESTS);
++  });
++
++  it("respects a custom max", () => {
++    expect(isRateLimited(3, 3)).toBe(true);
++    expect(isRateLimited(2, 3)).toBe(false);
++  });
++
++  it("windowStart is exactly one window behind now", () => {
++    const now = new Date("2026-08-28T12:00:00.000Z");
++    expect(windowStart(now).toISOString()).toBe("2026-08-28T11:59:00.000Z");
++    expect(RATE_LIMIT_WINDOW_MS).toBe(60_000);
++  });
++});
+diff --git a/lib/rate-limit.ts b/lib/rate-limit.ts
+new file mode 100644
+index 0000000..274014e
+--- /dev/null
++++ b/lib/rate-limit.ts
+@@ -0,0 +1,28 @@
++/**
++ * Per-IP rate limiting — PRD §16.1/§27 ("maximum 10 requests per minute per
++ * IP"), applied to supabase/functions/recover-order-access (Milestone 6).
++ *
++ * Pure decision logic, no DB access — same "what should happen" vs. "how
++ * it's written to the DB" split as lib/batch-allocation.ts and
++ * lib/order-state-machine.ts. The caller counts rows in
++ * access_recovery_attempts within the window and passes that count in.
++ */
++
++export const RATE_LIMIT_WINDOW_MS = 60_000; // §16.1: "per minute"
++export const RATE_LIMIT_MAX_REQUESTS = 10; // §16.1: "maximum 10 requests"
++
++/**
++ * True when the caller has already made `RATE_LIMIT_MAX_REQUESTS` (or more)
++ * requests within the current window and the new request should be
++ * rejected. `attemptsInWindow` is the count of *prior* attempts only (the
++ * request being evaluated is not yet counted) — the 11th attempt within a
++ * minute is the first one blocked, not the 10th.
++ */
++export function isRateLimited(attemptsInWindow: number, max: number = RATE_LIMIT_MAX_REQUESTS): boolean {
++  return attemptsInWindow >= max;
++}
++
++/** Start of the current rate-limit window, relative to `now`. */
++export function windowStart(now: Date, windowMs: number = RATE_LIMIT_WINDOW_MS): Date {
++  return new Date(now.getTime() - windowMs);
++}
+diff --git a/milestone.md b/milestone.md
+new file mode 100644
+index 0000000..6c412ab
+--- /dev/null
++++ b/milestone.md
+@@ -0,0 +1,413 @@
++PRD revised to v1.3 (PRD.html) — $0 infrastructure track: simplified email
++model, Web Push added, stricter token/rate-limiting requirements. Section
++numbers didn't change (§17a inserted as a lettered sub-section), so every
++reference below is still accurate. Two things from v1.3 need attention
++before/alongside the milestones they touch:
++
++⚠️ **Access token storage (§16.1) conflicts with what's already built.**
++v1.3 requires the order access token be "stored hashed in the database."
++What Milestone 1 actually built and verified live stores it in plaintext and
++compares it directly inside the RLS policy (`access_token = header_value`)
++— that's the entire mechanism `OrderPage.tsx`'s guest read relies on.
++Hashing it means the RLS policy can no longer do a plain `=`; it would need
++either a Postgres-side hash function call inside the policy expression, or
++giving up the direct-RLS-read pattern for an Edge-Function-mediated lookup
++instead. Not resolved here — a real design decision, not a find-and-replace,
++and changing it means re-verifying the whole guest-read flow again. Revisit
++deliberately, not as a side effect of some other milestone.
++
++**Payment proof is now required at order creation (§7.2), not optional.**
++✅ Resolved (see Milestone 1's "Payment proof upload" section below) — Storage
++bucket, upload, existence verification, resubmission after rejection, and
++admin proof viewing are all built. Customer-facing wording (order summary,
++DP explanation, upload instructions) is functional English for now —
++localization/final copy is a deliberately separate task, not blocking.
++
++Also new in v1.3, not yet reflected below in detail: rate limiting on the
++order-access endpoint (10 req/min/IP, §16.1/§19) — not built anywhere yet,
++noted for whichever milestone ends up hardening security holistically.
++
++Milestone 1 — One order, start to finish (ready stock, full payment, pickup)
++
++Backend (done):
++1. lib/orders.ts + lib/audit.ts — transitionOrder() wraps the state machine in
++   a real DB transaction (status change + audit row together, §20).
++2. Seeded one product/variant/inventory row directly via SQL — still no
++   admin UI for creating products yet (see step 8).
++3. supabase/functions/create-order — guest order creation (§7). Ready stock +
++   full payment + pickup only, to start. Computes merchandiseSubtotal
++   server-side, never trusts a price from the browser.
++4. supabase/functions/verify-payment — admin verifies/rejects payment
++   (§8.3). For ready-stock+full, chains straight through to
++   READY_FOR_FULFILMENT and allocates the inventory reservation. Uses a
++   hardcoded admin id for now — Supabase Auth comes in Milestone 4.
++5. supabase/functions/prepare-pickup + supabase/functions/scan-pickup —
++   pickup QR token generation and validation (§13). scan-pickup is two-phase:
++   look up first, confirm second, matching §13.2's explicit staff
++   confirmation step.
++6. src/pages/OrderPage.tsx — guest order status page, reading real data via
++   supabase-js directly (not an Edge Function), gated by an RLS policy
++   matching the order's access token (§16, §27).
++
++All of the above verified end-to-end against the live Supabase project —
++not just tested locally.
++
++UI (done):
++
++7. Customer checkout form (src/pages/HomePage.tsx) — browse the seeded
++   product(s), enter name/phone/email, place the order. Calls create-order,
++   then sends the customer to their own /orders/:accessToken page (already
++   built in step 6). Validates name (letters only) and phone (8–15 digits)
++   both client-side and server-side. Payment proof upload is now wired —
++   see "Payment proof upload" below.
++8. Admin action screen (src/pages/AdminDashboardPage.tsx) — a real list of
++   orders (via a new supabase/functions/list-orders, needed since the RLS
++   policy on orders deliberately doesn't grant a "staff" role broader
++   access yet) with buttons: "Verify Payment" / "Reject" (calls
++   verify-payment), "Prepare for Pickup" (calls prepare-pickup). No real
++   login yet (Milestone 4) — for internal testing only, not something to
++   put a public link to.
++9. Staff pickup scanner (src/pages/ScanPage.tsx) — opens the phone camera
++   (qr-scanner npm package, §14), decodes the QR automatically, calls
++   scan-pickup for lookup, shows the order details, then a "Confirm Pickup"
++   button calls scan-pickup again with confirm. Manual code entry as a
++   fallback if the camera doesn't work, plus a phone-number search fallback
++   (finds READY_FOR_PICKUP orders for that number so staff can pick the
++   right one by name — phone alone never confirms a pickup directly, §27).
++
++Polish (done, after user feedback on the built UI):
++10. Sequential, human-readable order numbers (#010001-style, 01/02 encoding
++    fulfilment type) instead of raw UUIDs — a real schema change (two
++    Postgres sequences + an order_number column), not just a display tweak.
++11. Pickup codes shortened from a full UUID to 6 characters (unambiguous
++    alphabet), easier to type as the manual fallback.
++12. Status colors — Badge/Button extended with warning/info/success
++    variants; all 12 order statuses now map to a meaningful color instead
++    of 3 flat tones.
++
++Payment proof upload (done, per PRD v1.3's §7.2 requirement):
++13. supabase/storage_setup.sql — private `payment-proofs` Storage bucket,
++    set up directly via SQL console (not drizzle-managed — Supabase's own
++    docs say to treat the storage schema as read-only/API-managed).
++    Write-only for guests (no select/list policy for anon at all — proof
++    files aren't readable by anyone except service-role/signed URL, not
++    even the customer who uploaded it), 5MB limit, image/PDF only. Upload
++    paths are keyed by submissionToken rather than order id, since the
++    order doesn't exist yet when the proof is uploaded (§7.2 wants them as
++    one atomic flow).
++14. create-order now requires proofFileUrl and verifies the path actually
++    exists in storage.objects before creating the order — a claimed-but-
++    fake path is rejected, not trusted. New supabase/functions/
++    resubmit-payment — customer re-uploads after a rejected payment (§26),
++    ownership verified via access token (order id alone isn't secret).
++15. Checkout (src/pages/HomePage.tsx) now shows an order summary before the
++    upload step: total, payment instructions (written to branch on DP vs.
++    FULL now, even though only FULL is reachable until Milestone 2 turns DP
++    on), and bank account details from a new payment_settings table —
++    single global row for now, admin-edited via SQL console; per-batch
++    config is Milestone 2's job, once batches exist to attach it to. Admin
++    (src/pages/AdminDashboardPage.tsx) can now view the uploaded proof via
++    a signed URL (list-orders, using a service-role supabase-js client
++    alongside its existing direct-Postgres connection) before verifying.
++
++End of Milestone 1: a customer can place a real order — with payment proof
++— by clicking through a form, an admin can review that proof and verify or
++reject it, stage the order for pickup, and staff can scan a real QR code
++with their phone camera to complete the pickup. A rejected payment can be
++resubmitted with a new proof, without starting a new order. Verified for
++real: camera permission prompt confirmed working (tested with the camera
++physically off, which is why the preview showed the browser's own
++"no signal" icon — expected, not a bug), and both the customer order page
++and admin dashboard correctly reflected PICKED_UP afterward. Backend, UI,
++and every round of polish/feedback are all done and pushed. Payment proof
++upload itself hasn't yet been re-verified against the live Supabase project
++the way the rest of Milestone 1 was — needs supabase functions deploy
++resubmit-payment (new) plus redeploying create-order/list-orders, running
++supabase/storage_setup.sql, and seeding one payment_settings row before
++testing end to end.
++
++Milestone 2 — Batches + partial payment (DP) — DONE, pending live verification
++
++Four decisions corrected the plan below before any of it was built (chat
++carried over from Milestone 1):
++
++- **Products screen is standalone**, not folded into batch creation as step
++  19 originally had it. `src/pages/AdminProductsPage.tsx` creates
++  products+variants+images independent of any batch; the batch screen only
++  picks from what already exists there. Lets a product be reused across
++  batches, or exist as ready stock with no batch at all.
++- **One image per product**, not per variant/color. A product with two
++  colors is two separate products, each with its own photo — `imageUrl`
++  lives on `products`, not `product_variants`. Uploaded to a new *public*
++  Storage bucket (`supabase/product_images_storage_setup.sql`), unlike the
++  private payment-proofs bucket.
++- **MOQ moved from `batches` to `batch_items`** — it's per product/variant,
++  not one number for the whole batch (a batch can bundle a hoodie at MOQ 24
++  and a tote bag at MOQ 10). `procuredQuantity` moved with it, and stays
++  purely informational (§10.3), never auto-updated by receipts.
++- **No "publish surplus" approval gate** (§12's previously-open question,
++  §33 item 10) — surplus from a receipt is sellable the moment it's on
++  hand, no separate admin approval step.
++
++Backend (done):
++16. `db/schema.ts` — `products.imageUrl`; `batch_items.moq` /
++    `.procuredQuantity` (moved off `batches`); `batches.allowedFulfilmentMethods`
++    (new — pickup/shipping/both per batch, §13.1); `orders.reservedAt`
++    (stamped the instant a pre-order enters RESERVED — the §26
++    shortfall-ranking key, since it has to be payment-verification time,
++    not order-submission time).
++17. `lib/batch-allocation.ts` (+ 7 Vitest cases) — the §26 MOQ-shortfall
++    rule as a pure function, same "decision logic separate from DB
++    orchestration" split as `lib/order-state-machine.ts`. Promotes
++    AWAITING_STOCK orders oldest-payment-verified-first when a receipt
++    doesn't cover everyone; a multi-item order is all-or-nothing (never
++    partially promoted — a stuck order's available stock isn't locked away
++    from a different, easier-to-satisfy order that jumps ahead of it).
++18. `supabase/functions/record-batch-receipt` (new) — admin logs a supplier
++    delivery for one batch line item: adds to `inventory.onHand`, then runs
++    the allocation above and fires the existing `STOCK_RECEIVED` transition
++    (unchanged since Milestone 1) for whoever gets promoted. Not gated on
++    batch.status — a bookkeeping event, same "MOQ is informational only"
++    spirit extended to the rest of procurement. Orders that don't get
++    covered just stay in AWAITING_STOCK — no auto-cancellation.
++19. `supabase/functions/create-order` (extended) — accepts `batchId` +
++    `paymentType` for pre-orders. Skips the ready-stock physical-stock
++    check entirely for pre-orders (§11.2 — commitments tracked before stock
++    exists); validates the batch is OPEN, the payment type is allowed, and
++    every item actually belongs to that batch. Fulfilment method stays
++    forced to PICKUP server-side regardless of sales mode or what a batch's
++    `allowedFulfilmentMethods` says — shipping isn't real until Milestone 3.
++20. `supabase/functions/verify-payment` (extended) — now branches on
++    `order.status` (PAYMENT_PENDING vs. BALANCE_DUE) and `salesMode`
++    (READY_STOCK vs. PRE_ORDER). Verifying a pre-order's deposit does NOT
++    touch `inventory` — it stamps `reservedAt` and moves to
++    RESERVED/AWAITING_STOCK, full stop. The one exception: if this batch's
++    stock already happens to be on hand (a late deposit verification after
++    the batch already received stock), it allocates and promotes
++    immediately instead of parking the order in AWAITING_STOCK for no
++    reason. The normal "stock arrives later" case is record-batch-receipt's
++    job, not this function's.
++21. `supabase/functions/submit-balance-payment` (new) — customer submits
++    (or resubmits, after a rejection) the remaining balance once
++    BALANCE_DUE. Same ownership-via-access-token pattern as
++    resubmit-payment. verify-payment (above) is what actually verifies it.
++
++UI (done):
++22. `src/pages/AdminProductsPage.tsx` (new) — create product + variants +
++    photo upload; direct table writes (no Edge Function — creating a
++    product is "save what the user typed", architecture.md's own rule of
++    thumb for when that's fine), sequential (not transactional) since
++    supabase-js/PostgREST has no multi-table transaction from the browser —
++    same tradeoff already accepted for Milestone 1's manual SQL seeding.
++23. `src/pages/AdminBatchesPage.tsx` (new) — create a batch (name,
++    open/close, payment types, fulfilment methods with pickup forced on),
++    pick products/variants into it with a per-item MOQ, see live
++    ordered-quantity-vs-MOQ per item (computed from order rows, not a
++    stored counter — §10.3 stays informational only), and the "record
++    receipt" action per item.
++24. `src/pages/HomePage.tsx` (extended) — a source switcher (ready stock, or
++    one tab per open batch); picking a batch shows only that batch's items
++    and, if the batch allows both, a DP-vs-FULL choice. An order can only
++    belong to one sales mode/batch at a time (switching tabs clears
++    quantities) — `orders.batchId` is a single column.
++25. `src/pages/OrderPage.tsx` (extended) — a BALANCE_DUE card with the same
++    upload-proof pattern as the existing rejected-payment resubmit card,
++    calling submit-balance-payment.
++
++Not built in this pass — flagging for whoever picks this up next:
++- Live end-to-end verification against the real Supabase project (schema
++  push, new storage bucket, redeploying the two extended functions plus the
++  two new ones) — same "written and typechecked, not yet proven live" gap
++  Milestone 1 had for payment-proof upload at handoff.
++- No email in this milestone, even though §17 marks balance-due as a P0
++  (never-delayed) email — building the full priority queue for one email
++  type isn't worth it; every email, including this one, still waits for
++  Milestone 5.
++- Editing/deactivating a product after creation — Products screen is
++  create-only for now (FR-001's "edit" half), matching what was actually
++  asked for ("first real product-creation UI"), not the full CRUD surface.
++
++Milestone 3 — Shipping
++
++Backend:
++22. Shipping address, cost calculation, label generation, tracking (§15).
++    Label generation runs in an Edge Function (Deno) — may need a different
++    PDF library than a typical Node-only package; confirm when we get here.
++
++UI:
++23. Customer checkout form (extends step 7/20 again, not a new screen) —
++    adds the shipping vs. pickup choice and address fields, with cost shown
++    before submitting.
++24. Admin — enter tracking number, generate/print the shipping label.
++
++Milestone 4 — Admin proper (real auth)
++
++25. Admin auth: Supabase Auth (magic link) for staff login, replacing the
++    hardcoded admin id used since Milestone 1. Per-action permission
++    toggles from §18.4 (admin_users table, already in db/schema.ts) enforced
++    for real.
++26. The simple, no-login admin screens built ad hoc in Milestones 1–3 get
++    replaced by a real dashboard (§18.1: payment queue, DP balances due,
++    active batches, orders awaiting stock/pickup/shipping) — action buttons
++    disabled (not hidden) per §18.4 when the logged-in staff member lacks
++    that permission.
++
++Milestone 5 — Email + Push — DONE (push not yet built; see note below)
++
++Simplified in PRD v1.3: 4 core emails, not up to 9 — P0/P1 only, no P2 tier
++at all (dropped along with the events that used it: shipped, picked up,
++completed — customer sees these on the order page instead). The first
++customer email now fires *after* admin verifies payment (combining "order
++confirmed" + "payment verified" into one), not at order submission.
++
++27. Email queue table + worker + Resend (§17, §24) — Resend free tier only
++    (100/day hard cap, sender @resend.dev, no custom domain/DNS needed for
++    MVP — §24.4 has the future upgrade path if/when a domain gets bought).
++    P0 (payment rejected, balance due) never deferred, retries next day at
++    00:01 on a 429. P1 (order confirmed, ready for fulfilment) deferred to
++    next day if the cap's hit; >80 simultaneous balance-due emails batch
++    across days, earliest-verified first. Worker is a scheduled Edge
++    Function (Supabase's cron/scheduled functions support) — exact setup to
++    confirm when we get here.
++
++    ✅ Built: `lib/email-cap.ts` (+ tests) is the pure budget-allocation
++    logic; `lib/email-queue.ts` queues rows inside the same transaction as
++    the triggering event (order confirmed on payment verification,
++    balance-due, payment-rejected, ready-for-fulfilment); `supabase/
++    functions/send-queued-emails` is the worker, scheduled via pg_cron
++    every 5 minutes (`db/migrations/0004_milestone5_email_worker_schedule.sql`
++    — hand-written, not drizzle-generated, since it's pure SQL/cron setup
++    with no schema.ts change).
++
++    ⚠️ Real design decision made here, not flagged as open before: §16.1's
++    "stored hashed" requirement (flagged as unresolved back in Milestone 1)
++    is now resolved — but not with a plain hash alone, because the email
++    worker needs to send the *same* link across up to 4 emails over an
++    order's lifetime, and a one-way hash can never be turned back into the
++    raw token. Solution: `orders.accessToken` stores `encode(digest(raw,
++    'sha256'), 'hex')` (one-way, used for the RLS guest-read check — same
++    as before, just hashed now); a second column, `accessTokenEncrypted`,
++    stores a *reversibly* encrypted copy (pgcrypto `pgp_sym_encrypt`, keyed
++    by the `ACCESS_TOKEN_ENC_KEY` Edge Function secret) that only
++    code holding that key can decrypt back to the raw token. See
++    `supabase/functions/_shared/tokens.ts` and db/schema.ts's
++    `accessTokenEncrypted` comment for the full reasoning.
++
++28. Web Push (§17a) — new in v1.3, a $0 backup channel that bypasses email
++    caps/spam filters entirely. [...]
++
++    ❌ Not built. No `push_subscriptions` table, no VAPID keys, no
++    subscribe UI on the order page. Milestone 6 didn't end up needing this
++    (items 30-32 don't touch notifications), but it's still open PRD scope
++    — flagging for whoever picks it up next, don't assume it's done just
++    because Milestone 5's other half shipped.
++
++29. WhatsApp manual fallback (§17a.3) — not something to build; an
++    operational acknowledgment only, unchanged from the original plan.
++
++Not built/verified in this pass:
++- Push notifications (item 28 above) — genuinely skipped, not deferred by
++  accident.
++- Live end-to-end verification against the real Supabase project — same
++  "written and typechecked, not yet proven live" gap every milestone since
++  1 has had at handoff. Needs: run `db/migrations/0003_milestone5_email_
++  and_link_security.sql` (or `db:push`), set the `ACCESS_TOKEN_ENC_KEY`,
++  `RESEND_API_KEY`, `RESEND_FROM_ADDRESS`, `FRONTEND_BASE_URL` secrets, run
++  the one-time Vault secret setup + `0004_milestone5_email_worker_
++  schedule.sql` for pg_cron, deploy `send-queued-emails`, and backfill
++  `accessTokenEncrypted` for any orders created before this migration
++  (existing orders have `access_token` from before hashing too — those
++  need a real backfill plan, not just new orders working correctly).
++
++Milestone 6 — Remaining edge cases — DONE (live verification pending)
++
++30. Order access recovery via phone+email (§16, §27) — Edge Function, since
++    matching phone+email isn't a simple RLS row match.
++
++    ✅ Built, but deviates from the PRD's phone+email pair — a real product
++    decision, not a silent reinterpretation: recovers by phone + order
++    number instead. `supabase/functions/recover-order-access`
++    (guest-facing, no session), reuses the exact same `accessTokenEncrypted`
++    decrypt path Milestone 5's email worker already uses — same secret,
++    same pgcrypto call, so there's only one place this logic can drift.
++    `lib/order-number.ts` gained `parseOrderNumber` (+ tests), the inverse
++    of the existing `formatOrderNumber`, to parse the customer-facing
++    "#010007" string back into fulfilment method + sequence number.
++
++    Rationale: the order number is already sent to the customer through
++    every other channel (order page, all 4 emails), so matching it exactly
++    is a lower bar than remembering which email was typed at checkout.
++    Trade-off acknowledged, not hidden: order number is sequential per
++    fulfilment type, not a real identity signal the way email is — rate
++    limiting is the actual defense here, not the choice of fields. Because
++    order number + fulfilment method uniquely identifies one order (unlike
++    phone+email, which could match several orders for a repeat customer),
++    this returns a single order, not a list.
++
++    Rate limited: §16.1/§27's "10 requests per minute per IP" was flagged
++    as an open gap all the way back in Milestone 1 and never built anywhere
++    — it matters more here than for the token endpoint, since phone+order-
++    number is a much lower-entropy guessing surface than a 32-byte token.
++    New `access_recovery_attempts` table (db/schema.ts) backs a per-IP
++    counter; `lib/rate-limit.ts` (+ tests) has the pure threshold logic.
++
++    Frontend: `src/pages/FindOrderPage.tsx` (new, `/orders/find`), linked
++    from HomePage as "Lost your order link?".
++
++31. Payment proof 30-day retention cleanup (§8) — scheduled Edge Function,
++    deletes from Supabase Storage.
++
++    ✅ Built: the 30-day clock starts at order *fulfilment*
++    (SHIPPED/PICKED_UP per §8/§19's actual wording), not upload time — a
++    new `orders.fulfilledAt` column is stamped at the two transition call
++    sites (`scan-pickup`'s PICKUP_CONFIRMED branch, `record-tracking`'s
++    TRACKING_RECORDED), same "its own column, not reused createdAt" pattern
++    as `reservedAt`. `lib/proof-retention.ts` (+ tests) is the pure
++    eligibility logic; `supabase/functions/cleanup-payment-proofs` is the
++    worker, scheduled daily via pg_cron
++    (`db/migrations/0006_milestone6_cleanup_schedule.sql`, same
++    hand-written/non-journal pattern as 0004). A new `payments.
++    proofDeletedAt` timestamp makes the job idempotent — `proofFileUrl`
++    itself stays NOT NULL and unchanged (still documents which path *used
++    to* hold a file) rather than trying to null out a not-null column.
++    A payment can be resubmitted after rejection (§26), so every payments
++    row tied to a fulfilled order is in scope, not just the latest one.
++
++32. Audit log viewer in admin UI — direct Supabase read gated by RLS
++    (canViewAuditLog), same pattern as other admin dashboard reads.
++
++    ✅ Built, but NOT as a direct RLS read as originally planned above —
++    `audit_logs.actorId` references `admin_users`, and `admin_users` is
++    deliberately not directly readable by anyone (not even an authenticated
++    admin — see its own comment in db/schema.ts), so a browser-side join
++    for the actor's name would just come back null. Built as
++    `supabase/functions/list-audit-logs` instead (service-role join,
++    `requireAdmin(req, "canViewAuditLog")`), same reasoning `list-orders`
++    already established for a similar problem before Milestone 4 added
++    orders' own RLS. Also closed a real pre-existing gap while here:
++    `audit_logs` had *no RLS at all* before this — same class of hole
++    Milestone 4 closed for products/batches/inventory and Milestone 5
++    closed for `emails`. Frontend: `src/pages/AdminAuditLogPage.tsx`
++    (`/admin/audit-log`), linked from the dashboard nav. Doesn't use the
++    usual §18.4 "disabled, not hidden" pattern (that's for individual
++    actions on a page everyone can see) — `canViewAuditLog` gates the whole
++    page's content, so it shows a plain "you don't have this permission"
++    message instead, matching RequireAdmin's own "not authorized" shape.
++
++Not built/verified in this pass:
++- Live end-to-end verification against the real Supabase project — same
++  gap as every milestone before it. Needs: `db:push` (or run migrations
++  0005/0006 by hand), the one-time pg_cron schedule step for
++  cleanup-payment-proofs (mirrors what Milestone 5 already set up for
++  send-queued-emails — same Vault secret, no new one needed), deploy
++  `recover-order-access`, `cleanup-payment-proofs`, and `list-audit-logs`.
++- `orders.fulfilledAt` is only stamped going forward from this migration —
++  orders that already reached SHIPPED/PICKED_UP before this deploys will
++  have `fulfilledAt = NULL` and never become eligible for proof cleanup
++  under the current logic. A one-time backfill (best guess: use each
++  order's last relevant `audit_logs` row, or the shipment/pickup_token's
++  own timestamp) is a real decision for whoever verifies this live, not
++  something to guess at here.
++- Web Push (Milestone 5, item 28) — still not built, noted again here so
++  it doesn't quietly fall off the list.
++
+diff --git a/src/App.tsx b/src/App.tsx
+index 590b8d8..7dc19fc 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,9 +1,11 @@
+ import { Routes, Route } from "react-router-dom";
+ import HomePage from "./pages/HomePage";
+ import OrderPage from "./pages/OrderPage";
++import FindOrderPage from "./pages/FindOrderPage";
+ import AdminDashboardPage from "./pages/AdminDashboardPage";
+ import AdminProductsPage from "./pages/AdminProductsPage";
+ import AdminBatchesPage from "./pages/AdminBatchesPage";
++import AdminAuditLogPage from "./pages/AdminAuditLogPage";
+ import AdminLoginPage from "./pages/AdminLoginPage";
+ import ScanPage from "./pages/ScanPage";
+ import { AdminAuthProvider } from "./lib/adminAuth";
+@@ -14,6 +16,7 @@ export default function App() {
+     <AdminAuthProvider>
+       <Routes>
+         <Route path="/" element={<HomePage />} />
++        <Route path="/orders/find" element={<FindOrderPage />} />
+         <Route path="/orders/:accessToken" element={<OrderPage />} />
+         <Route path="/admin/login" element={<AdminLoginPage />} />
+         <Route
+@@ -40,6 +43,14 @@ export default function App() {
+             </RequireAdmin>
+           }
+         />
++        <Route
++          path="/admin/audit-log"
++          element={
++            <RequireAdmin>
++              <AdminAuditLogPage />
++            </RequireAdmin>
++          }
++        />
+         <Route
+           path="/scan"
+           element={
+diff --git a/src/pages/AdminAuditLogPage.tsx b/src/pages/AdminAuditLogPage.tsx
+new file mode 100644
+index 0000000..d7159f6
+--- /dev/null
++++ b/src/pages/AdminAuditLogPage.tsx
+@@ -0,0 +1,113 @@
++import { useEffect, useState } from "react";
++import { supabase } from "@/lib/supabaseClient";
++import { useAdminAuth } from "@/lib/adminAuth";
++import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
++
++/**
++ * Audit log viewer (§20, Milestone 6, item 32) — reads via
++ * supabase/functions/list-audit-logs (a direct RLS read isn't possible
++ * here without opening up admin_users; see that function's own comment).
++ *
++ * §18.4's usual "disabled, not hidden" pattern (AdminProductsPage,
++ * AdminBatchesPage) doesn't quite fit this page: those disable individual
++ * *actions* on a page everyone can still see, but canViewAuditLog gates
++ * the whole page's content, not one button on it — so this shows a plain
++ * "you don't have permission" message instead, same shape as
++ * RequireAdmin's own "not authorized" state.
++ */
++
++interface AuditLogRow {
++  id: string;
++  entityType: string;
++  entityId: string;
++  action: string;
++  beforeValue: unknown;
++  afterValue: unknown;
++  createdAt: string;
++  actorName: string | null;
++  actorEmail: string | null;
++}
++
++export default function AdminAuditLogPage() {
++  const { admin } = useAdminAuth();
++  const canView = admin?.canViewAuditLog ?? false;
++
++  const [logs, setLogs] = useState<AuditLogRow[] | null>(null);
++  const [loadError, setLoadError] = useState<string | null>(null);
++
++  useEffect(() => {
++    if (!canView) return;
++
++    let cancelled = false;
++    (async () => {
++      const { data, error } = await supabase.functions.invoke("list-audit-logs");
++      if (cancelled) return;
++      if (error || !data) {
++        setLoadError("Couldn't load the audit log.");
++        return;
++      }
++      setLogs(data.logs as AuditLogRow[]);
++    })();
++
++    return () => {
++      cancelled = true;
++    };
++  }, [canView]);
++
++  return (
++    <main className="p-8 space-y-6">
++      <div>
++        <h1 className="text-2xl font-semibold">Admin — Audit log</h1>
++      </div>
++
++      {!canView && (
++        <p className="text-sm text-muted-foreground">
++          This account doesn't have the "View audit log" permission (§18.4). Ask an admin with that permission to
++          grant it if you need access.
++        </p>
++      )}
++
++      {canView && loadError && <p className="text-destructive text-sm">{loadError}</p>}
++      {canView && logs === null && !loadError && <p className="text-gray-500 text-sm">Loading…</p>}
++
++      {canView && logs !== null && (
++        <Card>
++          <CardHeader>
++            <CardTitle>Recent activity ({logs.length})</CardTitle>
++          </CardHeader>
++          <CardContent className="overflow-x-auto">
++            <table className="w-full text-sm">
++              <thead>
++                <tr className="text-left text-muted-foreground border-b">
++                  <th className="py-2 pr-4">When</th>
++                  <th className="py-2 pr-4">Actor</th>
++                  <th className="py-2 pr-4">Entity</th>
++                  <th className="py-2 pr-4">Action</th>
++                </tr>
++              </thead>
++              <tbody>
++                {logs.map((log) => (
++                  <tr key={log.id} className="border-b last:border-0 align-top">
++                    <td className="py-2 pr-4 whitespace-nowrap">{new Date(log.createdAt).toLocaleString()}</td>
++                    <td className="py-2 pr-4 whitespace-nowrap">{log.actorName ?? "System / guest"}</td>
++                    <td className="py-2 pr-4 whitespace-nowrap">
++                      {log.entityType} <span className="text-muted-foreground">{log.entityId.slice(0, 8)}</span>
++                    </td>
++                    <td className="py-2 pr-4">{log.action}</td>
++                  </tr>
++                ))}
++                {logs.length === 0 && (
++                  <tr>
++                    <td colSpan={4} className="py-4 text-center text-muted-foreground">
++                      No audit events yet.
++                    </td>
++                  </tr>
++                )}
++              </tbody>
++            </table>
++          </CardContent>
++        </Card>
++      )}
++    </main>
++  );
++}
+diff --git a/src/pages/AdminDashboardPage.tsx b/src/pages/AdminDashboardPage.tsx
+index b5b6c7b..c316e0c 100644
+--- a/src/pages/AdminDashboardPage.tsx
++++ b/src/pages/AdminDashboardPage.tsx
+@@ -360,6 +360,9 @@ export default function AdminDashboardPage() {
+           <Link to="/admin/batches" className="text-blue-600 underline">
+             Batches
+           </Link>
++          <Link to="/admin/audit-log" className="text-blue-600 underline">
++            Audit log
++          </Link>
+           <button type="button" className="text-gray-500 underline" onClick={() => void signOut()}>
+             Sign out
+           </button>
+diff --git a/src/pages/FindOrderPage.tsx b/src/pages/FindOrderPage.tsx
+new file mode 100644
+index 0000000..870d84e
+--- /dev/null
++++ b/src/pages/FindOrderPage.tsx
+@@ -0,0 +1,137 @@
++import { useState } from "react";
++import { Link } from "react-router-dom";
++import { supabase } from "@/lib/supabaseClient";
++import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++
++/**
++ * Order access recovery (§16.2, Milestone 6, item 30) — the customer-facing
++ * form for supabase/functions/recover-order-access.
++ *
++ * Deviates from §16.2's phone+email pair: this asks for phone + order
++ * number instead (see the Edge Function's own comment for why) — the order
++ * number is already shown on the order page and in every email, so it's
++ * something a guest is realistically likely to still have even without
++ * their original link.
++ */
++
++interface RecoveredOrder {
++  orderNumber: string;
++  fulfilmentMethod: string | null;
++  status: string;
++  createdAt: string;
++  url: string;
++}
++
++type Status = "idle" | "submitting" | "found" | "not-found" | "error";
++
++export default function FindOrderPage() {
++  const [phone, setPhone] = useState("");
++  const [orderNumber, setOrderNumber] = useState("");
++  const [status, setStatus] = useState<Status>("idle");
++  const [error, setError] = useState<string | null>(null);
++  const [result, setResult] = useState<RecoveredOrder | null>(null);
++
++  async function handleSubmit(e: React.FormEvent) {
++    e.preventDefault();
++    setStatus("submitting");
++    setError(null);
++
++    const { data, error: invokeError } = await supabase.functions.invoke("recover-order-access", {
++      body: { phone: phone.trim(), orderNumber: orderNumber.trim() },
++    });
++
++    if (invokeError) {
++      setStatus("error");
++      // Deliberately generic — mirrors the same "don't reveal too much"
++      // instinct as resubmit-payment/scan-pickup, and a 429 (rate limited)
++      // shouldn't tell a guest anything more specific either.
++      setError("We couldn't look that up right now. Please try again in a moment.");
++      return;
++    }
++
++    if (data?.found && data.order) {
++      setResult(data.order);
++      setStatus("found");
++    } else {
++      setStatus("not-found");
++    }
++  }
++
++  return (
++    <main className="min-h-screen flex items-center justify-center p-6">
++      <Card className="w-full max-w-sm">
++        <CardHeader>
++          <CardTitle>Find my order</CardTitle>
++        </CardHeader>
++        <CardContent className="space-y-4">
++          <p className="text-sm text-muted-foreground">
++            Lost your order link? Enter your phone number and your order number (shown on your order page and in
++            your emails, e.g. #010007).
++          </p>
++
++          <form onSubmit={handleSubmit} className="space-y-3">
++            <div className="space-y-1">
++              <label htmlFor="phone" className="text-sm font-medium">
++                Phone number
++              </label>
++              <input
++                id="phone"
++                type="tel"
++                required
++                value={phone}
++                onChange={(e) => setPhone(e.target.value)}
++                className="w-full rounded-md border px-3 py-2 text-sm"
++                placeholder="081234567890"
++              />
++            </div>
++            <div className="space-y-1">
++              <label htmlFor="orderNumber" className="text-sm font-medium">
++                Order number
++              </label>
++              <input
++                id="orderNumber"
++                type="text"
++                required
++                value={orderNumber}
++                onChange={(e) => setOrderNumber(e.target.value)}
++                className="w-full rounded-md border px-3 py-2 text-sm"
++                placeholder="#010007"
++              />
++            </div>
++            {error && <p className="text-destructive text-sm">{error}</p>}
++            <Button type="submit" className="w-full" disabled={status === "submitting"}>
++              {status === "submitting" ? "Searching…" : "Find my order"}
++            </Button>
++          </form>
++
++          {status === "not-found" && (
++            <p className="text-sm text-muted-foreground">
++              We couldn't find an order matching that phone number and order number. Double-check both against your
++              order confirmation.
++            </p>
++          )}
++
++          {status === "found" && result && (
++            <div className="space-y-2 pt-2 border-t">
++              <p className="text-sm font-medium">Found your order:</p>
++              <a href={result.url} className="block rounded-md border px-3 py-2 text-sm hover:bg-accent">
++                <span className="font-medium">{result.orderNumber}</span>{" "}
++                <span className="text-muted-foreground">
++                  · {result.fulfilmentMethod?.toLowerCase() ?? "pending"} ·{" "}
++                  {result.status.toLowerCase().replaceAll("_", " ")}
++                </span>
++              </a>
++            </div>
++          )}
++
++          <p className="text-sm text-center">
++            <Link to="/" className="text-blue-600 underline">
++              Back home
++            </Link>
++          </p>
++        </CardContent>
++      </Card>
++    </main>
++  );
++}
+diff --git a/src/pages/HomePage.tsx b/src/pages/HomePage.tsx
+index 5b0ed89..59e7975 100644
+--- a/src/pages/HomePage.tsx
++++ b/src/pages/HomePage.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useState } from "react";
+-import { useNavigate } from "react-router-dom";
++import { useNavigate, Link } from "react-router-dom";
+ import { useForm } from "react-hook-form";
+ import { zodResolver } from "@hookform/resolvers/zod";
+ import { z } from "zod";
+@@ -454,6 +454,11 @@ export default function HomePage() {
+       <div>
+         <h1 className="text-2xl font-semibold">Pre-Order &amp; Ready Stock System</h1>
+         <p className="text-gray-500 mt-1">Pick an item, enter your details, and place your order.</p>
++        <p className="text-sm mt-1">
++          <Link to="/orders/find" className="text-blue-600 underline">
++            Lost your order link?
++          </Link>
++        </p>
+       </div>
+ 
+       {batches !== null && batches.length > 0 && (
+diff --git a/supabase/config.toml b/supabase/config.toml
+index 5103438..b92ba53 100644
+--- a/supabase/config.toml
++++ b/supabase/config.toml
+@@ -15,12 +15,23 @@ project_id = "lhvxjgbjjamwatsmxiyc"
+ # anon key, while verify-payment/prepare-pickup/scan-pickup/record-tracking/
+ # record-batch-receipt/list-orders can still demand a real staff session
+ # inside the handler itself.
++#
++# Milestone 6: recover-order-access is guest-facing (own rate limiting
++# instead of a session, see its own file) and list-audit-logs is
++# staff-facing (requireAdmin(req, "canViewAuditLog")) — both listed below
++# for the same reason as everything else here. cleanup-payment-proofs is
++# deliberately NOT listed, same reasoning as send-queued-emails (Milestone
++# 5): it's cron-only, so the platform's default verify_jwt = true is the
++# actual boundary, not a per-function check.
+ [functions.create-order]
+ verify_jwt = false
+ 
+ [functions.health]
+ verify_jwt = false
+ 
++[functions.list-audit-logs]
++verify_jwt = false
++
+ [functions.list-orders]
+ verify_jwt = false
+ 
+@@ -33,6 +44,9 @@ verify_jwt = false
+ [functions.record-tracking]
+ verify_jwt = false
+ 
++[functions.recover-order-access]
++verify_jwt = false
++
+ [functions.resubmit-payment]
+ verify_jwt = false
+ 
+diff --git a/supabase/functions/_shared/http.ts b/supabase/functions/_shared/http.ts
+index 8569d3b..4645c9a 100644
+--- a/supabase/functions/_shared/http.ts
++++ b/supabase/functions/_shared/http.ts
+@@ -50,3 +50,18 @@ export function decimalStringToCents(value: string): number {
+ export function centsToDecimalString(cents: number): string {
+   return (cents / 100).toFixed(2);
+ }
++
++/**
++ * Client IP for per-IP rate limiting (Milestone 6, §16.1/§27) — Supabase
++ * Edge Functions run behind a proxy, so the real client address is in
++ * x-forwarded-for (the first entry; later entries are intermediate
++ * proxies), not available from the connection itself. Falls back to a
++ * fixed string rather than throwing: an Edge Function without this header
++ * (e.g. a local `supabase functions serve` test) shouldn't crash the
++ * request, it should just rate-limit as one shared bucket.
++ */
++export function getClientIp(req: Request): string {
++  const forwardedFor = req.headers.get("x-forwarded-for");
++  if (forwardedFor) return forwardedFor.split(",")[0].trim();
++  return "unknown";
++}
+diff --git a/supabase/functions/_shared/storage.ts b/supabase/functions/_shared/storage.ts
+index 2c866d5..05e79f1 100644
+--- a/supabase/functions/_shared/storage.ts
++++ b/supabase/functions/_shared/storage.ts
+@@ -23,3 +23,15 @@ export async function getSignedProofUrl(path: string, expiresInSeconds = 300): P
+   if (error || !data) return null;
+   return data.signedUrl;
+ }
++
++/**
++ * Deletes a payment-proof object — Milestone 6 (§8/§19 retention cleanup).
++ * Treats "already gone" as success: the retention job is meant to run
++ * periodically and must not fail (and re-attempt forever) just because a
++ * previous run, or a manual admin action, already removed the file.
++ */
++export async function deleteProofObject(path: string): Promise<{ ok: boolean; error: string | null }> {
++  const { error } = await storageClient.storage.from("payment-proofs").remove([path]);
++  if (error) return { ok: false, error: error.message };
++  return { ok: true, error: null };
++}
+diff --git a/supabase/functions/cleanup-payment-proofs/index.ts b/supabase/functions/cleanup-payment-proofs/index.ts
+new file mode 100644
+index 0000000..18bafa3
+--- /dev/null
++++ b/supabase/functions/cleanup-payment-proofs/index.ts
+@@ -0,0 +1,78 @@
++/**
++ * POST /cleanup-payment-proofs — scheduled worker, §8/§19 (Milestone 6,
++ * item 31): "Uploaded payment proof files are retained for 30 days after
++ * the related order reaches a completed fulfilment state (SHIPPED or
++ * PICKED_UP), then purged."
++ *
++ * Not customer- or admin-facing — same auth posture as send-queued-emails:
++ * deliberately left OUT of supabase/config.toml's verify_jwt = false list,
++ * so the platform default (verify_jwt = true) is the real boundary. The
++ * only caller is the pg_cron schedule (db/migrations/0006_milestone6_
++ * cleanup_schedule.sql), invoked with a genuine service-role JWT.
++ *
++ * lib/proof-retention.ts has the actual eligibility decision (pure, no DB).
++ * This function's job is only: fetch candidates, filter with that pure
++ * function, delete the storage object, then stamp proofDeletedAt so a
++ * later run doesn't try again — see db/schema.ts's proofDeletedAt comment
++ * for why that column exists (proofFileUrl itself stays NOT NULL and
++ * unchanged, so it still documents which path used to hold a file).
++ *
++ * A payment can be resubmitted after rejection (§26), so an order can have
++ * more than one payments row with a proof — every one of them tied to a
++ * fulfilled order is in scope, not just the latest.
++ */
++
++import { eq, and, isNull, isNotNull, lte } from "drizzle-orm";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { json } from "../_shared/http.ts";
++import { deleteProofObject } from "../_shared/storage.ts";
++import { orders, payments } from "../../../db/schema.ts";
++import { isEligibleForDeletion, RETENTION_DAYS } from "../../../lib/proof-retention.ts";
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  const now = new Date();
++  // Coarse pre-filter in SQL (fulfilled at all, not yet processed, and at
++  // least RETENTION_DAYS old by the cheapest possible bound) — the exact
++  // per-row cutoff still goes through isEligibleForDeletion below, so this
++  // is purely to avoid pulling the entire payments table on every run.
++  const earliestPossibleCutoff = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
++
++  const candidates = await db
++    .select({
++      paymentId: payments.id,
++      proofFileUrl: payments.proofFileUrl,
++      fulfilledAt: orders.fulfilledAt,
++    })
++    .from(payments)
++    .innerJoin(orders, eq(payments.orderId, orders.id))
++    .where(and(isNull(payments.proofDeletedAt), isNotNull(orders.fulfilledAt), lte(orders.fulfilledAt, earliestPossibleCutoff)));
++
++  let deletedCount = 0;
++  let failedCount = 0;
++
++  for (const candidate of candidates) {
++    if (!isEligibleForDeletion({ paymentId: candidate.paymentId, fulfilledAt: candidate.fulfilledAt, proofDeletedAt: null }, now)) {
++      continue;
++    }
++
++    const result = await deleteProofObject(candidate.proofFileUrl);
++    if (!result.ok) {
++      console.error(`cleanup-payment-proofs: failed to delete ${candidate.proofFileUrl} (payment ${candidate.paymentId}): ${result.error}`);
++      failedCount++;
++      continue;
++    }
++
++    await db.update(payments).set({ proofDeletedAt: now }).where(eq(payments.id, candidate.paymentId));
++    deletedCount++;
++  }
++
++  return json({ deleted: deletedCount, failed: failedCount, checked: candidates.length });
++});
+diff --git a/supabase/functions/list-audit-logs/index.ts b/supabase/functions/list-audit-logs/index.ts
+new file mode 100644
+index 0000000..80503c6
+--- /dev/null
++++ b/supabase/functions/list-audit-logs/index.ts
+@@ -0,0 +1,59 @@
++/**
++ * POST /list-audit-logs — audit log viewer for the admin UI (§20,
++ * Milestone 6, item 32), gated on canViewAuditLog (§18.4) — the one
++ * per-action permission that's actually a *read* gate, unlike the rest of
++ * §18.4 ("the dashboard itself is read-only for everyone regardless of
++ * permissions") which list-orders relies on via requireAdmin(req, null).
++ *
++ * Can't be a direct RLS-gated browser read the way AdminBatchesPage reads
++ * batches/order_items: audit_logs.actorId references admin_users, and
++ * admin_users is deliberately not directly readable by anyone (see its own
++ * comment in db/schema.ts) — a service-role Edge Function is the only way
++ * to join in the actor's name regardless of how audit_logs' own RLS is
++ * configured, so building this as a direct-read table would still need a
++ * second exception carved into admin_users just for this one join. Simpler
++ * to keep the existing "admin_users is Edge-Function-only" invariant intact
++ * and do the read here instead — same reasoning list-orders already
++ * established for orders before Milestone 4 added its own RLS.
++ */
++
++import { eq, desc } from "drizzle-orm";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { json, errorResponse } from "../_shared/http.ts";
++import { requireAdmin } from "../_shared/auth.ts";
++import { auditLogs, adminUsers } from "../../../db/schema.ts";
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  try {
++    await requireAdmin(req, "canViewAuditLog");
++
++    const rows = await db
++      .select({
++        id: auditLogs.id,
++        entityType: auditLogs.entityType,
++        entityId: auditLogs.entityId,
++        action: auditLogs.action,
++        beforeValue: auditLogs.beforeValue,
++        afterValue: auditLogs.afterValue,
++        createdAt: auditLogs.createdAt,
++        actorName: adminUsers.name,
++        actorEmail: adminUsers.email,
++      })
++      .from(auditLogs)
++      .leftJoin(adminUsers, eq(auditLogs.actorId, adminUsers.id))
++      .orderBy(desc(auditLogs.createdAt))
++      .limit(200);
++
++    return json({ logs: rows });
++  } catch (err) {
++    return errorResponse(err, "Unexpected error loading the audit log.");
++  }
++});
+diff --git a/supabase/functions/record-tracking/index.ts b/supabase/functions/record-tracking/index.ts
+index c0f4f90..17b7caa 100644
+--- a/supabase/functions/record-tracking/index.ts
++++ b/supabase/functions/record-tracking/index.ts
+@@ -125,6 +125,11 @@ Deno.serve(async (req) => {
+         stockAvailable: true, // unused by this transition
+       });
+ 
++      // Milestone 6 (§8/§19 retention clock) — see db/schema.ts's
++      // fulfilledAt comment; same stamp site pattern as scan-pickup's
++      // PICKUP_CONFIRMED branch.
++      await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
++
+       return { status: to };
+     });
+ 
+diff --git a/supabase/functions/recover-order-access/index.ts b/supabase/functions/recover-order-access/index.ts
+new file mode 100644
+index 0000000..98d687b
+--- /dev/null
++++ b/supabase/functions/recover-order-access/index.ts
+@@ -0,0 +1,140 @@
++/**
++ * POST /recover-order-access — guest order access recovery (§16.2,
++ * Milestone 6, item 30).
++ *
++ * PRD §16.2 describes phone + email as the cross-check pair. Deviation
++ * flagged deliberately, not a silent reinterpretation: this recovers by
++ * phone + order number instead, since the order number is already sent to
++ * the customer through every other channel (order page, all 4 emails)
++ * anyway, and matching it exactly is a simpler ask than remembering which
++ * email was typed at checkout. Order number is customer-facing but not
++ * secret — sequential per fulfilment type (db/schema.ts pickup_order_seq/
++ * shipping_order_seq) — so unlike email this isn't an independent identity
++ * signal, just a second thing that has to match. Rate limiting below is
++ * the real defense against guessing here, not the choice of fields.
++ *
++ * Reuses the exact same decrypt path send-queued-emails uses to rebuild a
++ * link from accessTokenEncrypted (see db/schema.ts's accessTokenEncrypted
++ * comment for why a one-way hash alone can't do this) — same secret, same
++ * pgcrypto call, so there's only one place this logic can drift.
++ *
++ * Rate limited (§16.1/§27 "10 requests per minute per IP") — a customer-
++ * facing order number is a low-entropy guessing surface (sequential, not
++ * random), so this endpoint needs real protection even though the PRD's
++ * wording for the limit is about token-based access specifically.
++ * lib/rate-limit.ts has the threshold logic; access_recovery_attempts
++ * (db/schema.ts) is the per-IP counter.
++ */
++
++import { eq, and, gte, sql } from "drizzle-orm";
++import { z } from "zod";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { json, errorResponse, getClientIp } from "../_shared/http.ts";
++import { customers, orders, accessRecoveryAttempts } from "../../../db/schema.ts";
++import { isRateLimited, windowStart } from "../../../lib/rate-limit.ts";
++import { formatOrderNumber, parseOrderNumber } from "../../../lib/order-number.ts";
++
++// Milestone 5 (§16.1, §27) — same secret create-order/send-queued-emails
++// use to write/read accessTokenEncrypted.
++const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
++if (!accessTokenEncKey) {
++  throw new Error("ACCESS_TOKEN_ENC_KEY must be set as a Supabase Edge Function secret.");
++}
++
++const frontendBaseUrl = Deno.env.get("FRONTEND_BASE_URL");
++if (!frontendBaseUrl) {
++  throw new Error("FRONTEND_BASE_URL must be set as a Supabase Edge Function secret.");
++}
++
++// Same pattern as customer.phone in create-order — digits only.
++const PHONE_PATTERN = /^[0-9]{8,15}$/;
++
++const recoverySchema = z.object({
++  phone: z.string().trim().regex(PHONE_PATTERN, "Phone number must be 8–15 digits, numbers only."),
++  // Format validated here (not a "not found" case) — a malformed order
++  // number isn't sensitive the way a wrong phone/order combo is.
++  orderNumber: z.string().trim().min(1, "Order number is required."),
++});
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  let input: z.infer<typeof recoverySchema>;
++  try {
++    input = recoverySchema.parse(await req.json());
++  } catch (err) {
++    if (err instanceof z.ZodError) {
++      return json({ error: "Invalid request.", details: err.issues }, 400);
++    }
++    return json({ error: "Invalid JSON body." }, 400);
++  }
++
++  const parsed = parseOrderNumber(input.orderNumber);
++  if (!parsed) {
++    return json({ error: "That doesn't look like a valid order number (e.g. #010007)." }, 400);
++  }
++
++  try {
++    const ip = getClientIp(req);
++    const now = new Date();
++
++    const priorAttempts = await db
++      .select({ id: accessRecoveryAttempts.id })
++      .from(accessRecoveryAttempts)
++      .where(and(eq(accessRecoveryAttempts.ipAddress, ip), gte(accessRecoveryAttempts.createdAt, windowStart(now))));
++
++    if (isRateLimited(priorAttempts.length)) {
++      return json({ error: "Too many attempts. Please wait a minute and try again." }, 429);
++    }
++
++    await db.insert(accessRecoveryAttempts).values({ ipAddress: ip });
++
++    // Order number + fulfilment method uniquely identifies one order
++    // (each is its own sequence, db/schema.ts pickup_order_seq/
++    // shipping_order_seq) — unlike a phone+email cross-check, which could
++    // legitimately match several orders for a repeat customer.
++    const [order] = await db
++      .select({
++        id: orders.id,
++        orderNumber: orders.orderNumber,
++        fulfilmentMethod: orders.fulfilmentMethod,
++        status: orders.status,
++        createdAt: orders.createdAt,
++        customerPhone: customers.phone,
++        rawToken: sql<string | null>`pgp_sym_decrypt(decode(${orders.accessTokenEncrypted}, 'base64'), ${accessTokenEncKey})`,
++      })
++      .from(orders)
++      .innerJoin(customers, eq(orders.customerId, customers.id))
++      .where(and(eq(orders.fulfilmentMethod, parsed.fulfilmentMethod), eq(orders.orderNumber, parsed.orderNumber)));
++
++    // Deliberately generic — doesn't reveal whether the order number
++    // exists at all if the phone doesn't match, or vice versa. Same
++    // reasoning as resubmit-payment/scan-pickup's generic error responses.
++    // Also covers the pre-Milestone-5 case (accessTokenEncrypted not
++    // backfilled yet, rawToken decrypts to null) — nothing usable to
++    // return either way, same response shape.
++    if (!order || order.customerPhone !== input.phone || order.rawToken === null) {
++      return json({ found: false });
++    }
++
++    return json({
++      found: true,
++      order: {
++        orderNumber: formatOrderNumber(order.fulfilmentMethod, order.orderNumber, order.id),
++        fulfilmentMethod: order.fulfilmentMethod,
++        status: order.status,
++        createdAt: order.createdAt,
++        url: `${frontendBaseUrl}/orders/${order.rawToken}`,
++      },
++    });
++  } catch (err) {
++    return errorResponse(err, "Unexpected error recovering order access.");
++  }
++});
++
+diff --git a/supabase/functions/scan-pickup/index.ts b/supabase/functions/scan-pickup/index.ts
+index 7eb730d..d639370 100644
+--- a/supabase/functions/scan-pickup/index.ts
++++ b/supabase/functions/scan-pickup/index.ts
+@@ -113,6 +113,10 @@ Deno.serve(async (req) => {
+           actorId: admin.id,
+           stockAvailable: true, // unused by this transition
+         });
++        // Milestone 6 (§8/§19 retention clock) — see db/schema.ts's
++        // fulfilledAt comment for why this is its own column/stamp site
++        // rather than something transitionOrder sets centrally.
++        await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
+       }
+ 
+       const [customer] = await tx.select().from(customers).where(eq(customers.id, order.customerId));
+-- 
+2.43.0
+
