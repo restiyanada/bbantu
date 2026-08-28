@@ -208,14 +208,14 @@ export default function AdminDashboardPage() {
       header: "Proof",
       cell: ({ row }) => {
         const payment = row.original.payment;
-        if (!payment) return <span className="text-gray-400 text-sm">—</span>;
+        if (!payment) return <span className="text-muted-foreground text-sm">—</span>;
         if (!payment.proofUrl) {
-          return <span className="text-gray-400 text-sm">Expired</span>;
+          return <span className="text-muted-foreground text-sm">Expired</span>;
         }
         return (
           <Dialog>
             <DialogTrigger asChild>
-              <button type="button" className="text-xs text-blue-600 underline">
+              <button type="button" className="text-xs text-primary underline">
                 View
               </button>
             </DialogTrigger>
@@ -237,11 +237,11 @@ export default function AdminDashboardPage() {
       header: "Shipping",
       cell: ({ row }) => {
         const shipment = row.original.shipment;
-        if (!shipment) return <span className="text-gray-400 text-sm">—</span>;
+        if (!shipment) return <span className="text-muted-foreground text-sm">—</span>;
         return (
           <Dialog>
             <DialogTrigger asChild>
-              <button type="button" className="text-xs text-blue-600 underline">
+              <button type="button" className="text-xs text-primary underline">
                 View
               </button>
             </DialogTrigger>
@@ -253,10 +253,10 @@ export default function AdminDashboardPage() {
                 <p>
                   <span className="font-medium">{shipment.recipientName}</span> — {shipment.recipientPhone}
                 </p>
-                <p className="text-gray-600">
+                <p className="text-muted-foreground">
                   {shipment.address}, {shipment.destinationDistrictName}
                 </p>
-                <p className="text-gray-600 pt-2 mt-2 border-t">
+                <p className="text-muted-foreground pt-2 mt-2 border-t">
                   {shipment.courier}
                   {shipment.service ? ` — ${shipment.service}` : ""} · {formatIDR(shipment.cost ?? "0")}
                 </p>
@@ -294,7 +294,7 @@ export default function AdminDashboardPage() {
               />
               <button
                 type="button"
-                className="text-xs text-gray-500 underline"
+                className="text-xs text-muted-foreground underline"
                 onClick={() => setRejectingId(null)}
               >
                 Cancel
@@ -313,7 +313,7 @@ export default function AdminDashboardPage() {
               />
               <button
                 type="button"
-                className="text-xs text-gray-500 underline"
+                className="text-xs text-muted-foreground underline"
                 onClick={() => setTrackingEntryId(null)}
               >
                 Cancel
@@ -380,7 +380,7 @@ export default function AdminDashboardPage() {
           );
         }
 
-        return <span className="text-gray-400 text-sm">—</span>;
+        return <span className="text-muted-foreground text-sm">—</span>;
       },
     }),
   ];
@@ -421,7 +421,7 @@ export default function AdminDashboardPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold">Admin — Orders</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Orders</h1>
           <p className="text-muted-foreground mt-1">
             Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
           </p>
@@ -437,7 +437,7 @@ export default function AdminDashboardPage() {
         )}
         {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 
-        {orders === null && !loadError && <p className="text-gray-500 text-sm">Loading orders…</p>}
+        {orders === null && !loadError && <p className="text-muted-foreground text-sm">Loading orders…</p>}
 
         {orders !== null && (
           <Card>

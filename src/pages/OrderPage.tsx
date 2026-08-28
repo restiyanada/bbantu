@@ -155,7 +155,7 @@ export default function OrderPage() {
   if (state.kind === "loading") {
     return (
       <main className="p-4 sm:p-8">
-        <p className="text-gray-500">Loading your order…</p>
+        <p className="text-muted-foreground">Loading your order…</p>
       </main>
     );
   }
@@ -164,7 +164,7 @@ export default function OrderPage() {
     return (
       <main className="p-4 sm:p-8">
         <h1 className="text-2xl font-semibold">Order not found</h1>
-        <p className="text-gray-500 mt-2">{state.message}</p>
+        <p className="text-muted-foreground mt-2">{state.message}</p>
       </main>
     );
   }
@@ -306,11 +306,11 @@ export default function OrderPage() {
   return (
     <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">
+        <h1 className="text-3xl font-bold tracking-tight">
           Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
         </h1>
-        {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
-        <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+        {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}
+        <p className="text-muted-foreground mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
       </div>
 
       <Card>
@@ -330,9 +330,9 @@ export default function OrderPage() {
               <div key={i} className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2">
                   {imageUrl ? (
-                    <img src={imageUrl} alt="" className="h-10 w-10 rounded-md object-cover border" />
+                    <img src={imageUrl} alt="" className="h-10 w-10 rounded-lg object-cover border" />
                   ) : (
-                    <span className="h-10 w-10 rounded-md border bg-muted" />
+                    <span className="h-10 w-10 rounded-lg border bg-muted" />
                   )}
                   {item.product_variants?.name ?? "Item"} × {item.quantity}
                 </span>
@@ -369,7 +369,7 @@ export default function OrderPage() {
           {payments.length > 0 && (
             <div className="pt-2 mt-2 border-t space-y-1">
               {payments.map((p, i) => (
-                <div key={i} className="flex justify-between text-gray-500">
+                <div key={i} className="flex justify-between text-muted-foreground">
                   <span>Payment ({p.status.toLowerCase()})</span>
                   <span>{formatIDR(p.amount)}</span>
                 </div>
@@ -386,9 +386,9 @@ export default function OrderPage() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {payments[0].rejection_reason && (
-              <p className="text-gray-600">Reason: {payments[0].rejection_reason}</p>
+              <p className="text-muted-foreground">Reason: {payments[0].rejection_reason}</p>
             )}
-            <p className="text-gray-500">Upload a new payment proof to try again.</p>
+            <p className="text-muted-foreground">Upload a new payment proof to try again.</p>
             <input
               ref={resubmitInputRef}
               type="file"
@@ -397,7 +397,7 @@ export default function OrderPage() {
               disabled={resubmitUploading}
               className="text-sm"
             />
-            {resubmitUploading && <p className="text-gray-500">Uploading…</p>}
+            {resubmitUploading && <p className="text-muted-foreground">Uploading…</p>}
             {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
               <FileUploadPreview
                 previewUrl={resubmitPreviewUrl}
@@ -424,13 +424,13 @@ export default function OrderPage() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {payments[0]?.status === "PENDING" ? (
-              <p className="text-gray-500">Your balance payment is awaiting review.</p>
+              <p className="text-muted-foreground">Your balance payment is awaiting review.</p>
             ) : (
               <>
                 {payments[0]?.status === "REJECTED" && payments[0].rejection_reason && (
-                  <p className="text-gray-600">Previous attempt rejected: {payments[0].rejection_reason}</p>
+                  <p className="text-muted-foreground">Previous attempt rejected: {payments[0].rejection_reason}</p>
                 )}
-                <p className="text-gray-500">
+                <p className="text-muted-foreground">
                   Your item is ready — upload proof for the remaining balance of {formatIDR(balanceDue.toFixed(2))}.
                 </p>
                 <input
@@ -441,7 +441,7 @@ export default function OrderPage() {
                   disabled={balanceUploading}
                   className="text-sm"
                 />
-                {balanceUploading && <p className="text-gray-500">Uploading…</p>}
+                {balanceUploading && <p className="text-muted-foreground">Uploading…</p>}
                 {balancePath && balancePreviewUrl && !balanceUploading && (
                   <FileUploadPreview
                     previewUrl={balancePreviewUrl}
@@ -469,10 +469,10 @@ export default function OrderPage() {
             <CardTitle>Pickup</CardTitle>
           </CardHeader>
           <CardContent className="text-sm space-y-2">
-            <p className="text-gray-500">
+            <p className="text-muted-foreground">
               Show this code at the booth. Staff will scan it to confirm your pickup.
             </p>
-            <p className="font-mono text-xs break-all bg-gray-100 rounded p-2">{pickupToken}</p>
+            <p className="font-mono text-xs break-all bg-muted rounded p-2">{pickupToken}</p>
           </CardContent>
         </Card>
       )}
@@ -484,7 +484,7 @@ export default function OrderPage() {
           </CardHeader>
           <CardContent className="text-sm space-y-1">
             <div className="flex justify-between">
-              <span className="text-gray-500">Delivering to</span>
+              <span className="text-muted-foreground">Delivering to</span>
               <span className="text-right">
                 {shipment.recipient_name}
                 <br />
@@ -492,7 +492,7 @@ export default function OrderPage() {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">Courier</span>
+              <span className="text-muted-foreground">Courier</span>
               <span>
                 {shipment.courier}
                 {shipment.service ? ` — ${shipment.service}` : ""}
@@ -500,11 +500,11 @@ export default function OrderPage() {
             </div>
             {shipment.tracking_number ? (
               <div className="flex justify-between pt-2 mt-2 border-t">
-                <span className="text-gray-500">Tracking number</span>
+                <span className="text-muted-foreground">Tracking number</span>
                 <span className="font-mono">{shipment.tracking_number}</span>
               </div>
             ) : (
-              <p className="text-gray-500 pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
+              <p className="text-muted-foreground pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
             )}
           </CardContent>
         </Card>

@@ -90,7 +90,7 @@ export default function AdminAuditLogPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold">Admin — Audit log</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
         </div>
 
         {!canView && (
@@ -101,7 +101,7 @@ export default function AdminAuditLogPage() {
         )}
 
         {canView && loadError && <p className="text-destructive text-sm">{loadError}</p>}
-        {canView && logs === null && !loadError && <p className="text-gray-500 text-sm">Loading…</p>}
+        {canView && logs === null && !loadError && <p className="text-muted-foreground text-sm">Loading…</p>}
 
         {canView && logs !== null && (
           <Card>
