@@ -8,6 +8,9 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
+import { Input, Textarea, Select } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 interface VariantRow {
   id: string;
@@ -429,12 +432,12 @@ export default function HomePage() {
   }
 
   return (
-    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Pre-Order &amp; Ready Stock System</h1>
-        <p className="text-gray-500 mt-1">Pick an item, enter your details, and place your order.</p>
-        <p className="text-sm mt-1">
-          <Link to="/orders/find" className="text-blue-600 underline">
+    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-8">
+      <div className="space-y-1.5">
+        <h1 className="text-3xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
+        <p className="text-muted-foreground">Pick an item, enter your details, and place your order.</p>
+        <p className="text-sm pt-1">
+          <Link to="/orders/find" className="text-primary underline underline-offset-2 hover:no-underline">
             Lost your order link?
           </Link>
         </p>
@@ -445,9 +448,12 @@ export default function HomePage() {
           <button
             type="button"
             onClick={() => handleSourceChange("READY_STOCK")}
-            className={`text-sm px-3 py-1.5 rounded-md border ${
-              activeSource === "READY_STOCK" ? "bg-primary text-primary-foreground" : "bg-background"
-            }`}
+            className={cn(
+              "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
+              activeSource === "READY_STOCK"
+                ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                : "bg-card hover:bg-muted"
+            )}
           >
             Ready stock
           </button>
@@ -456,9 +462,12 @@ export default function HomePage() {
               key={b.id}
               type="button"
               onClick={() => handleSourceChange(b.id)}
-              className={`text-sm px-3 py-1.5 rounded-md border ${
-                activeSource === b.id ? "bg-primary text-primary-foreground" : "bg-background"
-              }`}
+              className={cn(
+                "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
+                activeSource === b.id
+                  ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                  : "bg-card hover:bg-muted"
+              )}
             >
               {b.name} (pre-order)
             </button>
@@ -472,23 +481,23 @@ export default function HomePage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {loadError && <p className="text-destructive text-sm">{loadError}</p>}
-          {!loadError && products === null && <p className="text-gray-500 text-sm">Loading items…</p>}
+          {!loadError && products === null && <p className="text-muted-foreground text-sm">Loading items…</p>}
           {activeSource === "READY_STOCK" && products !== null && products.length === 0 && (
-            <p className="text-gray-500 text-sm">Nothing available to order right now.</p>
+            <p className="text-muted-foreground text-sm">Nothing available to order right now.</p>
           )}
 
           {activeSource === "READY_STOCK" &&
             products?.map((product) => (
-              <div key={product.id} className="space-y-2">
+              <div key={product.id} className="space-y-2 pb-4 border-b last:border-0 last:pb-0">
                 <div className="flex items-center gap-3">
                   {product.image_url ? (
-                    <img src={product.image_url} alt="" className="h-12 w-12 rounded-md object-cover border shrink-0" />
+                    <img src={product.image_url} alt="" className="h-12 w-12 rounded-lg object-cover border shrink-0" />
                   ) : (
-                    <span className="h-12 w-12 rounded-md border bg-muted shrink-0" />
+                    <span className="h-12 w-12 rounded-lg border bg-muted shrink-0" />
                   )}
                   <div>
                     <p className="font-medium">{product.name}</p>
-                    {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+                    {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
                   </div>
                 </div>
                 {product.product_variants.map((variant) => (
@@ -496,7 +505,7 @@ export default function HomePage() {
                     <span>
                       {variant.name} — {formatIDR(variant.price)}
                     </span>
-                    <input
+                    <Input
                       type="number"
                       min={0}
                       value={quantities[variant.id] ?? 0}
@@ -506,7 +515,7 @@ export default function HomePage() {
                           [variant.id]: Math.max(0, Number(e.target.value) || 0),
                         }))
                       }
-                      className="w-16 rounded-md border bg-background px-2 py-1 text-sm text-right"
+                      className="w-16 h-8 text-right"
                     />
                   </div>
                 ))}
@@ -516,19 +525,19 @@ export default function HomePage() {
           {activeBatch && (
             <div className="space-y-2">
               {activeBatch.items.length === 0 && (
-                <p className="text-gray-500 text-sm">This batch has no items yet.</p>
+                <p className="text-muted-foreground text-sm">This batch has no items yet.</p>
               )}
               {activeBatch.items.map((item) => (
                 <div key={item.variantId} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2">
                     {item.imageUrl ? (
-                      <img src={item.imageUrl} alt="" className="h-8 w-8 rounded-md object-cover border shrink-0" />
+                      <img src={item.imageUrl} alt="" className="h-8 w-8 rounded-lg object-cover border shrink-0" />
                     ) : (
-                      <span className="h-8 w-8 rounded-md border bg-muted shrink-0" />
+                      <span className="h-8 w-8 rounded-lg border bg-muted shrink-0" />
                     )}
                     {item.label} — {formatIDR(item.price)}
                   </span>
-                  <input
+                  <Input
                     type="number"
                     min={0}
                     value={quantities[item.variantId] ?? 0}
@@ -538,25 +547,31 @@ export default function HomePage() {
                         [item.variantId]: Math.max(0, Number(e.target.value) || 0),
                       }))
                     }
-                    className="w-16 rounded-md border bg-background px-2 py-1 text-sm text-right"
+                    className="w-16 h-8 text-right"
                   />
                 </div>
               ))}
               {activeBatch.allowedPaymentTypes.length > 1 && (
-                <div className="pt-2 mt-2 border-t flex flex-wrap gap-4 text-sm">
+                <div className="pt-3 mt-2 border-t flex flex-wrap gap-4 text-sm">
                   {activeBatch.allowedPaymentTypes.includes("FULL") && (
                     <label className="flex items-center gap-1.5">
                       <input
                         type="radio"
                         checked={paymentType === "FULL"}
                         onChange={() => setPaymentType("FULL")}
+                        className="accent-primary"
                       />
                       Pay in full
                     </label>
                   )}
                   {activeBatch.allowedPaymentTypes.includes("DP") && (
                     <label className="flex items-center gap-1.5">
-                      <input type="radio" checked={paymentType === "DP"} onChange={() => setPaymentType("DP")} />
+                      <input
+                        type="radio"
+                        checked={paymentType === "DP"}
+                        onChange={() => setPaymentType("DP")}
+                        className="accent-primary"
+                      />
                       Pay 50% deposit now
                     </label>
                   )}
@@ -575,39 +590,29 @@ export default function HomePage() {
             <CardTitle>Your details</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div>
-              <label htmlFor="name" className="text-sm font-medium">
-                Name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="name"
-                {...register("name")}
-                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              />
-              {errors.name && <p className="text-destructive text-xs mt-1">{errors.name.message}</p>}
+            <div className="space-y-1.5">
+              <Label htmlFor="name">
+                Name
+                <RequiredMark />
+              </Label>
+              <Input id="name" aria-invalid={!!errors.name} {...register("name")} />
+              {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
             </div>
-            <div>
-              <label htmlFor="phone" className="text-sm font-medium">
-                Phone number <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="phone"
-                {...register("phone")}
-                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              />
-              {errors.phone && <p className="text-destructive text-xs mt-1">{errors.phone.message}</p>}
+            <div className="space-y-1.5">
+              <Label htmlFor="phone">
+                Phone number
+                <RequiredMark />
+              </Label>
+              <Input id="phone" aria-invalid={!!errors.phone} {...register("phone")} />
+              {errors.phone && <p className="text-destructive text-xs">{errors.phone.message}</p>}
             </div>
-            <div>
-              <label htmlFor="email" className="text-sm font-medium">
-                Email <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="email"
-                type="email"
-                {...register("email")}
-                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              />
-              {errors.email && <p className="text-destructive text-xs mt-1">{errors.email.message}</p>}
+            <div className="space-y-1.5">
+              <Label htmlFor="email">
+                Email
+                <RequiredMark />
+              </Label>
+              <Input id="email" type="email" aria-invalid={!!errors.email} {...register("email")} />
+              {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
             </div>
           </CardContent>
         </Card>
@@ -624,6 +629,7 @@ export default function HomePage() {
                     type="radio"
                     checked={fulfilmentMethod === "PICKUP"}
                     onChange={() => setFulfilmentMethod("PICKUP")}
+                    className="accent-primary"
                   />
                   Booth pickup
                 </label>
@@ -632,24 +638,26 @@ export default function HomePage() {
                     type="radio"
                     checked={fulfilmentMethod === "SHIPPING"}
                     onChange={() => setFulfilmentMethod("SHIPPING")}
+                    className="accent-primary"
                   />
                   Shipping (JNE)
                 </label>
               </div>
 
               {fulfilmentMethod === "SHIPPING" && (
-                <div className="space-y-3 pt-2 border-t">
+                <div className="space-y-3 pt-3 border-t">
                   {locationError && <p className="text-destructive text-xs">{locationError}</p>}
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-xs text-gray-500">
-                        Province <span className="text-destructive">*</span>
-                      </label>
-                      <select
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">
+                        Province
+                        <RequiredMark />
+                      </Label>
+                      <Select
                         value={selectedProvinceCode}
                         onChange={(e) => void handleProvinceChange(e.target.value)}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                        className="h-8 text-sm"
                       >
                         <option value="">
                           {provinces === null ? "Loading…" : "Select province"}
@@ -659,17 +667,18 @@ export default function HomePage() {
                             {p.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
-                    <div>
-                      <label className="text-xs text-gray-500">
-                        City / Regency <span className="text-destructive">*</span>
-                      </label>
-                      <select
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">
+                        City / Regency
+                        <RequiredMark />
+                      </Label>
+                      <Select
                         value={selectedCityCode}
                         onChange={(e) => void handleCityChange(e.target.value)}
                         disabled={!selectedProvinceCode}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
+                        className="h-8 text-sm"
                       >
                         <option value="">{cities === null ? "—" : "Select city"}</option>
                         {cities?.map((c) => (
@@ -677,17 +686,18 @@ export default function HomePage() {
                             {c.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
-                    <div>
-                      <label className="text-xs text-gray-500">
-                        District <span className="text-destructive">*</span>
-                      </label>
-                      <select
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">
+                        District
+                        <RequiredMark />
+                      </Label>
+                      <Select
                         value={selectedDistrict?.code ?? ""}
                         onChange={(e) => handleDistrictChange(e.target.value)}
                         disabled={!selectedCityCode}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm disabled:opacity-50"
+                        className="h-8 text-sm"
                       >
                         <option value="">{districts === null ? "—" : "Select district"}</option>
                         {districts?.map((d) => (
@@ -695,24 +705,25 @@ export default function HomePage() {
                             {d.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                   </div>
 
-                  <div>
-                    <label className="text-xs text-gray-500">
-                      Street address, RT/RW, landmark, etc. <span className="text-destructive">*</span>
-                    </label>
-                    <textarea
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">
+                      Street address, RT/RW, landmark, etc.
+                      <RequiredMark />
+                    </Label>
+                    <Textarea
                       value={addressDetail}
                       onChange={(e) => setAddressDetail(e.target.value)}
                       rows={2}
-                      className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                      className="text-sm"
                     />
                   </div>
 
-                  <p className="text-xs text-gray-500">
-                    Shipping to <span className="font-medium text-gray-700">{watch("name") || "—"}</span> ·{" "}
+                  <p className="text-xs text-muted-foreground">
+                    Shipping to <span className="font-medium text-foreground">{watch("name") || "—"}</span> ·{" "}
                     {watch("phone") || "—"}
                   </p>
 
@@ -732,16 +743,22 @@ export default function HomePage() {
                       {rates.map((rate) => (
                         <label
                           key={rate.serviceCode}
-                          className="flex items-center justify-between rounded-md border px-3 py-2 cursor-pointer"
+                          className={cn(
+                            "flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer transition-colors",
+                            selectedServiceCode === rate.serviceCode
+                              ? "border-primary bg-accent"
+                              : "hover:bg-muted"
+                          )}
                         >
                           <span className="flex items-center gap-2">
                             <input
                               type="radio"
                               checked={selectedServiceCode === rate.serviceCode}
                               onChange={() => setSelectedServiceCode(rate.serviceCode)}
+                              className="accent-primary"
                             />
                             JNE {rate.serviceName}
-                            {rate.etd && <span className="text-gray-500"> · {rate.etd} days</span>}
+                            {rate.etd && <span className="text-muted-foreground"> · {rate.etd} days</span>}
                           </span>
                           <span className="font-medium">{formatIDR(rate.price)}</span>
                         </label>
@@ -776,7 +793,7 @@ export default function HomePage() {
               </div>
 
               {effectivePaymentType === "DP" ? (
-                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3.5 space-y-1">
                   <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
                   <div className="flex justify-between text-amber-900">
                     <span>Merchandise deposit (50%)</span>
@@ -801,7 +818,7 @@ export default function HomePage() {
                   </p>
                 </div>
               ) : (
-                <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+                <div className="rounded-lg bg-blue-50 border border-blue-200 p-3.5">
                   <p className="font-medium text-blue-900">You're paying the full amount now.</p>
                   <div className="flex justify-between text-blue-900 mt-1">
                     <span>Amount to transfer</span>
@@ -812,15 +829,15 @@ export default function HomePage() {
 
               {paymentSettings ? (
                 <div className="pt-2 mt-2 border-t space-y-1">
-                  <p className="text-gray-500">Transfer to:</p>
+                  <p className="text-muted-foreground">Transfer to:</p>
                   <p>
                     <span className="font-medium">{paymentSettings.bank_name}</span> —{" "}
                     {paymentSettings.account_number}
                   </p>
-                  <p className="text-gray-500">a.n. {paymentSettings.account_holder_name}</p>
+                  <p className="text-muted-foreground">a.n. {paymentSettings.account_holder_name}</p>
                 </div>
               ) : (
-                <p className="text-gray-500 pt-2 mt-2 border-t">
+                <p className="text-muted-foreground pt-2 mt-2 border-t">
                   Bank account details aren't configured yet — contact us before paying.
                 </p>
               )}
@@ -836,7 +853,7 @@ export default function HomePage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 Upload a screenshot of your transfer receipt for the amount shown above.
               </p>
               <input
@@ -847,7 +864,7 @@ export default function HomePage() {
                 disabled={proofUploading}
                 className="text-sm"
               />
-              {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
+              {proofUploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
               {proofPath && proofPreviewUrl && !proofUploading && (
                 <FileUploadPreview previewUrl={proofPreviewUrl} label={proofFileName ?? "Uploaded"} onRemove={handleRemoveProof} />
               )}

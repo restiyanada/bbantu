@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 
 interface RecoveredOrder {
   orderNumber: string;
@@ -56,32 +58,32 @@ export default function FindOrderPage() {
             your emails, e.g. #010007).
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="space-y-1">
-              <label htmlFor="phone" className="text-sm font-medium">
-                Phone number <span className="text-destructive">*</span>
-              </label>
-              <input
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="phone">
+                Phone number
+                <RequiredMark />
+              </Label>
+              <Input
                 id="phone"
                 type="tel"
                 required
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="081234567890"
               />
             </div>
-            <div className="space-y-1">
-              <label htmlFor="orderNumber" className="text-sm font-medium">
-                Order number <span className="text-destructive">*</span>
-              </label>
-              <input
+            <div className="space-y-1.5">
+              <Label htmlFor="orderNumber">
+                Order number
+                <RequiredMark />
+              </Label>
+              <Input
                 id="orderNumber"
                 type="text"
                 required
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
-                className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="#010007"
               />
             </div>
@@ -112,7 +114,7 @@ export default function FindOrderPage() {
           )}
 
           <p className="text-sm text-center">
-            <Link to="/" className="text-blue-600 underline">
+            <Link to="/" className="text-primary underline underline-offset-2 hover:no-underline">
               Back home
             </Link>
           </p>
