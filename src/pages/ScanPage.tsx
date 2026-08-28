@@ -5,6 +5,7 @@ import { useAdminAuth } from "@/lib/adminAuth";
 import { formatOrderNumber } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import AdminLayout from "@/components/AdminLayout";
 
 interface ScanResult {
   orderId: string;
@@ -138,6 +139,7 @@ export default function ScanPage() {
   }
 
   return (
+    <AdminLayout>
     <main className="p-8 max-w-md mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Pickup Scanner</h1>
@@ -267,5 +269,6 @@ export default function ScanPage() {
         </Card>
       )}
     </main>
+    </AdminLayout>
   );
 }

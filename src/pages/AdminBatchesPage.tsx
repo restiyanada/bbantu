@@ -8,6 +8,7 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import AdminLayout from "@/components/AdminLayout";
 
 // Milestone 4: batches/batch_items now have RLS (db/schema.ts) requiring
 // canManageProductsBatches for writes — same "disabled here is UX, RLS is
@@ -294,6 +295,7 @@ export default function AdminBatchesPage() {
   }
 
   return (
+    <AdminLayout>
     <main className="p-8 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Admin — Batches</h1>
@@ -509,5 +511,6 @@ export default function AdminBatchesPage() {
         </Card>
       ))}
     </main>
+    </AdminLayout>
   );
 }

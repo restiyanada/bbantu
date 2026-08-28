@@ -1,10 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import {
-  useReactTable,
-  getCoreRowModel,
-  createColumnHelper,
-  flexRender,
-} from "@tanstack/react-table";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { createColumnHelper } from "@tanstack/react-table";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
@@ -14,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { TrackingForm } from "@/components/tracking-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Link } from "react-router-dom";
+import { DataTable, type DataTableFilter } from "@/components/data-table";
+import AdminLayout from "@/components/AdminLayout";
 
 interface LatestPayment {
   id: string;
@@ -54,13 +50,15 @@ interface OrderRow {
 const columnHelper = createColumnHelper<OrderRow>();
 
 export default function AdminDashboardPage() {
-  const { admin, signOut } = useAdminAuth();
+  const { admin } = useAdminAuth();
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [trackingEntryId, setTrackingEntryId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [fulfilmentFilter, setFulfilmentFilter] = useState("");
 
   const loadOrders = useCallback(async () => {
     setLoadError(null);
@@ -347,80 +345,71 @@ export default function AdminDashboardPage() {
     }),
   ];
 
-  const table = useReactTable({
-    data: orders ?? [],
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  const statusOptions = useMemo(
+    () =>
+      Array.from(new Set((orders ?? []).map((o) => o.status)))
+        .sort()
+        .map((s) => ({ label: s.replaceAll("_", " "), value: s })),
+    [orders]
+  );
+  const fulfilmentOptions = useMemo(
+    () =>
+      Array.from(new Set((orders ?? []).flatMap((o) => (o.fulfilmentMethod ? [o.fulfilmentMethod] : []))))
+        .sort()
+        .map((v) => ({ label: v, value: v })),
+    [orders]
+  );
+
+  const filters: DataTableFilter<OrderRow>[] = [
+    {
+      label: "All statuses",
+      value: statusFilter,
+      onChange: setStatusFilter,
+      options: statusOptions,
+      predicate: (row, value) => row.status === value,
+    },
+    {
+      label: "All fulfilment methods",
+      value: fulfilmentFilter,
+      onChange: setFulfilmentFilter,
+      options: fulfilmentOptions,
+      predicate: (row, value) => row.fulfilmentMethod === value,
+    },
+  ];
 
   return (
-    <main className="p-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Admin — Orders</h1>
-        <p className="text-muted-foreground mt-1">
-          Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
-        </p>
-        <div className="flex gap-3 mt-2 text-sm items-center">
-          <Link to="/admin/products" className="text-blue-600 underline">
-            Products
-          </Link>
-          <Link to="/admin/batches" className="text-blue-600 underline">
-            Batches
-          </Link>
-          <Link to="/admin/audit-log" className="text-blue-600 underline">
-            Audit log
-          </Link>
-          <button type="button" className="text-gray-500 underline" onClick={() => void signOut()}>
-            Sign out
-          </button>
+    <AdminLayout>
+      <main className="p-8 space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Admin — Orders</h1>
+          <p className="text-muted-foreground mt-1">
+            Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
+          </p>
         </div>
-      </div>
 
-      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
-      {actionError && <p className="text-destructive text-sm">{actionError}</p>}
+        {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+        {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 
-      {orders === null && !loadError && <p className="text-gray-500 text-sm">Loading orders…</p>}
+        {orders === null && !loadError && <p className="text-gray-500 text-sm">Loading orders…</p>}
 
-      {orders !== null && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Orders ({orders.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <table className="w-full text-sm border rounded-md overflow-hidden">
-              <thead className="bg-muted">
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <th key={header.id} className="text-left p-2 font-medium">
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="border-t align-top">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="p-2">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-                {orders.length === 0 && (
-                  <tr>
-                    <td colSpan={columns.length} className="p-4 text-center text-gray-500">
-                      No orders yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
-    </main>
+        {orders !== null && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Orders ({orders.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                columns={columns}
+                data={orders}
+                emptyMessage="No orders yet."
+                searchPlaceholder="Search by customer, phone, or order number…"
+                searchableText={(o) => `${o.customerName} ${o.customerPhone} ${o.orderNumber ?? ""} ${o.id}`}
+                filters={filters}
+              />
+            </CardContent>
+          </Card>
+        )}
+      </main>
+    </AdminLayout>
   );
 }

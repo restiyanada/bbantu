@@ -7,6 +7,7 @@ import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import AdminLayout from "@/components/AdminLayout";
 
 // Milestone 4: products/product_variants/inventory now have RLS
 // (db/schema.ts) requiring canManageProductsBatches for writes — this page
@@ -232,6 +233,7 @@ export default function AdminProductsPage() {
   }
 
   return (
+    <AdminLayout>
     <main className="p-8 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Admin — Products</h1>
@@ -379,5 +381,6 @@ export default function AdminProductsPage() {
         </Card>
       )}
     </main>
+    </AdminLayout>
   );
 }
