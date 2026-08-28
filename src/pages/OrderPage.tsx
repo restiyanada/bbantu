@@ -165,7 +165,7 @@ export default function OrderPage() {
 
   if (state.kind === "loading") {
     return (
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <p className="text-gray-500">Loading your order…</p>
       </main>
     );
@@ -173,7 +173,7 @@ export default function OrderPage() {
 
   if (state.kind === "error") {
     return (
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <h1 className="text-2xl font-semibold">Order not found</h1>
         <p className="text-gray-500 mt-2">{state.message}</p>
       </main>
@@ -291,7 +291,7 @@ export default function OrderPage() {
   });
 
   return (
-    <main className="p-8 max-w-2xl mx-auto space-y-6">
+    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">
           Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}

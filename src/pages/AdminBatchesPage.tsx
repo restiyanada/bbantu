@@ -296,7 +296,7 @@ export default function AdminBatchesPage() {
 
   return (
     <AdminLayout>
-    <main className="p-8 max-w-3xl mx-auto space-y-6">
+    <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Admin — Batches</h1>
         <p className="text-muted-foreground mt-1">
@@ -353,7 +353,7 @@ export default function AdminBatchesPage() {
 
             <div>
               <p className="text-sm font-medium">Payment types allowed</p>
-              <div className="mt-1 flex gap-4 text-sm">
+              <div className="mt-1 flex flex-wrap gap-4 text-sm">
                 <label className="flex items-center gap-1.5">
                   <input type="checkbox" {...register("allowDp")} /> DP (50% deposit)
                 </label>
@@ -366,7 +366,7 @@ export default function AdminBatchesPage() {
 
             <div>
               <p className="text-sm font-medium">Fulfilment</p>
-              <div className="mt-1 flex gap-4 text-sm">
+              <div className="mt-1 flex flex-wrap gap-4 text-sm">
                 <label className="flex items-center gap-1.5 text-gray-400">
                   <input type="checkbox" checked disabled /> Pickup (always on)
                 </label>

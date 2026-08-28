@@ -101,7 +101,7 @@ export default function AdminAuditLogPage() {
 
   return (
     <AdminLayout>
-      <main className="p-8 space-y-6">
+      <main className="p-4 sm:p-8 space-y-6">
         <div>
           <h1 className="text-2xl font-semibold">Admin — Audit log</h1>
         </div>

@@ -461,7 +461,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="p-8 max-w-2xl mx-auto space-y-6">
+    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-gray-500 mt-1">Pick an item, enter your details, and place your order.</p>
@@ -575,7 +575,7 @@ export default function HomePage() {
                 </div>
               ))}
               {activeBatch.allowedPaymentTypes.length > 1 && (
-                <div className="pt-2 mt-2 border-t flex gap-4 text-sm">
+                <div className="pt-2 mt-2 border-t flex flex-wrap gap-4 text-sm">
                   {activeBatch.allowedPaymentTypes.includes("FULL") && (
                     <label className="flex items-center gap-1.5">
                       <input
@@ -650,7 +650,7 @@ export default function HomePage() {
               <CardTitle>Fulfilment</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
-              <div className="flex gap-4">
+              <div className="flex flex-wrap gap-4">
                 <label className="flex items-center gap-1.5">
                   <input
                     type="radio"

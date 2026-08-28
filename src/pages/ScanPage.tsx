@@ -140,7 +140,7 @@ export default function ScanPage() {
 
   return (
     <AdminLayout>
-    <main className="p-8 max-w-md mx-auto space-y-6">
+    <main className="p-4 sm:p-8 max-w-md mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Pickup Scanner</h1>
         <p className="text-gray-500 mt-1 text-sm">Point the camera at the customer's pickup code.</p>
