@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { createColumnHelper } from "@tanstack/react-table";
-import { Eye, RotateCw } from "lucide-react";
+import { RotateCw, X, Printer } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { TrackingForm } from "@/components/tracking-form";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import AdminLayout from "@/components/AdminLayout";
 import { ShippingLabel, type ShippingLabelSender } from "@/components/shipping-label";
@@ -89,6 +88,7 @@ export default function AdminDashboardPage() {
   const [labelSender, setLabelSender] = useState<ShippingLabelSender | null>(null);
   const [printQueue, setPrintQueue] = useState<OrderRow[]>([]);
   const [printError, setPrintError] = useState<string | null>(null);
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
   const canManageShipping = admin?.canManageShipping ?? false;
 
   useEffect(() => {
@@ -230,178 +230,13 @@ export default function AdminDashboardPage() {
       cell: (info) => info.getValue() ?? "—",
     }),
     columnHelper.display({
-      id: "proof",
-      header: "Proof",
-      cell: ({ row }) => {
-        const payment = row.original.payment;
-        if (!payment) return <span className="text-muted-foreground text-sm">—</span>;
-        if (!payment.proofUrl) {
-          return <span className="text-muted-foreground text-sm">Expired</span>;
-        }
-        return (
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button type="button" size="sm" variant="outline">
-                <Eye className="size-3.5" />
-                View
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Payment proof — {payment.status.replaceAll("_", " ")}</DialogTitle>
-              </DialogHeader>
-              <img src={payment.proofUrl} alt="Payment proof" className="w-full rounded-md" />
-              {payment.status === "REJECTED" && payment.rejectionReason && (
-                <p className="text-sm text-destructive">Rejected: {payment.rejectionReason}</p>
-              )}
-            </DialogContent>
-          </Dialog>
-        );
-      },
-    }),
-    columnHelper.display({
-      id: "shipment",
-      header: "Shipping",
-      cell: ({ row }) => {
-        const shipment = row.original.shipment;
-        if (!shipment) return <span className="text-muted-foreground text-sm">—</span>;
-        return (
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button type="button" size="sm" variant="outline">
-                <Eye className="size-3.5" />
-                View
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Shipment details</DialogTitle>
-              </DialogHeader>
-              <div className="text-sm space-y-1">
-                <p>
-                  <span className="font-medium">{shipment.recipientName}</span> — {shipment.recipientPhone}
-                </p>
-                <p className="text-muted-foreground">
-                  {shipment.address}, {shipment.destinationDistrictName}
-                </p>
-                <p className="text-muted-foreground pt-2 mt-2 border-t">
-                  {shipment.courier}
-                  {shipment.service ? ` — ${shipment.service}` : ""} · {formatIDR(shipment.cost ?? "0")}
-                </p>
-                {shipment.trackingNumber && (
-                  <p className="font-mono text-xs">Tracking: {shipment.trackingNumber}</p>
-                )}
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!canManageShipping}
-                title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
-                onClick={() => void handlePrintLabels([row.original])}
-              >
-                Print label
-              </Button>
-            </DialogContent>
-          </Dialog>
-        );
-      },
-    }),
-    columnHelper.display({
-      id: "actions",
-      header: "Actions",
-      cell: ({ row }) => {
-        const order = row.original;
-        const isActioning = actioningId === order.id;
-
-        if (rejectingId === order.id) {
-          return (
-            <div className="space-y-2">
-              <PaymentRejectionForm
-                submitting={isActioning}
-                onSubmit={(values) => handleReject(order.id, values.reason)}
-              />
-              <Button type="button" size="sm" variant="ghost" onClick={() => setRejectingId(null)}>
-                Cancel
-              </Button>
-            </div>
-          );
-        }
-
-        if (trackingEntryId === order.id) {
-          return (
-            <div className="space-y-2">
-              <TrackingForm
-                currentCost={order.shipment?.cost ?? null}
-                submitting={isActioning}
-                onSubmit={(values) => handleRecordTracking(order.id, values)}
-              />
-              <Button type="button" size="sm" variant="ghost" onClick={() => setTrackingEntryId(null)}>
-                Cancel
-              </Button>
-            </div>
-          );
-        }
-
-        if (order.payment?.status === "PENDING") {
-          const canVerify = admin?.canVerifyPayments ?? false;
-          return (
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="success"
-                disabled={isActioning || !canVerify}
-                title={canVerify ? undefined : "Requires the Verify payments permission"}
-                onClick={() => handleVerify(order.id)}
-              >
-                {isActioning ? "Verifying…" : "Verify"}
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={isActioning || !canVerify}
-                title={canVerify ? undefined : "Requires the Verify payments permission"}
-                onClick={() => setRejectingId(order.id)}
-              >
-                Reject
-              </Button>
-            </div>
-          );
-        }
-
-        if (order.status === "READY_FOR_FULFILMENT") {
-          const isShipping = order.fulfilmentMethod === "SHIPPING";
-          const label = isShipping ? "Prepare for shipment" : "Prepare for pickup";
-          const canPrepare = isShipping ? admin?.canManageShipping ?? false : admin?.canScanConfirmPickup ?? false;
-          return (
-            <Button
-              size="sm"
-              variant="info"
-              disabled={isActioning || !canPrepare}
-              title={canPrepare ? undefined : "Requires the Manage shipping / Scan-confirm pickup permission"}
-              onClick={() => handlePreparePickup(order.id)}
-            >
-              {isActioning ? "Preparing…" : label}
-            </Button>
-          );
-        }
-
-        if (order.status === "READY_TO_SHIP") {
-          const canManageShipping = admin?.canManageShipping ?? false;
-          return (
-            <Button
-              size="sm"
-              variant="info"
-              disabled={!canManageShipping}
-              title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
-              onClick={() => setTrackingEntryId(order.id)}
-            >
-              Record tracking
-            </Button>
-          );
-        }
-
-        return <span className="text-muted-foreground text-sm">—</span>;
-      },
+      id: "open",
+      header: "",
+      cell: ({ row }) => (
+        <Button type="button" size="sm" variant="outline" onClick={() => setOpenOrderId(row.original.id)}>
+          Open
+        </Button>
+      ),
     }),
   ];
 
@@ -448,6 +283,9 @@ export default function AdminDashboardPage() {
       predicate: (row, value) => row.fulfilmentMethod === value,
     },
   ];
+
+  const openOrder = orders?.find((o) => o.id === openOrderId) ?? null;
+  const isActioningOpen = openOrder !== null && actioningId === openOrder.id;
 
   return (
     <AdminLayout>
@@ -511,6 +349,167 @@ export default function AdminDashboardPage() {
           </Card>
         )}
       </main>
+
+      {openOrder && (
+        <>
+          <div className="fixed inset-0 bg-black/45 z-40" onClick={() => setOpenOrderId(null)} />
+          <div className="fixed top-0 right-0 bottom-0 w-full sm:w-[440px] bg-card border-l shadow-lg z-50 overflow-y-auto p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-serif font-semibold text-lg">
+                  {formatOrderNumber(openOrder.fulfilmentMethod, openOrder.orderNumber, openOrder.id)}
+                </p>
+                <Badge variant={statusBadgeVariant(openOrder.status)} className="mt-1.5">
+                  {openOrder.status.replaceAll("_", " ")}
+                </Badge>
+              </div>
+              <Button type="button" size="icon" variant="ghost" onClick={() => setOpenOrderId(null)}>
+                <X className="size-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Customer</p>
+              <p className="text-sm font-medium">{openOrder.customerName}</p>
+              <p className="text-sm text-muted-foreground">{openOrder.customerPhone}</p>
+            </div>
+
+            <div className="pt-4 border-t space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Payment</p>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Merchandise total</span>
+                <span className="font-medium">{formatIDR(openOrder.merchandiseSubtotal)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Amount paid</span>
+                <span className="font-medium">{formatIDR(openOrder.amountPaid)}</span>
+              </div>
+
+              {openOrder.payment ? (
+                <>
+                  {openOrder.payment.proofUrl ? (
+                    <img src={openOrder.payment.proofUrl} alt="Payment proof" className="w-full rounded-lg border mt-1" />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Proof expired.</p>
+                  )}
+                  {openOrder.payment.status === "REJECTED" && openOrder.payment.rejectionReason && (
+                    <p className="text-sm text-destructive">Rejected: {openOrder.payment.rejectionReason}</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">No payment recorded yet.</p>
+              )}
+
+              {rejectingId === openOrder.id ? (
+                <div className="space-y-2 pt-1">
+                  <PaymentRejectionForm
+                    submitting={isActioningOpen}
+                    onSubmit={(values) => handleReject(openOrder.id, values.reason)}
+                  />
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setRejectingId(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                openOrder.payment?.status === "PENDING" && (
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="success"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => handleVerify(openOrder.id)}
+                    >
+                      {isActioningOpen ? "Verifying…" : "Verify"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => setRejectingId(openOrder.id)}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                )
+              )}
+            </div>
+
+            {openOrder.shipment && (
+              <div className="pt-4 border-t space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Shipment</p>
+                <p className="text-sm">
+                  <span className="font-medium">{openOrder.shipment.recipientName}</span> — {openOrder.shipment.recipientPhone}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {openOrder.shipment.address}, {openOrder.shipment.destinationDistrictName}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {openOrder.shipment.courier}
+                  {openOrder.shipment.service ? ` — ${openOrder.shipment.service}` : ""} · {formatIDR(openOrder.shipment.cost ?? "0")}
+                </p>
+                {openOrder.shipment.trackingNumber ? (
+                  <p className="text-sm font-mono">Tracking: {openOrder.shipment.trackingNumber}</p>
+                ) : (
+                  trackingEntryId === openOrder.id ? (
+                    <div className="space-y-2 pt-1">
+                      <TrackingForm
+                        currentCost={openOrder.shipment.cost}
+                        submitting={isActioningOpen}
+                        onSubmit={(values) => handleRecordTracking(openOrder.id, values)}
+                      />
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setTrackingEntryId(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    openOrder.status === "READY_TO_SHIP" && (
+                      <Button
+                        size="sm"
+                        variant="info"
+                        disabled={!canManageShipping}
+                        title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                        onClick={() => setTrackingEntryId(openOrder.id)}
+                      >
+                        Record tracking
+                      </Button>
+                    )
+                  )
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canManageShipping}
+                  title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                  onClick={() => void handlePrintLabels([openOrder])}
+                >
+                  <Printer className="size-3.5" />
+                  Print label
+                </Button>
+              </div>
+            )}
+
+            {openOrder.status === "READY_FOR_FULFILMENT" && (
+              <div className="pt-4 border-t">
+                <Button
+                  size="sm"
+                  variant="info"
+                  disabled={
+                    isActioningOpen ||
+                    !(openOrder.fulfilmentMethod === "SHIPPING"
+                      ? admin?.canManageShipping ?? false
+                      : admin?.canScanConfirmPickup ?? false)
+                  }
+                  onClick={() => handlePreparePickup(openOrder.id)}
+                >
+                  {isActioningOpen ? "Preparing…" : openOrder.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup"}
+                </Button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       <div id="print-labels-root">
         {labelSender &&
