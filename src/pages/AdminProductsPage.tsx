@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label, RequiredMark, OptionalMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AdminLayout from "@/components/AdminLayout";
 
 const IMAGE_BUCKET = "product-images";
@@ -73,6 +74,7 @@ export default function AdminProductsPage() {
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [createOpen, setCreateOpen] = useState(false);
   const [variants, setVariants] = useState<VariantDraft[]>([{ name: "", price: "" }]);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -212,6 +214,7 @@ export default function AdminProductsPage() {
       reset();
       setVariants([{ name: "", price: "" }]);
       handleRemoveImage();
+      setCreateOpen(false);
       toast.success(`"${values.name}" created`);
       await loadProducts();
     } catch (err) {
@@ -224,18 +227,30 @@ export default function AdminProductsPage() {
   return (
     <AdminLayout>
       <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Products</h1>
-          <p className="text-muted-foreground mt-1">
-            Create products and variants here, independent of any batch. Batches pick from what's created here.
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Products</h1>
+            <p className="text-muted-foreground mt-1">
+              Create products and variants here, independent of any batch. Batches pick from what's created here.
+            </p>
+          </div>
+          <Button
+            type="button"
+            className="shrink-0"
+            disabled={!canManage}
+            title={canManage ? undefined : "Requires the Manage products & batches permission"}
+            onClick={() => setCreateOpen(true)}
+          >
+            <Plus className="size-3.5" />
+            New product
+          </Button>
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>New product</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>New product</DialogTitle>
+            </DialogHeader>
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
               <div className="space-y-1.5">
                 <Label htmlFor="name">
@@ -328,8 +343,8 @@ export default function AdminProductsPage() {
                 {submitting ? "Creating…" : "Create product"}
               </Button>
             </form>
-          </CardContent>
-        </Card>
+          </DialogContent>
+        </Dialog>
 
         {loadError && (
           <div className="flex items-center gap-2 text-destructive text-sm">

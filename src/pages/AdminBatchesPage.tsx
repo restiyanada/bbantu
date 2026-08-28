@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { RotateCw } from "lucide-react";
+import { RotateCw, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AdminLayout from "@/components/AdminLayout";
 
 const BATCH_STATUSES = [
@@ -96,6 +97,7 @@ export default function AdminBatchesPage() {
   const [committedByBatchVariant, setCommittedByBatchVariant] = useState<Map<string, Map<string, number>>>(new Map());
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Record<string, ItemDraft>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -238,6 +240,7 @@ export default function AdminBatchesPage() {
 
       reset();
       setSelectedItems({});
+      setCreateOpen(false);
       toast.success(`"${values.name}" created`);
       await loadAll();
     } catch (err) {
@@ -290,16 +293,28 @@ export default function AdminBatchesPage() {
   return (
     <AdminLayout>
       <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Batches</h1>
-          <p className="text-muted-foreground mt-1">Create a pre-order batch from existing products.</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Batches</h1>
+            <p className="text-muted-foreground mt-1">Create a pre-order batch from existing products.</p>
+          </div>
+          <Button
+            type="button"
+            className="shrink-0"
+            disabled={!canManage}
+            title={canManage ? undefined : "Requires the Manage products & batches permission"}
+            onClick={() => setCreateOpen(true)}
+          >
+            <Plus className="size-3.5" />
+            New batch
+          </Button>
         </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>New batch</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New batch</DialogTitle>
+          </DialogHeader>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             <div className="space-y-1.5">
               <Label htmlFor="name">
@@ -401,8 +416,8 @@ export default function AdminBatchesPage() {
               {submitting ? "Creating…" : "Create batch"}
             </Button>
           </form>
-        </CardContent>
-      </Card>
+        </DialogContent>
+      </Dialog>
 
       {loadError && (
         <div className="flex items-center gap-2 text-destructive text-sm">
