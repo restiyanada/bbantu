@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { AlertCircle, Clock, Package, Truck, CheckCircle2 } from "lucide-react";
 import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
@@ -60,6 +61,24 @@ type LoadState =
       shipment: ShipmentRow | null;
       batchName: string | null;
     };
+
+type BannerTone = "neutral" | "destructive" | "amber" | "info" | "success";
+
+const BANNER_TONE_CLASSES: Record<BannerTone, string> = {
+  neutral: "bg-muted border-border",
+  destructive: "bg-red-50 border-red-200 text-red-900",
+  amber: "bg-amber-50 border-amber-200 text-amber-900",
+  info: "bg-blue-50 border-blue-200 text-blue-900",
+  success: "bg-green-50 border-green-200 text-green-900",
+};
+
+const BANNER_ICON_CLASSES: Record<BannerTone, string> = {
+  neutral: "bg-accent text-muted-foreground",
+  destructive: "bg-red-100 text-red-700",
+  amber: "bg-amber-100 text-amber-800",
+  info: "bg-blue-100 text-blue-800",
+  success: "bg-green-100 text-green-800",
+};
 
 export default function OrderPage() {
   const { accessToken } = useParams<{ accessToken: string }>();
@@ -303,6 +322,145 @@ export default function OrderPage() {
     fulfilmentMethod: (order.fulfilment_method as "PICKUP" | "SHIPPING" | null) ?? null,
   });
 
+  const latestPayment = payments[0] ?? null;
+  const isRejectedPending = latestPayment?.status === "REJECTED" && order.status === "PAYMENT_PENDING";
+  const isBalanceDue = order.status === "BALANCE_DUE";
+  const isPaymentPending = order.status === "PAYMENT_PENDING" && !isRejectedPending;
+  const isDone = order.status === "PICKED_UP" || order.status === "COMPLETED";
+  const isReadyForPickup =
+    order.fulfilment_method === "PICKUP" &&
+    !!pickupToken &&
+    !isDone &&
+    !isRejectedPending &&
+    !isBalanceDue &&
+    !isPaymentPending;
+  const isShippedInfo =
+    order.fulfilment_method === "SHIPPING" &&
+    !!shipment?.tracking_number &&
+    !isDone &&
+    !isRejectedPending &&
+    !isBalanceDue &&
+    !isPaymentPending;
+
+  let banner: { tone: BannerTone; Icon: typeof AlertCircle; title: string; body: string; extra?: React.ReactNode } | null = null;
+
+  if (isRejectedPending) {
+    banner = {
+      tone: "destructive",
+      Icon: AlertCircle,
+      title: "Payment needs your attention",
+      body: latestPayment?.rejection_reason
+        ? `Rejected: ${latestPayment.rejection_reason}`
+        : "Your payment was rejected. Please upload a new proof.",
+      extra: (
+        <div className="space-y-2 pt-1">
+          <input
+            ref={resubmitInputRef}
+            type="file"
+            accept={ACCEPTED_PROOF_TYPES.join(",")}
+            onChange={handleResubmitFileChange}
+            disabled={resubmitUploading}
+            className="text-sm"
+          />
+          {resubmitUploading && <p className="text-sm">Uploading…</p>}
+          {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
+            <FileUploadPreview
+              previewUrl={resubmitPreviewUrl}
+              label={resubmitFileName ?? "Uploaded"}
+              onRemove={handleRemoveResubmitProof}
+            />
+          )}
+          {resubmitError && <p className="text-sm font-medium">{resubmitError}</p>}
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={!resubmitPath || resubmitting}
+            onClick={() => handleResubmit(order.id)}
+          >
+            {resubmitting ? "Resubmitting…" : "Resubmit payment"}
+          </Button>
+        </div>
+      ),
+    };
+  } else if (isBalanceDue && latestPayment?.status === "PENDING") {
+    banner = {
+      tone: "amber",
+      Icon: Clock,
+      title: "Balance payment submitted",
+      body: "Your balance payment is awaiting review.",
+    };
+  } else if (isBalanceDue) {
+    banner = {
+      tone: "amber",
+      Icon: Clock,
+      title: "Remaining balance due",
+      body:
+        `Your item is ready — upload proof for the remaining balance of ${formatIDR(balanceDue.toFixed(2))}.` +
+        (latestPayment?.status === "REJECTED" && latestPayment.rejection_reason
+          ? ` Previous attempt rejected: ${latestPayment.rejection_reason}`
+          : ""),
+      extra: (
+        <div className="space-y-2 pt-1">
+          <input
+            ref={balanceInputRef}
+            type="file"
+            accept={ACCEPTED_PROOF_TYPES.join(",")}
+            onChange={handleBalanceFileChange}
+            disabled={balanceUploading}
+            className="text-sm"
+          />
+          {balanceUploading && <p className="text-sm">Uploading…</p>}
+          {balancePath && balancePreviewUrl && !balanceUploading && (
+            <FileUploadPreview
+              previewUrl={balancePreviewUrl}
+              label={balanceFileName ?? "Uploaded"}
+              onRemove={handleRemoveBalanceProof}
+            />
+          )}
+          {balanceError && <p className="text-sm font-medium">{balanceError}</p>}
+          <Button
+            variant="info"
+            size="sm"
+            disabled={!balancePath || balanceSubmitting}
+            onClick={() => handleSubmitBalance(order.id)}
+          >
+            {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
+          </Button>
+        </div>
+      ),
+    };
+  } else if (isPaymentPending) {
+    banner = {
+      tone: "neutral",
+      Icon: Clock,
+      title: "Awaiting payment review",
+      body: "We're reviewing your payment. This page will update once it's verified.",
+    };
+  } else if (isDone) {
+    banner = { tone: "success", Icon: CheckCircle2, title: "Order complete", body: "Thanks for your order!" };
+  } else if (isReadyForPickup) {
+    banner = {
+      tone: "info",
+      Icon: Package,
+      title: "Ready for pickup",
+      body: "Show your pickup code at the booth — see below.",
+    };
+  } else if (isShippedInfo) {
+    banner = {
+      tone: "info",
+      Icon: Truck,
+      title: "On the way",
+      body: `Shipped via ${shipment!.courier}${shipment!.service ? " — " + shipment!.service : ""}.`,
+    };
+  } else {
+    banner = {
+      tone: "neutral",
+      Icon: Clock,
+      title: "We're preparing your order",
+      body: "We'll update this page as your order moves along.",
+    };
+  }
+
   return (
     <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
@@ -312,6 +470,23 @@ export default function OrderPage() {
         {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}
         <p className="text-muted-foreground mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
       </div>
+
+      {banner && (
+        <div className={`rounded-2xl border p-4 ${BANNER_TONE_CLASSES[banner.tone]}`}>
+          <div className="flex gap-3 items-start">
+            <span
+              className={`flex size-7 shrink-0 items-center justify-center rounded-full ${BANNER_ICON_CLASSES[banner.tone]}`}
+            >
+              <banner.Icon className="size-4" />
+            </span>
+            <div className="flex-1 min-w-0 space-y-1">
+              <p className="font-semibold text-sm">{banner.title}</p>
+              <p className="text-sm">{banner.body}</p>
+              {banner.extra}
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardContent>
@@ -378,90 +553,6 @@ export default function OrderPage() {
           )}
         </CardContent>
       </Card>
-
-      {payments[0]?.status === "REJECTED" && order.status === "PAYMENT_PENDING" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Payment rejected</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {payments[0].rejection_reason && (
-              <p className="text-muted-foreground">Reason: {payments[0].rejection_reason}</p>
-            )}
-            <p className="text-muted-foreground">Upload a new payment proof to try again.</p>
-            <input
-              ref={resubmitInputRef}
-              type="file"
-              accept={ACCEPTED_PROOF_TYPES.join(",")}
-              onChange={handleResubmitFileChange}
-              disabled={resubmitUploading}
-              className="text-sm"
-            />
-            {resubmitUploading && <p className="text-muted-foreground">Uploading…</p>}
-            {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
-              <FileUploadPreview
-                previewUrl={resubmitPreviewUrl}
-                label={resubmitFileName ?? "Uploaded"}
-                onRemove={handleRemoveResubmitProof}
-              />
-            )}
-            {resubmitError && <p className="text-destructive">{resubmitError}</p>}
-            <Button
-              variant="info"
-              disabled={!resubmitPath || resubmitting}
-              onClick={() => handleResubmit(order.id)}
-            >
-              {resubmitting ? "Resubmitting…" : "Resubmit payment"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {order.status === "BALANCE_DUE" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Balance payment</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {payments[0]?.status === "PENDING" ? (
-              <p className="text-muted-foreground">Your balance payment is awaiting review.</p>
-            ) : (
-              <>
-                {payments[0]?.status === "REJECTED" && payments[0].rejection_reason && (
-                  <p className="text-muted-foreground">Previous attempt rejected: {payments[0].rejection_reason}</p>
-                )}
-                <p className="text-muted-foreground">
-                  Your item is ready — upload proof for the remaining balance of {formatIDR(balanceDue.toFixed(2))}.
-                </p>
-                <input
-                  ref={balanceInputRef}
-                  type="file"
-                  accept={ACCEPTED_PROOF_TYPES.join(",")}
-                  onChange={handleBalanceFileChange}
-                  disabled={balanceUploading}
-                  className="text-sm"
-                />
-                {balanceUploading && <p className="text-muted-foreground">Uploading…</p>}
-                {balancePath && balancePreviewUrl && !balanceUploading && (
-                  <FileUploadPreview
-                    previewUrl={balancePreviewUrl}
-                    label={balanceFileName ?? "Uploaded"}
-                    onRemove={handleRemoveBalanceProof}
-                  />
-                )}
-                {balanceError && <p className="text-destructive">{balanceError}</p>}
-                <Button
-                  variant="info"
-                  disabled={!balancePath || balanceSubmitting}
-                  onClick={() => handleSubmitBalance(order.id)}
-                >
-                  {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
-                </Button>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      )}
 
       {order.fulfilment_method === "PICKUP" && pickupToken && order.status !== "PICKED_UP" && (
         <Card>
