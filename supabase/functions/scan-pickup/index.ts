@@ -113,6 +113,10 @@ Deno.serve(async (req) => {
           actorId: admin.id,
           stockAvailable: true, // unused by this transition
         });
+        // Milestone 6 (§8/§19 retention clock) — see db/schema.ts's
+        // fulfilledAt comment for why this is its own column/stamp site
+        // rather than something transitionOrder sets centrally.
+        await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
       }
 
       const [customer] = await tx.select().from(customers).where(eq(customers.id, order.customerId));

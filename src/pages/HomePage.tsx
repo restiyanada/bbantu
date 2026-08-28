@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -454,6 +454,11 @@ export default function HomePage() {
       <div>
         <h1 className="text-2xl font-semibold">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-gray-500 mt-1">Pick an item, enter your details, and place your order.</p>
+        <p className="text-sm mt-1">
+          <Link to="/orders/find" className="text-blue-600 underline">
+            Lost your order link?
+          </Link>
+        </p>
       </div>
 
       {batches !== null && batches.length > 0 && (

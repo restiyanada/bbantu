@@ -15,10 +15,21 @@ project_id = "lhvxjgbjjamwatsmxiyc"
 # anon key, while verify-payment/prepare-pickup/scan-pickup/record-tracking/
 # record-batch-receipt/list-orders can still demand a real staff session
 # inside the handler itself.
+#
+# Milestone 6: recover-order-access is guest-facing (own rate limiting
+# instead of a session, see its own file) and list-audit-logs is
+# staff-facing (requireAdmin(req, "canViewAuditLog")) — both listed below
+# for the same reason as everything else here. cleanup-payment-proofs is
+# deliberately NOT listed, same reasoning as send-queued-emails (Milestone
+# 5): it's cron-only, so the platform's default verify_jwt = true is the
+# actual boundary, not a per-function check.
 [functions.create-order]
 verify_jwt = false
 
 [functions.health]
+verify_jwt = false
+
+[functions.list-audit-logs]
 verify_jwt = false
 
 [functions.list-orders]
@@ -31,6 +42,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.record-tracking]
+verify_jwt = false
+
+[functions.recover-order-access]
 verify_jwt = false
 
 [functions.resubmit-payment]

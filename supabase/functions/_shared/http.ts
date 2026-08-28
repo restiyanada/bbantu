@@ -50,3 +50,18 @@ export function decimalStringToCents(value: string): number {
 export function centsToDecimalString(cents: number): string {
   return (cents / 100).toFixed(2);
 }
+
+/**
+ * Client IP for per-IP rate limiting (Milestone 6, §16.1/§27) — Supabase
+ * Edge Functions run behind a proxy, so the real client address is in
+ * x-forwarded-for (the first entry; later entries are intermediate
+ * proxies), not available from the connection itself. Falls back to a
+ * fixed string rather than throwing: an Edge Function without this header
+ * (e.g. a local `supabase functions serve` test) shouldn't crash the
+ * request, it should just rate-limit as one shared bucket.
+ */
+export function getClientIp(req: Request): string {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  if (forwardedFor) return forwardedFor.split(",")[0].trim();
+  return "unknown";
+}

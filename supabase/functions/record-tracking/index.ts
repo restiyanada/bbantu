@@ -125,6 +125,11 @@ Deno.serve(async (req) => {
         stockAvailable: true, // unused by this transition
       });
 
+      // Milestone 6 (§8/§19 retention clock) — see db/schema.ts's
+      // fulfilledAt comment; same stamp site pattern as scan-pickup's
+      // PICKUP_CONFIRMED branch.
+      await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
+
       return { status: to };
     });
 

@@ -1,9 +1,11 @@
 import { Routes, Route } from "react-router-dom";
 import HomePage from "./pages/HomePage";
 import OrderPage from "./pages/OrderPage";
+import FindOrderPage from "./pages/FindOrderPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
 import AdminProductsPage from "./pages/AdminProductsPage";
 import AdminBatchesPage from "./pages/AdminBatchesPage";
+import AdminAuditLogPage from "./pages/AdminAuditLogPage";
 import AdminLoginPage from "./pages/AdminLoginPage";
 import ScanPage from "./pages/ScanPage";
 import { AdminAuthProvider } from "./lib/adminAuth";
@@ -14,6 +16,7 @@ export default function App() {
     <AdminAuthProvider>
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/orders/find" element={<FindOrderPage />} />
         <Route path="/orders/:accessToken" element={<OrderPage />} />
         <Route path="/admin/login" element={<AdminLoginPage />} />
         <Route
@@ -37,6 +40,14 @@ export default function App() {
           element={
             <RequireAdmin>
               <AdminBatchesPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="/admin/audit-log"
+          element={
+            <RequireAdmin>
+              <AdminAuditLogPage />
             </RequireAdmin>
           }
         />

@@ -19,3 +19,27 @@ export function formatOrderNumber(
   const typeCode = fulfilmentMethod === "SHIPPING" ? "02" : "01";
   return `#${typeCode}${String(orderNumber).padStart(4, "0")}`;
 }
+
+export interface ParsedOrderNumber {
+  fulfilmentMethod: "PICKUP" | "SHIPPING";
+  orderNumber: number;
+}
+
+/**
+ * Inverse of formatOrderNumber — Milestone 6 (§16.2 order access recovery,
+ * item 30). Accepts exactly what a customer would see and copy/paste back
+ * (leading "#" optional, at least 4 digits after the 2-digit type code) —
+ * deliberately not the fallbackId short-id-slice form above, which only
+ * appears for orders that haven't had a fulfilment method chosen yet and
+ * isn't a stable identifier to recover by.
+ */
+export function parseOrderNumber(input: string): ParsedOrderNumber | null {
+  const trimmed = input.trim().replace(/^#/, "");
+  const match = /^(01|02)(\d{4,})$/.exec(trimmed);
+  if (!match) return null;
+
+  return {
+    fulfilmentMethod: match[1] === "02" ? "SHIPPING" : "PICKUP",
+    orderNumber: Number.parseInt(match[2], 10),
+  };
+}

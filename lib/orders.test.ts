@@ -56,6 +56,7 @@ function baseOrder(overrides: Partial<OrderRow> = {}): OrderRow {
     submissionToken: "tok-1",
     accessToken: "acc-1",
     accessTokenEncrypted: null,
+    fulfilledAt: null,
     createdAt: new Date(),
     ...overrides,
   };

@@ -365,6 +365,15 @@ export const orders = pgTable(
     // usable only by code holding the encryption key (the email worker),
     // not by anything reading the database directly.
     accessTokenEncrypted: text("access_token_encrypted"),
+    // Milestone 6 (§8/§19 payment-proof retention): stamped the instant an
+    // order reaches a completed fulfilment state (PICKED_UP or SHIPPED) —
+    // same reasoning as reservedAt above, its own column rather than
+    // reusing createdAt, because the retention job needs "time since
+    // fulfilled", not "time since ordered". Set at the two call sites of
+    // that transition (scan-pickup, record-tracking), not inside
+    // transitionOrder itself — matching how reservedAt is stamped by its
+    // callers (verify-payment, record-batch-receipt) rather than centrally.
+    fulfilledAt: timestamp("fulfilled_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -431,6 +440,13 @@ export const payments = pgTable(
     verifiedBy: uuid("verified_by").references(() => adminUsers.id),
     verifiedAt: timestamp("verified_at"),
     rejectionReason: text("rejection_reason"),
+    // Milestone 6 (§8/§19): stamped once the retention job has deleted (or
+    // confirmed already-deleted) this row's storage object, 30+ days after
+    // the order's fulfilledAt. proofFileUrl itself stays NOT NULL and
+    // unchanged — it still documents which path *used to* hold a file —
+    // so a separate marker is what makes the cleanup job idempotent
+    // (query "not yet processed", not "try to delete forever").
+    proofDeletedAt: timestamp("proof_deleted_at"),
   },
   (table) => [
     pgPolicy("guest_can_read_own_order_payments", {
@@ -571,6 +587,17 @@ export const emails = pgTable("emails", {
   sentAt: timestamp("sent_at"),
 }).enableRLS();
 
+// Milestone 6: this table had no RLS at all before now — the same kind of
+// open hole products/batches/inventory had before Milestone 4, and emails
+// had before Milestone 5 — meaning any caller holding the public anon key
+// could read (or write) the full operational audit trail directly. No
+// policies added (same deny-all posture as emails/admin_users): the new
+// admin UI reads this via supabase/functions/list-audit-logs, which uses
+// the service-role connection and does its own canViewAuditLog check
+// (§18.4) rather than a row-level policy — audit_logs also needs actor
+// names joined from admin_users, and admin_users itself is deliberately
+// not directly readable (see its own comment above), so a service-role
+// Edge Function is the only way to assemble that join regardless.
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").primaryKey().defaultRandom(),
   actorId: uuid("actor_id").references(() => adminUsers.id),
@@ -580,6 +607,19 @@ export const auditLogs = pgTable("audit_logs", {
   beforeValue: jsonb("before_value"),
   afterValue: jsonb("after_value"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}).enableRLS();
+
+// Milestone 6 (§16.1/§27 — "10 requests per minute per IP"): backs the
+// per-IP rate limit on recover-order-access. A guest phone+email lookup
+// is a much lower-entropy guessing surface than the 32-byte access token,
+// so the same limit the PRD requires for token-based access is applied
+// here too (lib/rate-limit.ts has the actual threshold logic). Written to
+// and read from only by that one Edge Function's service-role connection —
+// same deny-all RLS posture as emails/audit_logs above.
+export const accessRecoveryAttempts = pgTable("access_recovery_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ipAddress: text("ip_address").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}).enableRLS();
 
 

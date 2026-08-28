@@ -23,3 +23,15 @@ export async function getSignedProofUrl(path: string, expiresInSeconds = 300): P
   if (error || !data) return null;
   return data.signedUrl;
 }
+
+/**
+ * Deletes a payment-proof object — Milestone 6 (§8/§19 retention cleanup).
+ * Treats "already gone" as success: the retention job is meant to run
+ * periodically and must not fail (and re-attempt forever) just because a
+ * previous run, or a manual admin action, already removed the file.
+ */
+export async function deleteProofObject(path: string): Promise<{ ok: boolean; error: string | null }> {
+  const { error } = await storageClient.storage.from("payment-proofs").remove([path]);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, error: null };
+}

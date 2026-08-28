@@ -360,6 +360,9 @@ export default function AdminDashboardPage() {
           <Link to="/admin/batches" className="text-blue-600 underline">
             Batches
           </Link>
+          <Link to="/admin/audit-log" className="text-blue-600 underline">
+            Audit log
+          </Link>
           <button type="button" className="text-gray-500 underline" onClick={() => void signOut()}>
             Sign out
           </button>

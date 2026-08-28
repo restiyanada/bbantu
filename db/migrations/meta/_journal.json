@@ -29,6 +29,13 @@
       "when": 1787858802570,
       "tag": "0003_milestone5_email_and_link_security",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787893283317,
+      "tag": "0005_milestone6_recovery_and_audit",
+      "breakpoints": true
     }
   ]
 }
