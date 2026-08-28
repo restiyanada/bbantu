@@ -27,7 +27,7 @@ interface OrderRow {
 interface OrderItemRow {
   quantity: number;
   unit_price: string;
-  product_variants: { name: string } | null;
+  product_variants: { name: string; products: { image_url: string | null } | null } | null;
 }
 
 interface PaymentRow {
@@ -124,7 +124,7 @@ export default function OrderPage() {
       const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
         client
           .from("order_items")
-          .select("quantity, unit_price, product_variants(name)")
+          .select("quantity, unit_price, product_variants(name, products(image_url))")
           .eq("order_id", order.id),
         client
           .from("payments")
@@ -311,14 +311,22 @@ export default function OrderPage() {
           <CardTitle>Items</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {items.map((item, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span>
-                {item.product_variants?.name ?? "Item"} × {item.quantity}
-              </span>
-              <span>{formatIDR(item.unit_price)}</span>
-            </div>
-          ))}
+          {items.map((item, i) => {
+            const imageUrl = item.product_variants?.products?.image_url ?? null;
+            return (
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-2">
+                  {imageUrl ? (
+                    <img src={imageUrl} alt="" className="h-10 w-10 rounded-md object-cover border" />
+                  ) : (
+                    <span className="h-10 w-10 rounded-md border bg-muted" />
+                  )}
+                  {item.product_variants?.name ?? "Item"} × {item.quantity}
+                </span>
+                <span>{formatIDR(item.unit_price)}</span>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 

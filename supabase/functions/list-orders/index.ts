@@ -56,12 +56,12 @@ Deno.serve(async (req) => {
     const orderIds = rows.map((r) => r.id);
 
     // Milestone 3 — only SHIPPING orders have a row here, so this is a
-    // straightforward map-by-orderId, same shape as pendingByOrder below.
+    // straightforward map-by-orderId, same shape as latestByOrder below.
     const shipmentRows =
       orderIds.length > 0 ? await db.select().from(shipments).where(inArray(shipments.orderId, orderIds)) : [];
     const shipmentByOrder = new Map(shipmentRows.map((s) => [s.orderId, s]));
 
-    const pendingPayments =
+    const allPayments =
       orderIds.length > 0
         ? await db
             .select({
@@ -70,28 +70,35 @@ Deno.serve(async (req) => {
               status: payments.status,
               amount: payments.amount,
               proofFileUrl: payments.proofFileUrl,
+              proofDeletedAt: payments.proofDeletedAt,
+              rejectionReason: payments.rejectionReason,
+              submittedAt: payments.submittedAt,
             })
             .from(payments)
             .where(inArray(payments.orderId, orderIds))
         : [];
 
-    // Confirmed still holds now that resubmit-payment exists: that endpoint
-    // only allows a new payment row when the *latest* one is REJECTED, so a
-    // second resubmission attempt while one is already PENDING gets a 409
-    // there rather than ever producing two PENDING rows for the same order.
-    const pendingByOrder = new Map(
-      pendingPayments.filter((p) => p.status === "PENDING").map((p) => [p.orderId, p])
-    );
+    // The proof should stay visible to admins after verify/reject (§8/§19 —
+    // retained 30 days post-completion), not just while a payment is still
+    // PENDING. So this now keeps the *latest* payment per order regardless
+    // of status, rather than only ones still awaiting a decision.
+    const latestByOrder = new Map<string, (typeof allPayments)[number]>();
+    for (const p of allPayments) {
+      const current = latestByOrder.get(p.orderId);
+      if (!current || p.submittedAt > current.submittedAt) latestByOrder.set(p.orderId, p);
+    }
 
     const result = await Promise.all(
       rows.map(async (row) => {
         const shipment = shipmentByOrder.get(row.id) ?? null;
 
-        const pending = pendingByOrder.get(row.id);
-        if (!pending) return { ...row, pendingPayment: null, shipment };
+        const latest = latestByOrder.get(row.id);
+        if (!latest) return { ...row, payment: null, shipment };
 
-        const proofUrl = await getSignedProofUrl(pending.proofFileUrl);
-        return { ...row, pendingPayment: { ...pending, proofUrl }, shipment };
+        // Skip the signing round-trip once retention has actually deleted
+        // the object — it can't resolve to anything anyway.
+        const proofUrl = latest.proofDeletedAt ? null : await getSignedProofUrl(latest.proofFileUrl);
+        return { ...row, payment: { ...latest, proofUrl }, shipment };
       })
     );
 

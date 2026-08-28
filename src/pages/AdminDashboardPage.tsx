@@ -16,11 +16,12 @@ import { TrackingForm } from "@/components/tracking-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Link } from "react-router-dom";
 
-interface PendingPayment {
+interface LatestPayment {
   id: string;
   status: string;
   amount: string;
   proofUrl: string | null;
+  rejectionReason: string | null;
 }
 
 interface ShipmentInfo {
@@ -46,7 +47,7 @@ interface OrderRow {
   createdAt: string;
   customerName: string;
   customerPhone: string;
-  pendingPayment: PendingPayment | null;
+  payment: LatestPayment | null;
   shipment: ShipmentInfo | null;
 }
 
@@ -170,8 +171,11 @@ export default function AdminDashboardPage() {
       id: "proof",
       header: "Proof",
       cell: ({ row }) => {
-        const proofUrl = row.original.pendingPayment?.proofUrl;
-        if (!proofUrl) return <span className="text-gray-400 text-sm">—</span>;
+        const payment = row.original.payment;
+        if (!payment) return <span className="text-gray-400 text-sm">—</span>;
+        if (!payment.proofUrl) {
+          return <span className="text-gray-400 text-sm">Expired</span>;
+        }
         return (
           <Dialog>
             <DialogTrigger asChild>
@@ -181,9 +185,12 @@ export default function AdminDashboardPage() {
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Payment proof</DialogTitle>
+                <DialogTitle>Payment proof — {payment.status.replaceAll("_", " ")}</DialogTitle>
               </DialogHeader>
-              <img src={proofUrl} alt="Payment proof" className="w-full rounded-md" />
+              <img src={payment.proofUrl} alt="Payment proof" className="w-full rounded-md" />
+              {payment.status === "REJECTED" && payment.rejectionReason && (
+                <p className="text-sm text-destructive">Rejected: {payment.rejectionReason}</p>
+              )}
             </DialogContent>
           </Dialog>
         );
@@ -270,7 +277,7 @@ export default function AdminDashboardPage() {
           );
         }
 
-        if (order.pendingPayment) {
+        if (order.payment?.status === "PENDING") {
           const canVerify = admin?.canVerifyPayments ?? false;
           return (
             <div className="flex gap-2">

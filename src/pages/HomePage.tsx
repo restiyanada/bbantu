@@ -18,6 +18,7 @@ interface ProductRow {
   id: string;
   name: string;
   description: string | null;
+  image_url: string | null;
   product_variants: VariantRow[];
 }
 
@@ -31,7 +32,7 @@ interface PaymentSettingsRow {
 interface RawBatchItem {
   id: string;
   variant_id: string;
-  product_variants: { name: string; price: string; products: { name: string } | null };
+  product_variants: { name: string; price: string; products: { name: string; image_url: string | null } | null };
 }
 interface RawBatch {
   id: string;
@@ -44,6 +45,7 @@ interface SelectableItem {
   variantId: string;
   label: string;
   price: string;
+  imageUrl: string | null;
 }
 
 interface BatchOption {
@@ -151,11 +153,14 @@ export default function HomePage() {
       // catalog, §5) — a plain read, not something that needs the guest
       // order-access token.
       const [productsResult, batchesResult, settingsResult] = await Promise.all([
-        supabase.from("products").select("id, name, description, product_variants(id, name, price)").eq("active", true),
+        supabase
+          .from("products")
+          .select("id, name, description, image_url, product_variants(id, name, price)")
+          .eq("active", true),
         supabase
           .from("batches")
           .select(
-            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name)))"
+            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name, image_url)))"
           )
           .eq("status", "OPEN"),
         supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
@@ -185,6 +190,7 @@ export default function HomePage() {
             variantId: item.variant_id,
             label: `${item.product_variants.products?.name ?? "Product"} — ${item.product_variants.name}`,
             price: item.product_variants.price,
+            imageUrl: item.product_variants.products?.image_url ?? null,
           })),
         }))
       );
@@ -314,7 +320,12 @@ export default function HomePage() {
   const activeItems: SelectableItem[] =
     activeSource === "READY_STOCK"
       ? (products ?? []).flatMap((p) =>
-          p.product_variants.map((v) => ({ variantId: v.id, label: `${p.name} — ${v.name}`, price: v.price }))
+          p.product_variants.map((v) => ({
+            variantId: v.id,
+            label: `${p.name} — ${v.name}`,
+            price: v.price,
+            imageUrl: p.image_url,
+          }))
         )
       : activeBatch?.items ?? [];
 
@@ -501,9 +512,16 @@ export default function HomePage() {
           {activeSource === "READY_STOCK" &&
             products?.map((product) => (
               <div key={product.id} className="space-y-2">
-                <div>
-                  <p className="font-medium">{product.name}</p>
-                  {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+                <div className="flex items-center gap-3">
+                  {product.image_url ? (
+                    <img src={product.image_url} alt="" className="h-12 w-12 rounded-md object-cover border shrink-0" />
+                  ) : (
+                    <span className="h-12 w-12 rounded-md border bg-muted shrink-0" />
+                  )}
+                  <div>
+                    <p className="font-medium">{product.name}</p>
+                    {product.description && <p className="text-sm text-gray-500">{product.description}</p>}
+                  </div>
                 </div>
                 {product.product_variants.map((variant) => (
                   <div key={variant.id} className="flex items-center justify-between text-sm pl-3">
@@ -534,7 +552,12 @@ export default function HomePage() {
               )}
               {activeBatch.items.map((item) => (
                 <div key={item.variantId} className="flex items-center justify-between text-sm">
-                  <span>
+                  <span className="flex items-center gap-2">
+                    {item.imageUrl ? (
+                      <img src={item.imageUrl} alt="" className="h-8 w-8 rounded-md object-cover border shrink-0" />
+                    ) : (
+                      <span className="h-8 w-8 rounded-md border bg-muted shrink-0" />
+                    )}
                     {item.label} — {formatIDR(item.price)}
                   </span>
                   <input
