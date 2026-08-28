@@ -433,7 +433,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-8">
+    <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-8">
       <div className="space-y-1.5">
         <h1 className="text-3xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-muted-foreground">Pick an item, enter your details, and place your order.</p>
@@ -488,71 +488,90 @@ export default function HomePage() {
             <p className="text-muted-foreground text-sm">Nothing available to order right now.</p>
           )}
 
-          {activeSource === "READY_STOCK" &&
-            products?.map((product) => (
-              <div key={product.id} className="space-y-2 pb-4 border-b last:border-0 last:pb-0">
-                <div className="flex items-center gap-3">
-                  {product.image_url ? (
-                    <img src={product.image_url} alt="" className="h-12 w-12 rounded-lg object-cover border shrink-0" />
-                  ) : (
-                    <span className="h-12 w-12 rounded-lg border bg-muted shrink-0" />
-                  )}
-                  <div>
-                    <p className="font-medium">{product.name}</p>
-                    {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
+          {activeSource === "READY_STOCK" && products !== null && products.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {products.map((product) => (
+                <div key={product.id} className="rounded-lg border bg-card overflow-hidden">
+                  <div className="aspect-[4/3] bg-muted">
+                    {product.image_url ? (
+                      <img src={product.image_url} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
+                        No photo
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-3 space-y-2">
+                    <div>
+                      <p className="font-medium">{product.name}</p>
+                      {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
+                    </div>
+                    <div className="space-y-1.5">
+                      {product.product_variants.map((variant) => (
+                        <div key={variant.id} className="flex items-center justify-between text-sm">
+                          <span>
+                            {variant.name} — {formatIDR(variant.price)}
+                          </span>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={quantities[variant.id] ?? 0}
+                            onChange={(e) =>
+                              setQuantities((prev) => ({
+                                ...prev,
+                                [variant.id]: Math.max(0, Number(e.target.value) || 0),
+                              }))
+                            }
+                            className="w-16 h-8 text-right"
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
-                {product.product_variants.map((variant) => (
-                  <div key={variant.id} className="flex items-center justify-between text-sm pl-3">
-                    <span>
-                      {variant.name} — {formatIDR(variant.price)}
-                    </span>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={quantities[variant.id] ?? 0}
-                      onChange={(e) =>
-                        setQuantities((prev) => ({
-                          ...prev,
-                          [variant.id]: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="w-16 h-8 text-right"
-                    />
-                  </div>
-                ))}
-              </div>
-            ))}
+              ))}
+            </div>
+          )}
 
           {activeBatch && (
             <div className="space-y-2">
               {activeBatch.items.length === 0 && (
                 <p className="text-muted-foreground text-sm">This batch has no items yet.</p>
               )}
-              {activeBatch.items.map((item) => (
-                <div key={item.variantId} className="flex items-center justify-between text-sm">
-                  <span className="flex items-center gap-2">
-                    {item.imageUrl ? (
-                      <img src={item.imageUrl} alt="" className="h-8 w-8 rounded-lg object-cover border shrink-0" />
-                    ) : (
-                      <span className="h-8 w-8 rounded-lg border bg-muted shrink-0" />
-                    )}
-                    {item.label} — {formatIDR(item.price)}
-                  </span>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={quantities[item.variantId] ?? 0}
-                    onChange={(e) =>
-                      setQuantities((prev) => ({
-                        ...prev,
-                        [item.variantId]: Math.max(0, Number(e.target.value) || 0),
-                      }))
-                    }
-                    className="w-16 h-8 text-right"
-                  />
+              {activeBatch.items.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {activeBatch.items.map((item) => (
+                    <div key={item.variantId} className="rounded-lg border bg-card overflow-hidden">
+                      <div className="aspect-[4/3] bg-muted">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
+                            No photo
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3 flex items-center justify-between text-sm gap-2">
+                        <span>
+                          {item.label} — {formatIDR(item.price)}
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={quantities[item.variantId] ?? 0}
+                          onChange={(e) =>
+                            setQuantities((prev) => ({
+                              ...prev,
+                              [item.variantId]: Math.max(0, Number(e.target.value) || 0),
+                            }))
+                          }
+                          className="w-16 h-8 text-right shrink-0"
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
               {activeBatch.allowedPaymentTypes.length > 1 && (
                 <div className="pt-3 mt-2 border-t flex flex-wrap gap-4 text-sm">
                   {activeBatch.allowedPaymentTypes.includes("FULL") && (

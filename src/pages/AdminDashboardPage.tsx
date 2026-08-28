@@ -51,6 +51,31 @@ interface OrderRow {
 
 const columnHelper = createColumnHelper<OrderRow>();
 
+const STAT_TONE_CLASSES = {
+  warning: "text-amber-600",
+  info: "text-blue-600",
+  success: "text-green-600",
+} as const;
+
+function StatTile({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: keyof typeof STAT_TONE_CLASSES;
+}) {
+  return (
+    <Card className="py-4 gap-1">
+      <CardContent className="px-4">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+        <p className={`text-2xl font-bold tracking-tight mt-1 ${tone ? STAT_TONE_CLASSES[tone] : ""}`}>{value}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AdminDashboardPage() {
   const { admin } = useAdminAuth();
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
@@ -395,6 +420,18 @@ export default function AdminDashboardPage() {
     [orders]
   );
 
+  const stats = useMemo(() => {
+    const rows = orders ?? [];
+    return {
+      total: rows.length,
+      needsReview: rows.filter((o) => o.payment?.status === "PENDING").length,
+      readyToFulfil: rows.filter((o) =>
+        ["READY_FOR_FULFILMENT", "READY_FOR_PICKUP", "READY_TO_SHIP"].includes(o.status)
+      ).length,
+      completed: rows.filter((o) => ["PICKED_UP", "SHIPPED", "COMPLETED"].includes(o.status)).length,
+    };
+  }, [orders]);
+
   const filters: DataTableFilter<OrderRow>[] = [
     {
       label: "All statuses",
@@ -421,6 +458,15 @@ export default function AdminDashboardPage() {
             Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
           </p>
         </div>
+
+        {orders !== null && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatTile label="Total orders" value={stats.total} />
+            <StatTile label="Needs payment review" value={stats.needsReview} tone={stats.needsReview > 0 ? "warning" : undefined} />
+            <StatTile label="Ready to fulfil" value={stats.readyToFulfil} tone="info" />
+            <StatTile label="Completed" value={stats.completed} tone="success" />
+          </div>
+        )}
 
         {loadError && (
           <div className="flex items-center gap-2 text-destructive text-sm">
