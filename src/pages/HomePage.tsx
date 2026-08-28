@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Search } from "lucide-react";
+import { Search, Plus, Minus, Check } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -86,15 +86,20 @@ const customerSchema = z.object({
 
 type CustomerValues = z.infer<typeof customerSchema>;
 
+const STEPS = ["Choose items", "Your details", "Review & pay"] as const;
+
 export default function HomePage() {
   const navigate = useNavigate();
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [batches, setBatches] = useState<BatchOption[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [step, setStep] = useState(1);
+
   const [activeSource, setActiveSource] = useState<string>("READY_STOCK");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemsError, setItemsError] = useState<string | null>(null);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [paymentType, setPaymentType] = useState<"DP" | "FULL">("FULL");
 
@@ -128,6 +133,7 @@ export default function HomePage() {
     register,
     handleSubmit,
     watch,
+    trigger,
     formState: { errors, isSubmitting },
   } = useForm<CustomerValues>({ resolver: zodResolver(customerSchema) });
 
@@ -313,11 +319,16 @@ export default function HomePage() {
     setRateError(null);
   }
 
+  function setQuantity(variantId: string, qty: number) {
+    setQuantities((prev) => ({ ...prev, [variantId]: Math.max(0, qty) }));
+  }
+
   const subtotalCents = activeItems.reduce(
     (sum, item) => sum + (quantities[item.variantId] ?? 0) * Math.round(Number(item.price) * 100),
     0
   );
   const hasItems = subtotalCents > 0;
+  const cartCount = activeItems.reduce((sum, item) => sum + (quantities[item.variantId] ?? 0), 0);
   const subtotal = (subtotalCents / 100).toFixed(2);
 
   const isPreOrder = activeSource !== "READY_STOCK";
@@ -368,9 +379,35 @@ export default function HomePage() {
     if (proofInputRef.current) proofInputRef.current.value = "";
   }
 
+  function handleContinueFromItems() {
+    if (!hasItems) {
+      setItemsError("Add at least one item before continuing.");
+      return;
+    }
+    setItemsError(null);
+    setStep(2);
+  }
+
+  async function handleContinueFromDetails() {
+    setDetailsError(null);
+    const valid = await trigger(["name", "phone", "email"]);
+    if (!valid) return;
+
+    if (fulfilmentMethod === "SHIPPING") {
+      if (!selectedDistrict || !addressDetail.trim()) {
+        setDetailsError("Please complete the delivery address.");
+        return;
+      }
+      if (!selectedServiceCode) {
+        setDetailsError("Please get a shipping rate and pick an option before continuing.");
+        return;
+      }
+    }
+    setStep(3);
+  }
+
   async function onSubmit(customer: CustomerValues) {
     setSubmitError(null);
-    setItemsError(null);
 
     const items = Object.entries(quantities)
       .filter(([, qty]) => qty > 0)
@@ -378,6 +415,7 @@ export default function HomePage() {
 
     if (items.length === 0) {
       setItemsError("Add at least one item before placing your order.");
+      setStep(1);
       return;
     }
     if (!proofPath) {
@@ -386,12 +424,9 @@ export default function HomePage() {
     }
 
     if (fulfilmentMethod === "SHIPPING") {
-      if (!selectedDistrict || !addressDetail.trim()) {
-        setSubmitError("Please complete the delivery address.");
-        return;
-      }
-      if (!selectedServiceCode) {
-        setSubmitError("Please get a shipping rate and pick an option before submitting.");
+      if (!selectedDistrict || !addressDetail.trim() || !selectedServiceCode) {
+        setSubmitError("Please complete the delivery address and shipping option.");
+        setStep(2);
         return;
       }
     }
@@ -433,7 +468,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-8">
+    <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6 pb-28">
       <div className="space-y-1.5">
         <h1 className="text-4xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-muted-foreground">Pick an item, enter your details, and place your order.</p>
@@ -445,466 +480,557 @@ export default function HomePage() {
         </Button>
       </div>
 
-      {batches !== null && batches.length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => handleSourceChange("READY_STOCK")}
-            className={cn(
-              "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
-              activeSource === "READY_STOCK"
-                ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                : "bg-card hover:bg-muted"
-            )}
-          >
-            Ready stock
-          </button>
-          {batches.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              onClick={() => handleSourceChange(b.id)}
-              className={cn(
-                "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
-                activeSource === b.id
-                  ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                  : "bg-card hover:bg-muted"
+      {/* Progress indicator */}
+      <div className="flex items-center">
+        {STEPS.map((label, i) => {
+          const n = i + 1;
+          const state = n < step ? "done" : n === step ? "active" : "upcoming";
+          return (
+            <div key={label} className="flex items-center flex-1 last:flex-none">
+              <button
+                type="button"
+                disabled={n > step}
+                onClick={() => n < step && setStep(n)}
+                className={cn(
+                  "flex items-center gap-2 shrink-0",
+                  n < step ? "cursor-pointer" : "cursor-default"
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                    state === "done" && "border-primary bg-primary text-primary-foreground",
+                    state === "active" && "border-primary text-primary",
+                    state === "upcoming" && "border-border text-muted-foreground"
+                  )}
+                >
+                  {state === "done" ? <Check className="size-3.5" /> : n}
+                </span>
+                <span
+                  className={cn(
+                    "text-sm hidden sm:inline",
+                    state === "active" ? "font-semibold" : "text-muted-foreground"
+                  )}
+                >
+                  {label}
+                </span>
+              </button>
+              {n < STEPS.length && (
+                <span className={cn("h-px flex-1 mx-2", n < step ? "bg-primary" : "bg-border")} />
               )}
-            >
-              {b.name} (pre-order)
-            </button>
-          ))}
-        </div>
-      )}
+            </div>
+          );
+        })}
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Items</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {loadError && <p className="text-destructive text-sm">{loadError}</p>}
-          {!loadError && products === null && <p className="text-muted-foreground text-sm">Loading items…</p>}
-          {activeSource === "READY_STOCK" && products !== null && products.length === 0 && (
-            <p className="text-muted-foreground text-sm">Nothing available to order right now.</p>
-          )}
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {/* STEP 1: choose items */}
+        {step === 1 && (
+          <>
+            {batches !== null && batches.length > 0 && (
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => handleSourceChange("READY_STOCK")}
+                  className={cn(
+                    "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
+                    activeSource === "READY_STOCK"
+                      ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                      : "bg-card hover:bg-muted"
+                  )}
+                >
+                  Ready stock
+                </button>
+                {batches.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => handleSourceChange(b.id)}
+                    className={cn(
+                      "text-sm font-medium px-3.5 py-1.5 rounded-full border transition-colors",
+                      activeSource === b.id
+                        ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                        : "bg-card hover:bg-muted"
+                    )}
+                  >
+                    {b.name} (pre-order)
+                  </button>
+                ))}
+              </div>
+            )}
 
-          {activeSource === "READY_STOCK" && products !== null && products.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {products.map((product) => (
-                <div key={product.id} className="rounded-lg border bg-card overflow-hidden">
-                  <div className="aspect-[4/3] bg-muted">
-                    {product.image_url ? (
-                      <img src={product.image_url} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
-                        No photo
+            <Card>
+              <CardHeader>
+                <CardTitle>Items</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+                {!loadError && products === null && <p className="text-muted-foreground text-sm">Loading items…</p>}
+                {activeSource === "READY_STOCK" && products !== null && products.length === 0 && (
+                  <p className="text-muted-foreground text-sm">Nothing available to order right now.</p>
+                )}
+
+                {activeSource === "READY_STOCK" && products !== null && products.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {products.map((product) => (
+                      <div key={product.id} className="rounded-lg border bg-card overflow-hidden">
+                        <div className="aspect-[4/3] bg-muted">
+                          {product.image_url ? (
+                            <img src={product.image_url} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
+                              No photo
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3 space-y-2">
+                          <div>
+                            <p className="font-medium">{product.name}</p>
+                            {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
+                          </div>
+                          <div className="space-y-1.5">
+                            {product.product_variants.map((variant) => (
+                              <QuantityRow
+                                key={variant.id}
+                                label={`${variant.name} — ${formatIDR(variant.price)}`}
+                                qty={quantities[variant.id] ?? 0}
+                                onChange={(qty) => setQuantity(variant.id, qty)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {activeBatch && (
+                  <div className="space-y-2">
+                    {activeBatch.items.length === 0 && (
+                      <p className="text-muted-foreground text-sm">This batch has no items yet.</p>
+                    )}
+                    {activeBatch.items.length > 0 && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {activeBatch.items.map((item) => (
+                          <div key={item.variantId} className="rounded-lg border bg-card overflow-hidden">
+                            <div className="aspect-[4/3] bg-muted">
+                              {item.imageUrl ? (
+                                <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
+                              ) : (
+                                <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
+                                  No photo
+                                </div>
+                              )}
+                            </div>
+                            <div className="p-3 space-y-2">
+                              <p className="text-sm">
+                                {item.label} — {formatIDR(item.price)}
+                              </p>
+                              <QuantityRow
+                                qty={quantities[item.variantId] ?? 0}
+                                onChange={(qty) => setQuantity(item.variantId, qty)}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {activeBatch.allowedPaymentTypes.length > 1 && (
+                      <div className="pt-3 mt-2 border-t flex flex-wrap gap-4 text-sm">
+                        {activeBatch.allowedPaymentTypes.includes("FULL") && (
+                          <label className="flex items-center gap-1.5">
+                            <input
+                              type="radio"
+                              checked={paymentType === "FULL"}
+                              onChange={() => setPaymentType("FULL")}
+                              className="accent-primary"
+                            />
+                            Pay in full
+                          </label>
+                        )}
+                        {activeBatch.allowedPaymentTypes.includes("DP") && (
+                          <label className="flex items-center gap-1.5">
+                            <input
+                              type="radio"
+                              checked={paymentType === "DP"}
+                              onChange={() => setPaymentType("DP")}
+                              className="accent-primary"
+                            />
+                            Pay 50% deposit now
+                          </label>
+                        )}
                       </div>
                     )}
                   </div>
-                  <div className="p-3 space-y-2">
-                    <div>
-                      <p className="font-medium">{product.name}</p>
-                      {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
-                    </div>
-                    <div className="space-y-1.5">
-                      {product.product_variants.map((variant) => (
-                        <div key={variant.id} className="flex items-center justify-between text-sm">
-                          <span>
-                            {variant.name} — {formatIDR(variant.price)}
-                          </span>
-                          <Input
-                            type="number"
-                            min={0}
-                            value={quantities[variant.id] ?? 0}
-                            onChange={(e) =>
-                              setQuantities((prev) => ({
-                                ...prev,
-                                [variant.id]: Math.max(0, Number(e.target.value) || 0),
-                              }))
-                            }
-                            className="w-16 h-8 text-right"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                )}
 
-          {activeBatch && (
-            <div className="space-y-2">
-              {activeBatch.items.length === 0 && (
-                <p className="text-muted-foreground text-sm">This batch has no items yet.</p>
-              )}
-              {activeBatch.items.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {activeBatch.items.map((item) => (
-                    <div key={item.variantId} className="rounded-lg border bg-card overflow-hidden">
-                      <div className="aspect-[4/3] bg-muted">
-                        {item.imageUrl ? (
-                          <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
-                            No photo
-                          </div>
-                        )}
+                {itemsError && <p className="text-destructive text-sm">{itemsError}</p>}
+              </CardContent>
+            </Card>
+          </>
+        )}
+
+        {/* STEP 2: details & fulfilment */}
+        {step === 2 && (
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>Your details</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="name">
+                    Name
+                    <RequiredMark />
+                  </Label>
+                  <Input id="name" aria-invalid={!!errors.name} {...register("name")} />
+                  {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="phone">
+                    Phone number
+                    <RequiredMark />
+                  </Label>
+                  <Input id="phone" aria-invalid={!!errors.phone} {...register("phone")} />
+                  {errors.phone && <p className="text-destructive text-xs">{errors.phone.message}</p>}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="email">
+                    Email
+                    <RequiredMark />
+                  </Label>
+                  <Input id="email" type="email" aria-invalid={!!errors.email} {...register("email")} />
+                  {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
+                </div>
+              </CardContent>
+            </Card>
+
+            {shippingAllowed && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Fulfilment</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        checked={fulfilmentMethod === "PICKUP"}
+                        onChange={() => setFulfilmentMethod("PICKUP")}
+                        className="accent-primary"
+                      />
+                      Booth pickup
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        checked={fulfilmentMethod === "SHIPPING"}
+                        onChange={() => setFulfilmentMethod("SHIPPING")}
+                        className="accent-primary"
+                      />
+                      Shipping (JNE)
+                    </label>
+                  </div>
+
+                  {fulfilmentMethod === "SHIPPING" && (
+                    <div className="space-y-3 pt-3 border-t">
+                      {locationError && <p className="text-destructive text-xs">{locationError}</p>}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Province
+                            <RequiredMark />
+                          </Label>
+                          <Select
+                            value={selectedProvinceCode}
+                            onChange={(e) => void handleProvinceChange(e.target.value)}
+                            className="h-8 text-sm"
+                          >
+                            <option value="">
+                              {provinces === null ? "Loading…" : "Select province"}
+                            </option>
+                            {provinces?.map((p) => (
+                              <option key={p.code} value={p.code}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            City / Regency
+                            <RequiredMark />
+                          </Label>
+                          <Select
+                            value={selectedCityCode}
+                            onChange={(e) => void handleCityChange(e.target.value)}
+                            disabled={!selectedProvinceCode}
+                            className="h-8 text-sm"
+                          >
+                            <option value="">{cities === null ? "—" : "Select city"}</option>
+                            {cities?.map((c) => (
+                              <option key={c.code} value={c.code}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            District
+                            <RequiredMark />
+                          </Label>
+                          <Select
+                            value={selectedDistrict?.code ?? ""}
+                            onChange={(e) => handleDistrictChange(e.target.value)}
+                            disabled={!selectedCityCode}
+                            className="h-8 text-sm"
+                          >
+                            <option value="">{districts === null ? "—" : "Select district"}</option>
+                            {districts?.map((d) => (
+                              <option key={d.code} value={d.code}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
                       </div>
-                      <div className="p-3 flex items-center justify-between text-sm gap-2">
-                        <span>
-                          {item.label} — {formatIDR(item.price)}
-                        </span>
-                        <Input
-                          type="number"
-                          min={0}
-                          value={quantities[item.variantId] ?? 0}
-                          onChange={(e) =>
-                            setQuantities((prev) => ({
-                              ...prev,
-                              [item.variantId]: Math.max(0, Number(e.target.value) || 0),
-                            }))
-                          }
-                          className="w-16 h-8 text-right shrink-0"
+
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">
+                          Street address, RT/RW, landmark, etc.
+                          <RequiredMark />
+                        </Label>
+                        <Textarea
+                          value={addressDetail}
+                          onChange={(e) => setAddressDetail(e.target.value)}
+                          rows={2}
+                          className="text-sm"
                         />
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {activeBatch.allowedPaymentTypes.length > 1 && (
-                <div className="pt-3 mt-2 border-t flex flex-wrap gap-4 text-sm">
-                  {activeBatch.allowedPaymentTypes.includes("FULL") && (
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="radio"
-                        checked={paymentType === "FULL"}
-                        onChange={() => setPaymentType("FULL")}
-                        className="accent-primary"
-                      />
-                      Pay in full
-                    </label>
-                  )}
-                  {activeBatch.allowedPaymentTypes.includes("DP") && (
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="radio"
-                        checked={paymentType === "DP"}
-                        onChange={() => setPaymentType("DP")}
-                        className="accent-primary"
-                      />
-                      Pay 50% deposit now
-                    </label>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
 
-          {itemsError && <p className="text-destructive text-sm">{itemsError}</p>}
-        </CardContent>
-      </Card>
+                      <p className="text-xs text-muted-foreground">
+                        Shipping to <span className="font-medium text-foreground">{watch("name") || "—"}</span> ·{" "}
+                        {watch("phone") || "—"}
+                      </p>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Your details</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="name">
-                Name
-                <RequiredMark />
-              </Label>
-              <Input id="name" aria-invalid={!!errors.name} {...register("name")} />
-              {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="phone">
-                Phone number
-                <RequiredMark />
-              </Label>
-              <Input id="phone" aria-invalid={!!errors.phone} {...register("phone")} />
-              {errors.phone && <p className="text-destructive text-xs">{errors.phone.message}</p>}
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="email">
-                Email
-                <RequiredMark />
-              </Label>
-              <Input id="email" type="email" aria-invalid={!!errors.email} {...register("email")} />
-              {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
-            </div>
-          </CardContent>
-        </Card>
-
-        {hasItems && shippingAllowed && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Fulfilment</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-1.5">
-                  <input
-                    type="radio"
-                    checked={fulfilmentMethod === "PICKUP"}
-                    onChange={() => setFulfilmentMethod("PICKUP")}
-                    className="accent-primary"
-                  />
-                  Booth pickup
-                </label>
-                <label className="flex items-center gap-1.5">
-                  <input
-                    type="radio"
-                    checked={fulfilmentMethod === "SHIPPING"}
-                    onChange={() => setFulfilmentMethod("SHIPPING")}
-                    className="accent-primary"
-                  />
-                  Shipping (JNE)
-                </label>
-              </div>
-
-              {fulfilmentMethod === "SHIPPING" && (
-                <div className="space-y-3 pt-3 border-t">
-                  {locationError && <p className="text-destructive text-xs">{locationError}</p>}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">
-                        Province
-                        <RequiredMark />
-                      </Label>
-                      <Select
-                        value={selectedProvinceCode}
-                        onChange={(e) => void handleProvinceChange(e.target.value)}
-                        className="h-8 text-sm"
+                      <Button
+                        type="button"
+                        variant="info"
+                        size="sm"
+                        disabled={!selectedDistrict || rateLoading}
+                        onClick={() => void handleGetRate()}
                       >
-                        <option value="">
-                          {provinces === null ? "Loading…" : "Select province"}
-                        </option>
-                        {provinces?.map((p) => (
-                          <option key={p.code} value={p.code}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">
-                        City / Regency
-                        <RequiredMark />
-                      </Label>
-                      <Select
-                        value={selectedCityCode}
-                        onChange={(e) => void handleCityChange(e.target.value)}
-                        disabled={!selectedProvinceCode}
-                        className="h-8 text-sm"
-                      >
-                        <option value="">{cities === null ? "—" : "Select city"}</option>
-                        {cities?.map((c) => (
-                          <option key={c.code} value={c.code}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">
-                        District
-                        <RequiredMark />
-                      </Label>
-                      <Select
-                        value={selectedDistrict?.code ?? ""}
-                        onChange={(e) => handleDistrictChange(e.target.value)}
-                        disabled={!selectedCityCode}
-                        className="h-8 text-sm"
-                      >
-                        <option value="">{districts === null ? "—" : "Select district"}</option>
-                        {districts?.map((d) => (
-                          <option key={d.code} value={d.code}>
-                            {d.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                  </div>
+                        {rateLoading ? "Getting rate…" : "Get shipping rate"}
+                      </Button>
+                      {rateError && <p className="text-destructive text-xs">{rateError}</p>}
 
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">
-                      Street address, RT/RW, landmark, etc.
-                      <RequiredMark />
-                    </Label>
-                    <Textarea
-                      value={addressDetail}
-                      onChange={(e) => setAddressDetail(e.target.value)}
-                      rows={2}
-                      className="text-sm"
-                    />
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Shipping to <span className="font-medium text-foreground">{watch("name") || "—"}</span> ·{" "}
-                    {watch("phone") || "—"}
-                  </p>
-
-                  <Button
-                    type="button"
-                    variant="info"
-                    size="sm"
-                    disabled={!selectedDistrict || rateLoading}
-                    onClick={() => void handleGetRate()}
-                  >
-                    {rateLoading ? "Getting rate…" : "Get shipping rate"}
-                  </Button>
-                  {rateError && <p className="text-destructive text-xs">{rateError}</p>}
-
-                  {rates && rates.length > 0 && (
-                    <div className="space-y-1.5 pt-1">
-                      {rates.map((rate) => (
-                        <label
-                          key={rate.serviceCode}
-                          className={cn(
-                            "flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer transition-colors",
-                            selectedServiceCode === rate.serviceCode
-                              ? "border-primary bg-accent"
-                              : "hover:bg-muted"
-                          )}
-                        >
-                          <span className="flex items-center gap-2">
-                            <input
-                              type="radio"
-                              checked={selectedServiceCode === rate.serviceCode}
-                              onChange={() => setSelectedServiceCode(rate.serviceCode)}
-                              className="accent-primary"
-                            />
-                            JNE {rate.serviceName}
-                            {rate.etd && <span className="text-muted-foreground"> · {rate.etd} days</span>}
-                          </span>
-                          <span className="font-medium">{formatIDR(rate.price)}</span>
-                        </label>
-                      ))}
+                      {rates && rates.length > 0 && (
+                        <div className="space-y-1.5 pt-1">
+                          {rates.map((rate) => (
+                            <label
+                              key={rate.serviceCode}
+                              className={cn(
+                                "flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer transition-colors",
+                                selectedServiceCode === rate.serviceCode
+                                  ? "border-primary bg-accent"
+                                  : "hover:bg-muted"
+                              )}
+                            >
+                              <span className="flex items-center gap-2">
+                                <input
+                                  type="radio"
+                                  checked={selectedServiceCode === rate.serviceCode}
+                                  onChange={() => setSelectedServiceCode(rate.serviceCode)}
+                                  className="accent-primary"
+                                />
+                                JNE {rate.serviceName}
+                                {rate.etd && <span className="text-muted-foreground"> · {rate.etd} days</span>}
+                              </span>
+                              <span className="font-medium">{formatIDR(rate.price)}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                </CardContent>
+              </Card>
+            )}
+
+            {detailsError && <p className="text-destructive text-sm">{detailsError}</p>}
+          </>
         )}
 
-        {hasItems && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Order summary</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span>Merchandise subtotal</span>
-                <span className="font-medium">{formatIDR(subtotal)}</span>
-              </div>
-              {fulfilmentMethod === "SHIPPING" && selectedRate && (
+        {/* STEP 3: review & pay */}
+        {step === 3 && (
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>Order summary</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
                 <div className="flex justify-between">
-                  <span>Shipping (JNE {selectedRate.serviceName})</span>
-                  <span className="font-medium">{formatIDR(selectedRate.price)}</span>
+                  <span>Merchandise subtotal</span>
+                  <span className="font-medium">{formatIDR(subtotal)}</span>
                 </div>
-              )}
-              <div className="flex justify-between font-medium pt-1 border-t">
-                <span>Order total</span>
-                <span>{formatIDR((grandTotalCents / 100).toFixed(2))}</span>
-              </div>
-
-              {effectivePaymentType === "DP" ? (
-                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3.5 space-y-1">
-                  <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
-                  <div className="flex justify-between text-amber-900">
-                    <span>Merchandise deposit (50%)</span>
-                    <span>{formatIDR((depositCents / 100).toFixed(2))}</span>
+                {fulfilmentMethod === "SHIPPING" && selectedRate && (
+                  <div className="flex justify-between">
+                    <span>Shipping (JNE {selectedRate.serviceName})</span>
+                    <span className="font-medium">{formatIDR(selectedRate.price)}</span>
                   </div>
-                  {fulfilmentMethod === "SHIPPING" && selectedRate && (
+                )}
+                <div className="flex justify-between font-medium pt-1 border-t">
+                  <span>Order total</span>
+                  <span>{formatIDR((grandTotalCents / 100).toFixed(2))}</span>
+                </div>
+
+                {effectivePaymentType === "DP" ? (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 p-3.5 space-y-1">
+                    <p className="font-medium text-amber-900">This is a deposit (DP) order.</p>
                     <div className="flex justify-between text-amber-900">
-                      <span>Shipping (paid in full now)</span>
-                      <span>{formatIDR(selectedRate.price)}</span>
+                      <span>Merchandise deposit (50%)</span>
+                      <span>{formatIDR((depositCents / 100).toFixed(2))}</span>
                     </div>
-                  )}
-                  <div className="flex justify-between text-amber-900 font-semibold pt-1 border-t border-amber-200">
-                    <span>Pay now</span>
-                    <span>{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                    {fulfilmentMethod === "SHIPPING" && selectedRate && (
+                      <div className="flex justify-between text-amber-900">
+                        <span>Shipping (paid in full now)</span>
+                        <span>{formatIDR(selectedRate.price)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-amber-900 font-semibold pt-1 border-t border-amber-200">
+                      <span>Pay now</span>
+                      <span>{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                    </div>
+                    <div className="flex justify-between text-amber-800">
+                      <span>Remaining merchandise balance (due later, once ready)</span>
+                      <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+                    </div>
+                    <p className="text-xs text-amber-700 pt-1">
+                      You'll be notified when the remaining balance is due — you don't need to pay it now.
+                    </p>
                   </div>
-                  <div className="flex justify-between text-amber-800">
-                    <span>Remaining merchandise balance (due later, once ready)</span>
-                    <span>{formatIDR(((subtotalCents - depositCents) / 100).toFixed(2))}</span>
+                ) : (
+                  <div className="rounded-lg bg-blue-50 border border-blue-200 p-3.5">
+                    <p className="font-medium text-blue-900">You're paying the full amount now.</p>
+                    <div className="flex justify-between text-blue-900 mt-1">
+                      <span>Amount to transfer</span>
+                      <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
+                    </div>
                   </div>
-                  <p className="text-xs text-amber-700 pt-1">
-                    You'll be notified when the remaining balance is due — you don't need to pay it now.
-                  </p>
-                </div>
-              ) : (
-                <div className="rounded-lg bg-blue-50 border border-blue-200 p-3.5">
-                  <p className="font-medium text-blue-900">You're paying the full amount now.</p>
-                  <div className="flex justify-between text-blue-900 mt-1">
-                    <span>Amount to transfer</span>
-                    <span className="font-semibold">{formatIDR((amountDueNowCents / 100).toFixed(2))}</span>
-                  </div>
-                </div>
-              )}
+                )}
 
-              {paymentSettings ? (
-                <div className="pt-2 mt-2 border-t space-y-1">
-                  <p className="text-muted-foreground">Transfer to:</p>
-                  <p>
-                    <span className="font-medium">{paymentSettings.bank_name}</span> —{" "}
-                    {paymentSettings.account_number}
+                {paymentSettings ? (
+                  <div className="pt-2 mt-2 border-t space-y-1">
+                    <p className="text-muted-foreground">Transfer to:</p>
+                    <p>
+                      <span className="font-medium">{paymentSettings.bank_name}</span> —{" "}
+                      {paymentSettings.account_number}
+                    </p>
+                    <p className="text-muted-foreground">a.n. {paymentSettings.account_holder_name}</p>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground pt-2 mt-2 border-t">
+                    Bank account details aren't configured yet — contact us before paying.
                   </p>
-                  <p className="text-muted-foreground">a.n. {paymentSettings.account_holder_name}</p>
-                </div>
-              ) : (
-                <p className="text-muted-foreground pt-2 mt-2 border-t">
-                  Bank account details aren't configured yet — contact us before paying.
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>
+                  Payment proof <span className="text-destructive text-sm font-normal">*</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Upload a screenshot of your transfer receipt for the amount shown above.
                 </p>
-              )}
-            </CardContent>
-          </Card>
+                <input
+                  ref={proofInputRef}
+                  type="file"
+                  accept={ACCEPTED_PROOF_TYPES.join(",")}
+                  onChange={handleProofFileChange}
+                  disabled={proofUploading}
+                  className="text-sm"
+                />
+                {proofUploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
+                {proofPath && proofPreviewUrl && !proofUploading && (
+                  <FileUploadPreview previewUrl={proofPreviewUrl} label={proofFileName ?? "Uploaded"} onRemove={handleRemoveProof} />
+                )}
+                {proofError && <p className="text-destructive text-sm">{proofError}</p>}
+              </CardContent>
+            </Card>
+
+            {submitError && <p className="text-destructive text-sm">{submitError}</p>}
+          </>
         )}
 
-        {hasItems && (
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                Payment proof <span className="text-destructive text-sm font-normal">*</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <p className="text-sm text-muted-foreground">
-                Upload a screenshot of your transfer receipt for the amount shown above.
-              </p>
-              <input
-                ref={proofInputRef}
-                type="file"
-                accept={ACCEPTED_PROOF_TYPES.join(",")}
-                onChange={handleProofFileChange}
-                disabled={proofUploading}
-                className="text-sm"
-              />
-              {proofUploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
-              {proofPath && proofPreviewUrl && !proofUploading && (
-                <FileUploadPreview previewUrl={proofPreviewUrl} label={proofFileName ?? "Uploaded"} onRemove={handleRemoveProof} />
-              )}
-              {proofError && <p className="text-destructive text-sm">{proofError}</p>}
-            </CardContent>
-          </Card>
-        )}
+        {/* Sticky step navigation / cart bar */}
+        <div className="fixed bottom-0 inset-x-0 bg-card border-t z-20">
+          <div className="max-w-3xl mx-auto px-4 sm:px-8 py-3 flex items-center justify-between gap-3">
+            {step === 1 ? (
+              <div>
+                <p className="text-xs text-muted-foreground">{cartCount} item(s)</p>
+                <p className="text-base font-bold">{formatIDR(subtotal)}</p>
+              </div>
+            ) : (
+              <Button type="button" variant="outline" onClick={() => setStep(step - 1)}>
+                Back
+              </Button>
+            )}
 
-        {submitError && <p className="text-destructive text-sm">{submitError}</p>}
-
-        <Button
-          type="submit"
-          disabled={
-            isSubmitting || !proofPath || proofUploading || (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
-          }
-        >
-          {isSubmitting ? "Placing order…" : "Place order"}
-        </Button>
+            {step === 1 && (
+              <Button type="button" onClick={handleContinueFromItems} disabled={!hasItems}>
+                Continue
+              </Button>
+            )}
+            {step === 2 && (
+              <Button type="button" onClick={() => void handleContinueFromDetails()}>
+                Continue
+              </Button>
+            )}
+            {step === 3 && (
+              <Button
+                type="submit"
+                disabled={
+                  isSubmitting || !proofPath || proofUploading || (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
+                }
+              >
+                {isSubmitting ? "Placing order…" : "Place order"}
+              </Button>
+            )}
+          </div>
+        </div>
       </form>
     </main>
+  );
+}
+
+function QuantityRow({ label, qty, onChange }: { label?: string; qty: number; onChange: (qty: number) => void }) {
+  return (
+    <div className="flex items-center justify-between text-sm gap-2">
+      {label && <span>{label}</span>}
+      <div className={cn("flex items-center gap-2", !label && "ml-auto")}>
+        <button
+          type="button"
+          disabled={qty <= 0}
+          onClick={() => onChange(qty - 1)}
+          className="flex size-7 shrink-0 items-center justify-center rounded-full border disabled:opacity-35 disabled:pointer-events-none hover:bg-muted transition-colors"
+        >
+          <Minus className="size-3.5" />
+        </button>
+        <span className="w-5 text-center font-medium">{qty}</span>
+        <button
+          type="button"
+          onClick={() => onChange(qty + 1)}
+          className="flex size-7 shrink-0 items-center justify-center rounded-full border hover:bg-muted transition-colors"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+    </div>
   );
 }
