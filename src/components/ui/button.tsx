@@ -9,15 +9,15 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "rounded-full bg-primary text-primary-foreground shadow-xs hover:opacity-85",
+        default: "rounded-full bg-primary text-primary-foreground hover:opacity-85",
         destructive:
-          "rounded-full bg-destructive text-white shadow-xs hover:bg-destructive/90",
-        success: "rounded-full bg-green-700 text-white shadow-xs hover:bg-green-700/90",
-        info: "rounded-full bg-brand text-white shadow-xs hover:bg-brand/90",
+          "rounded-full bg-destructive text-white hover:bg-destructive/90",
+        success: "rounded-full bg-green-700 text-white hover:bg-green-700/90",
+        info: "rounded-full bg-brand text-white hover:bg-brand/90",
         outline:
-          "rounded-full border-[1.5px] bg-background shadow-xs hover:bg-accent hover:text-accent-foreground",
+          "rounded-full border-[1.5px] bg-background hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "rounded-full bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80",
+          "rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "rounded-md hover:bg-accent hover:text-accent-foreground",
         link: "text-foreground underline-offset-4 hover:underline font-semibold",
       },
