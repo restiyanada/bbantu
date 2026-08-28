@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from "@tanstack/react-table";
+import { X } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export interface DataTableFilter<TData> {
   label: string;
@@ -69,16 +71,18 @@ export function DataTable<TData>({
             </Select>
           ))}
           {(search || filters?.some((f) => f.value)) && (
-            <button
+            <Button
               type="button"
-              className="text-xs text-primary underline underline-offset-2"
+              size="sm"
+              variant="ghost"
               onClick={() => {
                 setSearch("");
                 filters?.forEach((f) => f.onChange(""));
               }}
             >
+              <X className="size-3.5" />
               Clear filters
-            </button>
+            </Button>
           )}
         </div>
       )}

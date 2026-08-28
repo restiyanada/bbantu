@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { X, Plus, RotateCw } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -269,9 +270,10 @@ export default function AdminProductsPage() {
                 {imagePreviewUrl && (
                   <div className="flex items-center gap-3 pt-1">
                     <img src={imagePreviewUrl} alt="Preview" className="h-24 w-24 rounded-lg object-cover border" />
-                    <button type="button" onClick={handleRemoveImage} className="text-xs text-destructive underline">
+                    <Button type="button" size="sm" variant="outline" onClick={handleRemoveImage} className="text-destructive hover:text-destructive">
+                      <X className="size-3.5" />
                       Remove
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
@@ -298,19 +300,23 @@ export default function AdminProductsPage() {
                       className="flex-1"
                     />
                     {variants.length > 1 && (
-                      <button
+                      <Button
                         type="button"
+                        size="icon"
+                        variant="ghost"
                         onClick={() => removeVariantRow(i)}
-                        className="text-xs text-muted-foreground underline shrink-0"
+                        className="shrink-0 text-muted-foreground hover:text-destructive"
+                        title="Remove this size/variant"
                       >
-                        Remove
-                      </button>
+                        <X className="size-4" />
+                      </Button>
                     )}
                   </div>
                 ))}
-                <button type="button" onClick={addVariantRow} className="text-xs text-primary underline underline-offset-2">
-                  + Add another size
-                </button>
+                <Button type="button" size="sm" variant="outline" onClick={addVariantRow}>
+                  <Plus className="size-3.5" />
+                  Add another size
+                </Button>
               </div>
 
               {submitError && <p className="text-destructive text-sm">{submitError}</p>}
@@ -323,12 +329,13 @@ export default function AdminProductsPage() {
         </Card>
 
         {loadError && (
-          <p className="text-destructive text-sm">
-            {loadError}{" "}
-            <button type="button" className="underline" onClick={() => void loadProducts()}>
+          <div className="flex items-center gap-2 text-destructive text-sm">
+            <p>{loadError}</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void loadProducts()}>
+              <RotateCw className="size-3.5" />
               Retry
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
         {products === null && !loadError && <p className="text-muted-foreground text-sm">Loading products…</p>}
 

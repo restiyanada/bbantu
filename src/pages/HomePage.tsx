@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { Search } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -436,11 +437,12 @@ export default function HomePage() {
       <div className="space-y-1.5">
         <h1 className="text-3xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-muted-foreground">Pick an item, enter your details, and place your order.</p>
-        <p className="text-sm pt-1">
-          <Link to="/orders/find" className="text-primary underline underline-offset-2 hover:no-underline">
-            Lost your order link?
+        <Button asChild size="sm" variant="outline" className="mt-1">
+          <Link to="/orders/find">
+            <Search className="size-3.5" />
+            Find my order
           </Link>
-        </p>
+        </Button>
       </div>
 
       {batches !== null && batches.length > 0 && (

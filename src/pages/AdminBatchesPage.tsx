@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { RotateCw } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -396,12 +397,13 @@ export default function AdminBatchesPage() {
       </Card>
 
       {loadError && (
-        <p className="text-destructive text-sm">
-          {loadError}{" "}
-          <button type="button" className="underline" onClick={() => void loadAll()}>
+        <div className="flex items-center gap-2 text-destructive text-sm">
+          <p>{loadError}</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => void loadAll()}>
+            <RotateCw className="size-3.5" />
             Retry
-          </button>
-        </p>
+          </Button>
+        </div>
       )}
       {receiptError && <p className="text-destructive text-sm">{receiptError}</p>}
       {receiptMessage && <p className="text-green-700 text-sm">{receiptMessage}</p>}

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { createColumnHelper } from "@tanstack/react-table";
+import { Eye, RotateCw } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
@@ -215,9 +216,10 @@ export default function AdminDashboardPage() {
         return (
           <Dialog>
             <DialogTrigger asChild>
-              <button type="button" className="text-xs text-primary underline">
+              <Button type="button" size="sm" variant="outline">
+                <Eye className="size-3.5" />
                 View
-              </button>
+              </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
@@ -241,9 +243,10 @@ export default function AdminDashboardPage() {
         return (
           <Dialog>
             <DialogTrigger asChild>
-              <button type="button" className="text-xs text-primary underline">
+              <Button type="button" size="sm" variant="outline">
+                <Eye className="size-3.5" />
                 View
-              </button>
+              </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
@@ -292,13 +295,9 @@ export default function AdminDashboardPage() {
                 submitting={isActioning}
                 onSubmit={(values) => handleReject(order.id, values.reason)}
               />
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline"
-                onClick={() => setRejectingId(null)}
-              >
+              <Button type="button" size="sm" variant="ghost" onClick={() => setRejectingId(null)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           );
         }
@@ -311,13 +310,9 @@ export default function AdminDashboardPage() {
                 submitting={isActioning}
                 onSubmit={(values) => handleRecordTracking(order.id, values)}
               />
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline"
-                onClick={() => setTrackingEntryId(null)}
-              >
+              <Button type="button" size="sm" variant="ghost" onClick={() => setTrackingEntryId(null)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           );
         }
@@ -428,12 +423,13 @@ export default function AdminDashboardPage() {
         </div>
 
         {loadError && (
-          <p className="text-destructive text-sm">
-            {loadError}{" "}
-            <button type="button" className="underline" onClick={() => void loadOrders()}>
+          <div className="flex items-center gap-2 text-destructive text-sm">
+            <p>{loadError}</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void loadOrders()}>
+              <RotateCw className="size-3.5" />
               Retry
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
         {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 

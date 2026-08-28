@@ -211,13 +211,9 @@ export default function ScanPage() {
                   </span>
                 </button>
               ))}
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline"
-                onClick={() => setPhoneMatches(null)}
-              >
+              <Button type="button" size="sm" variant="ghost" onClick={() => setPhoneMatches(null)}>
                 Cancel
-              </button>
+              </Button>
             </CardContent>
           </Card>
         )}

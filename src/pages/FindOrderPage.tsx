@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -113,11 +114,12 @@ export default function FindOrderPage() {
             </div>
           )}
 
-          <p className="text-sm text-center">
-            <Link to="/" className="text-primary underline underline-offset-2 hover:no-underline">
+          <Button asChild size="sm" variant="ghost" className="w-full">
+            <Link to="/">
+              <ArrowLeft className="size-3.5" />
               Back home
             </Link>
-          </p>
+          </Button>
         </CardContent>
       </Card>
     </main>
