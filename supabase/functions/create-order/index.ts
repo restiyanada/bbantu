@@ -59,6 +59,16 @@ import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents
 import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
+import { generateAccessToken } from "../_shared/tokens.ts";
+
+// Milestone 5 (§16.1, §27) — the same secret used to both write and later
+// read back the reversible copy of the access token (see db/schema.ts's
+// accessTokenEncrypted comment). Required, not optional: an order created
+// without this set would have no way to ever email its own link again.
+const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
+if (!accessTokenEncKey) {
+  throw new Error("ACCESS_TOKEN_ENC_KEY must be set as a Supabase Edge Function secret.");
+}
 
 // Letters (incl. common accented/Indonesian names), spaces, apostrophes,
 // hyphens — matches how the checkout form validates client-side; this is
@@ -300,7 +310,13 @@ Deno.serve(async (req) => {
 
       const [customer] = await tx.insert(customers).values(input.customer).returning();
 
-      const accessToken = crypto.randomUUID();
+      // Milestone 5 (§16.1, §27) — the raw token is generated here, in JS,
+      // then handed straight to the customer in the response below. It's
+      // never written to the database in this raw form: only its one-way
+      // hash (for the everyday access check) and a separately-reversible
+      // copy (for the email worker, later) get stored. See db/schema.ts's
+      // accessToken/accessTokenEncrypted comments for why both exist.
+      const rawAccessToken = generateAccessToken();
 
       let insertedOrder: typeof orders.$inferSelect;
       try {
@@ -322,7 +338,8 @@ Deno.serve(async (req) => {
             merchandiseSubtotal,
             shippingCost: shipmentValues ? shipmentValues.cost : null,
             submissionToken: input.submissionToken,
-            accessToken,
+            accessToken: sql`encode(digest(${rawAccessToken}, 'sha256'), 'hex')`,
+            accessTokenEncrypted: sql`encode(pgp_sym_encrypt(${rawAccessToken}, ${accessTokenEncKey}), 'base64')`,
           })
           .returning();
       } catch (err) {
@@ -366,17 +383,22 @@ Deno.serve(async (req) => {
         },
       });
 
-      return insertedOrder;
+      return { order: insertedOrder, rawAccessToken };
     });
 
     return json(
       {
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        accessToken: order.accessToken,
-        merchandiseSubtotal: order.merchandiseSubtotal,
-        shippingCost: order.shippingCost,
-        status: order.status,
+        orderId: order.order.id,
+        orderNumber: order.order.orderNumber,
+        // The raw token generated above — order.order.accessToken at this
+        // point is the hash that got stored, not something the customer
+        // can use. This is the only place in the system the raw value ever
+        // gets handed out directly (every later email rebuilds the same
+        // link from the encrypted copy instead — see send-queued-emails).
+        accessToken: order.rawAccessToken,
+        merchandiseSubtotal: order.order.merchandiseSubtotal,
+        shippingCost: order.order.shippingCost,
+        status: order.order.status,
       },
       201
     );

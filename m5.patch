@@ -1,0 +1,3117 @@
+From 0c85d16960fc68776060f94e1603530cd6c15405 Mon Sep 17 00:00:00 2001
+From: Milestone Agent <agent@bbantu.dev>
+Date: Thu, 27 Aug 2026 19:51:20 +0000
+Subject: [PATCH] Milestone 5: email queue + worker, order link security, order
+ timeline
+
+---
+ ...003_milestone5_email_and_link_security.sql |   12 +
+ .../0004_milestone5_email_worker_schedule.sql |   30 +
+ db/migrations/meta/0003_snapshot.json         | 1576 +++++++++++++++++
+ db/migrations/meta/_journal.json              |    7 +
+ db/schema.ts                                  |   38 +-
+ lib/email-cap.test.ts                         |   83 +
+ lib/email-cap.ts                              |   74 +
+ lib/email-queue.ts                            |   49 +
+ lib/order-number.ts                           |   21 +
+ lib/orders.test.ts                            |    1 +
+ src/components/order-timeline.tsx             |   61 +
+ src/lib/order-timeline.test.ts                |  110 ++
+ src/lib/order-timeline.ts                     |  124 ++
+ src/lib/utils.ts                              |   24 +-
+ src/pages/OrderPage.tsx                       |   40 +-
+ supabase/functions/_shared/email-templates.ts |   49 +
+ supabase/functions/_shared/tokens.ts          |   28 +
+ supabase/functions/create-order/index.ts      |   40 +-
+ supabase/functions/prepare-pickup/index.ts    |   22 +-
+ .../functions/record-batch-receipt/index.ts   |   32 +-
+ supabase/functions/resubmit-payment/index.ts  |    8 +-
+ .../functions/send-queued-emails/index.ts     |  228 +++
+ .../functions/submit-balance-payment/index.ts |    5 +-
+ supabase/functions/verify-payment/index.ts    |   45 +-
+ 24 files changed, 2661 insertions(+), 46 deletions(-)
+ create mode 100644 db/migrations/0003_milestone5_email_and_link_security.sql
+ create mode 100644 db/migrations/0004_milestone5_email_worker_schedule.sql
+ create mode 100644 db/migrations/meta/0003_snapshot.json
+ create mode 100644 lib/email-cap.test.ts
+ create mode 100644 lib/email-cap.ts
+ create mode 100644 lib/email-queue.ts
+ create mode 100644 lib/order-number.ts
+ create mode 100644 src/components/order-timeline.tsx
+ create mode 100644 src/lib/order-timeline.test.ts
+ create mode 100644 src/lib/order-timeline.ts
+ create mode 100644 supabase/functions/_shared/email-templates.ts
+ create mode 100644 supabase/functions/_shared/tokens.ts
+ create mode 100644 supabase/functions/send-queued-emails/index.ts
+
+diff --git a/db/migrations/0003_milestone5_email_and_link_security.sql b/db/migrations/0003_milestone5_email_and_link_security.sql
+new file mode 100644
+index 0000000..cc55799
+--- /dev/null
++++ b/db/migrations/0003_milestone5_email_and_link_security.sql
+@@ -0,0 +1,12 @@
++-- Milestone 5: required by digest() (RLS policies below) and
++-- pgp_sym_encrypt()/pgp_sym_decrypt() (supabase/functions/_shared/tokens.ts).
++-- Supabase projects typically already have this available, but this makes
++-- it explicit rather than assumed.
++CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;--> statement-breakpoint
++ALTER TABLE "emails" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
++ALTER TABLE "orders" ADD COLUMN "access_token_encrypted" text;--> statement-breakpoint
++ALTER POLICY "guest_can_read_own_order_items" ON "order_items" TO anon USING (exists (select 1 from "orders" where "orders"."id" = "order_items"."order_id" and "orders"."access_token" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')));--> statement-breakpoint
++ALTER POLICY "guest_can_read_own_order" ON "orders" TO anon USING ("orders"."access_token" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'));--> statement-breakpoint
++ALTER POLICY "guest_can_read_own_order_payments" ON "payments" TO anon USING (exists (select 1 from "orders" where "orders"."id" = "payments"."order_id" and "orders"."access_token" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')));--> statement-breakpoint
++ALTER POLICY "guest_can_read_own_pickup_token" ON "pickup_tokens" TO anon USING (exists (select 1 from "orders" where "orders"."id" = "pickup_tokens"."order_id" and "orders"."access_token" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')));--> statement-breakpoint
++ALTER POLICY "guest_can_read_own_shipment" ON "shipments" TO anon USING (exists (select 1 from "orders" where "orders"."id" = "shipments"."order_id" and "orders"."access_token" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')));
+\ No newline at end of file
+diff --git a/db/migrations/0004_milestone5_email_worker_schedule.sql b/db/migrations/0004_milestone5_email_worker_schedule.sql
+new file mode 100644
+index 0000000..1e0ede7
+--- /dev/null
++++ b/db/migrations/0004_milestone5_email_worker_schedule.sql
+@@ -0,0 +1,30 @@
++-- Milestone 5 (§24.2) — schedules supabase/functions/send-queued-emails to
++-- run automatically every 5 minutes via pg_cron + pg_net.
++--
++-- This file deliberately contains no real secret. The Authorization header
++-- below is pulled from Supabase Vault at run time (vault.decrypted_secrets),
++-- not hardcoded here — a real service-role key committed to a public git
++-- history would defeat the point of having one. Vault secret creation is a
++-- one-time manual step, not part of this migration — see the Milestone 5
++-- setup notes for the exact SQL to run once, by hand, in the SQL editor.
++--
++-- Safe to re-run: cron.schedule() updates the existing job by name rather
++-- than erroring on a duplicate.
++
++create extension if not exists pg_cron with schema extensions;
++create extension if not exists pg_net with schema extensions;
++
++select cron.schedule(
++  'send-queued-emails',
++  '*/5 * * * *',
++  $$
++  select net.http_post(
++    url := 'https://lhvxjgbjjamwatsmxiyc.supabase.co/functions/v1/send-queued-emails',
++    headers := jsonb_build_object(
++      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'edge_function_service_role_key'),
++      'Content-Type', 'application/json'
++    ),
++    body := '{}'::jsonb
++  ) as request_id;
++  $$
++);
+diff --git a/db/migrations/meta/0003_snapshot.json b/db/migrations/meta/0003_snapshot.json
+new file mode 100644
+index 0000000..f20bafe
+--- /dev/null
++++ b/db/migrations/meta/0003_snapshot.json
+@@ -0,0 +1,1576 @@
++{
++  "id": "4ebafc67-ade7-44a9-bfc9-8b07df22e0b6",
++  "prevId": "e2a7a0d3-f2a2-41c5-a897-75ac908b6ff0",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.admin_users": {
++      "name": "admin_users",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "email": {
++          "name": "email",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "can_verify_payments": {
++          "name": "can_verify_payments",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_scan_confirm_pickup": {
++          "name": "can_scan_confirm_pickup",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_manage_products_batches": {
++          "name": "can_manage_products_batches",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_adjust_inventory": {
++          "name": "can_adjust_inventory",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_manage_shipping": {
++          "name": "can_manage_shipping",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "can_view_audit_log": {
++          "name": "can_view_audit_log",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "admin_users_email_unique": {
++          "name": "admin_users_email_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "email"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.audit_logs": {
++      "name": "audit_logs",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "actor_id": {
++          "name": "actor_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "entity_type": {
++          "name": "entity_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "entity_id": {
++          "name": "entity_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "action": {
++          "name": "action",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "before_value": {
++          "name": "before_value",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "after_value": {
++          "name": "after_value",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "audit_logs_actor_id_admin_users_id_fk": {
++          "name": "audit_logs_actor_id_admin_users_id_fk",
++          "tableFrom": "audit_logs",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "actor_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.batch_items": {
++      "name": "batch_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "batch_id": {
++          "name": "batch_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "moq": {
++          "name": "moq",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "procured_quantity": {
++          "name": "procured_quantity",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "batch_items_batch_id_batches_id_fk": {
++          "name": "batch_items_batch_id_batches_id_fk",
++          "tableFrom": "batch_items",
++          "tableTo": "batches",
++          "columnsFrom": [
++            "batch_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "batch_items_variant_id_product_variants_id_fk": {
++          "name": "batch_items_variant_id_product_variants_id_fk",
++          "tableFrom": "batch_items",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_batch_items": {
++          "name": "anyone_can_read_batch_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_batch_items": {
++          "name": "staff_can_manage_batch_items",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.batches": {
++      "name": "batches",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "open_at": {
++          "name": "open_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "close_at": {
++          "name": "close_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "batch_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'DRAFT'"
++        },
++        "allowed_payment_types": {
++          "name": "allowed_payment_types",
++          "type": "payment_type[]",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "allowed_fulfilment_methods": {
++          "name": "allowed_fulfilment_methods",
++          "type": "fulfilment_method[]",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_batches": {
++          "name": "anyone_can_read_batches",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_batches": {
++          "name": "staff_can_manage_batches",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.customers": {
++      "name": "customers",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "phone": {
++          "name": "phone",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "email": {
++          "name": "email",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.emails": {
++      "name": "emails",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "to_address": {
++          "name": "to_address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "template": {
++          "name": "template",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "priority": {
++          "name": "priority",
++          "type": "email_priority",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "email_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'QUEUED'"
++        },
++        "queued_at": {
++          "name": "queued_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "sent_at": {
++          "name": "sent_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "emails_order_id_orders_id_fk": {
++          "name": "emails_order_id_orders_id_fk",
++          "tableFrom": "emails",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.inventory": {
++      "name": "inventory",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "on_hand": {
++          "name": "on_hand",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "reserved": {
++          "name": "reserved",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "inventory_variant_id_product_variants_id_fk": {
++          "name": "inventory_variant_id_product_variants_id_fk",
++          "tableFrom": "inventory",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "inventory_variant_id_unique": {
++          "name": "inventory_variant_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "variant_id"
++          ]
++        }
++      },
++      "policies": {
++        "staff_can_read_inventory": {
++          "name": "staff_can_read_inventory",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        },
++        "staff_can_create_inventory_rows": {
++          "name": "staff_can_create_inventory_rows",
++          "as": "PERMISSIVE",
++          "for": "INSERT",
++          "to": [
++            "authenticated"
++          ],
++          "withCheck": "exists (\n        select 1 from \"admin_users\"\n        where \"admin_users\".\"email\" = (auth.jwt() ->> 'email')\n          and (\"admin_users\".\"can_manage_products_batches\" = true or \"admin_users\".\"can_adjust_inventory\" = true)\n      )"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.inventory_transactions": {
++      "name": "inventory_transactions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity_delta": {
++          "name": "quantity_delta",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "reason": {
++          "name": "reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_by": {
++          "name": "created_by",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "inventory_transactions_variant_id_product_variants_id_fk": {
++          "name": "inventory_transactions_variant_id_product_variants_id_fk",
++          "tableFrom": "inventory_transactions",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "inventory_transactions_created_by_admin_users_id_fk": {
++          "name": "inventory_transactions_created_by_admin_users_id_fk",
++          "tableFrom": "inventory_transactions",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "created_by"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.order_items": {
++      "name": "order_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "variant_id": {
++          "name": "variant_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity": {
++          "name": "quantity",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "unit_price": {
++          "name": "unit_price",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "order_items_order_id_orders_id_fk": {
++          "name": "order_items_order_id_orders_id_fk",
++          "tableFrom": "order_items",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "order_items_variant_id_product_variants_id_fk": {
++          "name": "order_items_variant_id_product_variants_id_fk",
++          "tableFrom": "order_items",
++          "tableTo": "product_variants",
++          "columnsFrom": [
++            "variant_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "guest_can_read_own_order_items": {
++          "name": "guest_can_read_own_order_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"order_items\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        },
++        "staff_can_read_all_order_items": {
++          "name": "staff_can_read_all_order_items",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.orders": {
++      "name": "orders",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "customer_id": {
++          "name": "customer_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "sales_mode": {
++          "name": "sales_mode",
++          "type": "sales_mode",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "batch_id": {
++          "name": "batch_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "status": {
++          "name": "status",
++          "type": "order_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'PAYMENT_PENDING'"
++        },
++        "payment_type": {
++          "name": "payment_type",
++          "type": "payment_type",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "fulfilment_method": {
++          "name": "fulfilment_method",
++          "type": "fulfilment_method",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "order_number": {
++          "name": "order_number",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "reserved_at": {
++          "name": "reserved_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "merchandise_subtotal": {
++          "name": "merchandise_subtotal",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "shipping_cost": {
++          "name": "shipping_cost",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "amount_paid": {
++          "name": "amount_paid",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'0'"
++        },
++        "submission_token": {
++          "name": "submission_token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "access_token": {
++          "name": "access_token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "access_token_encrypted": {
++          "name": "access_token_encrypted",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "orders_customer_id_customers_id_fk": {
++          "name": "orders_customer_id_customers_id_fk",
++          "tableFrom": "orders",
++          "tableTo": "customers",
++          "columnsFrom": [
++            "customer_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "orders_batch_id_batches_id_fk": {
++          "name": "orders_batch_id_batches_id_fk",
++          "tableFrom": "orders",
++          "tableTo": "batches",
++          "columnsFrom": [
++            "batch_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "orders_submission_token_unique": {
++          "name": "orders_submission_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "submission_token"
++          ]
++        },
++        "orders_access_token_unique": {
++          "name": "orders_access_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "access_token"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_order": {
++          "name": "guest_can_read_own_order",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "\"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')"
++        },
++        "staff_can_read_all_orders": {
++          "name": "staff_can_read_all_orders",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.payment_settings": {
++      "name": "payment_settings",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "bank_name": {
++          "name": "bank_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "account_number": {
++          "name": "account_number",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "account_holder_name": {
++          "name": "account_holder_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.payments": {
++      "name": "payments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "amount": {
++          "name": "amount",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "proof_file_url": {
++          "name": "proof_file_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "payment_status",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'PENDING'"
++        },
++        "submitted_at": {
++          "name": "submitted_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        },
++        "verified_by": {
++          "name": "verified_by",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "verified_at": {
++          "name": "verified_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "rejection_reason": {
++          "name": "rejection_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "payments_order_id_orders_id_fk": {
++          "name": "payments_order_id_orders_id_fk",
++          "tableFrom": "payments",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        },
++        "payments_verified_by_admin_users_id_fk": {
++          "name": "payments_verified_by_admin_users_id_fk",
++          "tableFrom": "payments",
++          "tableTo": "admin_users",
++          "columnsFrom": [
++            "verified_by"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "guest_can_read_own_order_payments": {
++          "name": "guest_can_read_own_order_payments",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"payments\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.pickup_tokens": {
++      "name": "pickup_tokens",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "token": {
++          "name": "token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "pickup_tokens_order_id_orders_id_fk": {
++          "name": "pickup_tokens_order_id_orders_id_fk",
++          "tableFrom": "pickup_tokens",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "pickup_tokens_order_id_unique": {
++          "name": "pickup_tokens_order_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "order_id"
++          ]
++        },
++        "pickup_tokens_token_unique": {
++          "name": "pickup_tokens_token_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "token"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_pickup_token": {
++          "name": "guest_can_read_own_pickup_token",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"pickup_tokens\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.product_variants": {
++      "name": "product_variants",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "product_id": {
++          "name": "product_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "price": {
++          "name": "price",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "weight_grams": {
++          "name": "weight_grams",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "product_variants_product_id_products_id_fk": {
++          "name": "product_variants_product_id_products_id_fk",
++          "tableFrom": "product_variants",
++          "tableTo": "products",
++          "columnsFrom": [
++            "product_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_product_variants": {
++          "name": "anyone_can_read_product_variants",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_product_variants": {
++          "name": "staff_can_manage_product_variants",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.products": {
++      "name": "products",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "image_url": {
++          "name": "image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "active": {
++          "name": "active",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {
++        "anyone_can_read_products": {
++          "name": "anyone_can_read_products",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon",
++            "authenticated"
++          ],
++          "using": "true"
++        },
++        "staff_can_manage_products": {
++          "name": "staff_can_manage_products",
++          "as": "PERMISSIVE",
++          "for": "ALL",
++          "to": [
++            "authenticated"
++          ],
++          "using": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)",
++          "withCheck": "exists (select 1 from \"admin_users\" where \"admin_users\".\"email\" = (auth.jwt() ->> 'email') and \"admin_users\".\"can_manage_products_batches\" = true)"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.shipments": {
++      "name": "shipments",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "order_id": {
++          "name": "order_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "courier": {
++          "name": "courier",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'JNE'"
++        },
++        "service": {
++          "name": "service",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "recipient_name": {
++          "name": "recipient_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipient_phone": {
++          "name": "recipient_phone",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "address": {
++          "name": "address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "destination_district_code": {
++          "name": "destination_district_code",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "destination_district_name": {
++          "name": "destination_district_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "weight_grams": {
++          "name": "weight_grams",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "cost": {
++          "name": "cost",
++          "type": "numeric(12, 2)",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cost_override_reason": {
++          "name": "cost_override_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "tracking_number": {
++          "name": "tracking_number",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "shipments_order_id_orders_id_fk": {
++          "name": "shipments_order_id_orders_id_fk",
++          "tableFrom": "shipments",
++          "tableTo": "orders",
++          "columnsFrom": [
++            "order_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "shipments_order_id_unique": {
++          "name": "shipments_order_id_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "order_id"
++          ]
++        }
++      },
++      "policies": {
++        "guest_can_read_own_shipment": {
++          "name": "guest_can_read_own_shipment",
++          "as": "PERMISSIVE",
++          "for": "SELECT",
++          "to": [
++            "anon"
++          ],
++          "using": "exists (select 1 from \"orders\" where \"orders\".\"id\" = \"shipments\".\"order_id\" and \"orders\".\"access_token\" = encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex'))"
++        }
++      },
++      "checkConstraints": {},
++      "isRLSEnabled": true
++    },
++    "public.shipping_settings": {
++      "name": "shipping_settings",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "origin_district_code": {
++          "name": "origin_district_code",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_district_name": {
++          "name": "origin_district_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_address": {
++          "name": "origin_address",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {
++    "public.batch_status": {
++      "name": "batch_status",
++      "schema": "public",
++      "values": [
++        "DRAFT",
++        "OPEN",
++        "CLOSED",
++        "PROCUREMENT",
++        "AWAITING_STOCK",
++        "RECEIVED",
++        "FULFILMENT",
++        "COMPLETED"
++      ]
++    },
++    "public.email_priority": {
++      "name": "email_priority",
++      "schema": "public",
++      "values": [
++        "P0",
++        "P1",
++        "P2"
++      ]
++    },
++    "public.email_status": {
++      "name": "email_status",
++      "schema": "public",
++      "values": [
++        "QUEUED",
++        "SENT",
++        "FAILED"
++      ]
++    },
++    "public.fulfilment_method": {
++      "name": "fulfilment_method",
++      "schema": "public",
++      "values": [
++        "PICKUP",
++        "SHIPPING"
++      ]
++    },
++    "public.order_status": {
++      "name": "order_status",
++      "schema": "public",
++      "values": [
++        "PAYMENT_PENDING",
++        "PAYMENT_VERIFIED",
++        "RESERVED",
++        "AWAITING_STOCK",
++        "BALANCE_DUE",
++        "READY_FOR_FULFILMENT",
++        "READY_FOR_PICKUP",
++        "PICKED_UP",
++        "READY_TO_SHIP",
++        "SHIPPED",
++        "COMPLETED",
++        "CANCELLED",
++        "REFUND_REQUIRED"
++      ]
++    },
++    "public.payment_status": {
++      "name": "payment_status",
++      "schema": "public",
++      "values": [
++        "PENDING",
++        "VERIFIED",
++        "REJECTED"
++      ]
++    },
++    "public.payment_type": {
++      "name": "payment_type",
++      "schema": "public",
++      "values": [
++        "DP",
++        "FULL"
++      ]
++    },
++    "public.sales_mode": {
++      "name": "sales_mode",
++      "schema": "public",
++      "values": [
++        "PRE_ORDER",
++        "READY_STOCK"
++      ]
++    }
++  },
++  "schemas": {},
++  "sequences": {
++    "public.pickup_order_seq": {
++      "name": "pickup_order_seq",
++      "schema": "public",
++      "increment": "1",
++      "startWith": "1",
++      "minValue": "1",
++      "maxValue": "9223372036854775807",
++      "cache": "1",
++      "cycle": false
++    },
++    "public.shipping_order_seq": {
++      "name": "shipping_order_seq",
++      "schema": "public",
++      "increment": "1",
++      "startWith": "1",
++      "minValue": "1",
++      "maxValue": "9223372036854775807",
++      "cache": "1",
++      "cycle": false
++    }
++  },
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/db/migrations/meta/_journal.json b/db/migrations/meta/_journal.json
+index df69bb0..b4ff7fa 100644
+--- a/db/migrations/meta/_journal.json
++++ b/db/migrations/meta/_journal.json
+@@ -22,6 +22,13 @@
+       "when": 1787836356902,
+       "tag": "0002_milestone4_admin_auth",
+       "breakpoints": true
++    },
++    {
++      "idx": 3,
++      "version": "7",
++      "when": 1787858802570,
++      "tag": "0003_milestone5_email_and_link_security",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/db/schema.ts b/db/schema.ts
+index a8702d5..76b7f5a 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -296,7 +296,14 @@ export const batchItems = pgTable(
+ // this a real security boundary — RLS `using` applies to every query
+ // regardless of what WHERE clause the client's own code adds, so a client
+ // can't just omit a filter and read every order.
+-const requestAccessToken = sql`(current_setting('request.headers', true)::json ->> 'x-order-access-token')`;
++//
++// Milestone 5: the raw token the client sends is hashed here (SHA-256, via
++// pgcrypto's digest()) before comparing — orders.access_token now stores
++// that hash, never the raw value (§16.1, §27 "stored hashed in the
++// database"). Same hash algorithm/encoding used everywhere this token is
++// checked (this policy, resubmit-payment, submit-balance-payment) so a
++// value hashed one way always matches a value hashed the other way.
++const requestAccessToken = sql`encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')`;
+ 
+ // Separate counters per fulfilment method so order numbers read as
+ // "#010001" (pickup) / "#020001" (shipping) — sequential within each type,
+@@ -340,7 +347,24 @@ export const orders = pgTable(
+       .notNull()
+       .default("0"),
+     submissionToken: text("submission_token").notNull().unique(), // §19 duplicate-submission protection
+-    accessToken: text("access_token").notNull().unique(), // §16, §27 guest order access
++    // Milestone 5 (§16.1, §27): stores encode(digest(raw, 'sha256'), 'hex')
++    // — the raw token is never written here. Verifying "is this the right
++    // customer" only ever needs a one-way check (hash what they sent,
++    // compare), so a plain hash is the correct tool for this column.
++    accessToken: text("access_token").notNull().unique(),
++    // Milestone 5: a *separately* reversible copy of the same raw token
++    // (pgcrypto pgp_sym_encrypt, keyed by the ACCESS_TOKEN_ENC_KEY Edge
++    // Function secret — see supabase/functions/_shared/tokens.ts), stored
++    // as base64 text. This exists for exactly one reason: the email worker
++    // sends the *same* order-page link across up to 4 separate emails over
++    // an order's lifetime, and a one-way hash alone makes that
++    // impossible — nothing, including our own system, can turn a SHA-256
++    // hash back into the raw value. A plain hash still fully protects the
++    // everyday "is this the right customer" check above (that check never
++    // needs the raw value back); this column is the one narrow exception,
++    // usable only by code holding the encryption key (the email worker),
++    // not by anything reading the database directly.
++    accessTokenEncrypted: text("access_token_encrypted"),
+     createdAt: timestamp("created_at").notNull().defaultNow(),
+   },
+   (table) => [
+@@ -528,6 +552,14 @@ export const pickupTokens = pgTable(
+   ]
+ ).enableRLS();
+ 
++// Milestone 5: RLS enabled with no policies — same deny-all posture as
++// customers (holds toAddress, real customer PII). Nothing reads or writes
++// this table directly today (queuing happens inside Edge Function
++// transactions on the service-role connection, which bypasses RLS
++// regardless), but this table had no RLS at all before now, which is the
++// same kind of gap products/batches/inventory had before Milestone 4 closed
++// it — closing it here rather than leaving it for whoever builds the first
++// direct read of this table later.
+ export const emails = pgTable("emails", {
+   id: uuid("id").primaryKey().defaultRandom(),
+   orderId: uuid("order_id").references(() => orders.id),
+@@ -537,7 +569,7 @@ export const emails = pgTable("emails", {
+   status: emailStatusEnum("status").notNull().default("QUEUED"),
+   queuedAt: timestamp("queued_at").notNull().defaultNow(),
+   sentAt: timestamp("sent_at"),
+-});
++}).enableRLS();
+ 
+ export const auditLogs = pgTable("audit_logs", {
+   id: uuid("id").primaryKey().defaultRandom(),
+diff --git a/lib/email-cap.test.ts b/lib/email-cap.test.ts
+new file mode 100644
+index 0000000..b747a27
+--- /dev/null
++++ b/lib/email-cap.test.ts
+@@ -0,0 +1,83 @@
++import { describe, it, expect } from "vitest";
++import { computeEmailSendBudget } from "./email-cap";
++
++describe("email send budget (§24.2)", () => {
++  it("fresh day, both plentiful: balance-due gets 80, other gets its 10 floor, ceiling hit exactly", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 0,
++      otherSentToday: 0,
++      balanceDueQueuedAvailable: 200,
++      otherQueuedAvailable: 50,
++    });
++    expect(budget).toEqual({ balanceDueToSend: 80, otherToSend: 10 });
++  });
++
++  it("balance-due has less queued than its cap: leftover ceiling room flows to other", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 0,
++      otherSentToday: 0,
++      balanceDueQueuedAvailable: 5,
++      otherQueuedAvailable: 50,
++    });
++    // balance-due only has 5 to send; the other 75 of ceiling headroom
++    // goes to "other" instead of sitting unused.
++    expect(budget).toEqual({ balanceDueToSend: 5, otherToSend: 50 });
++  });
++
++  it("other has less queued than the ceiling would allow: doesn't invent sends that aren't queued", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 0,
++      otherSentToday: 0,
++      balanceDueQueuedAvailable: 200,
++      otherQueuedAvailable: 3,
++    });
++    expect(budget).toEqual({ balanceDueToSend: 80, otherToSend: 3 });
++  });
++
++  it("both quiet: sends only what's actually queued, no waste, no overreach", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 0,
++      otherSentToday: 0,
++      balanceDueQueuedAvailable: 2,
++      otherQueuedAvailable: 1,
++    });
++    expect(budget).toEqual({ balanceDueToSend: 2, otherToSend: 1 });
++  });
++
++  it("later run same day: already-sent counts reduce remaining budget correctly", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 75,
++      otherSentToday: 10,
++      balanceDueQueuedAvailable: 50,
++      otherQueuedAvailable: 50,
++    });
++    // balance-due: 80 cap - 75 sent = 5 left. other floor already met (10/10),
++    // ceiling headroom = 90 - 85 = 5, all of which balance-due can take.
++    expect(budget.balanceDueToSend).toBe(5);
++    expect(budget.otherToSend).toBe(0);
++  });
++
++  it("day already at the 90 ceiling: nothing more sends, even if plenty is queued", () => {
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 80,
++      otherSentToday: 10,
++      balanceDueQueuedAvailable: 100,
++      otherQueuedAvailable: 100,
++    });
++    expect(budget).toEqual({ balanceDueToSend: 0, otherToSend: 0 });
++  });
++
++  it("other's floor is protected even when balance-due alone would have filled the whole ceiling", () => {
++    // The exact scenario raised during planning: a big batch receipt makes
++    // many orders balance-due on the same day plenty of "ready" orders
++    // also need their nudge — other must still get its guaranteed 10.
++    const budget = computeEmailSendBudget({
++      balanceDueSentToday: 0,
++      otherSentToday: 0,
++      balanceDueQueuedAvailable: 500,
++      otherQueuedAvailable: 20,
++    });
++    expect(budget.otherToSend).toBeGreaterThanOrEqual(10);
++    expect(budget.balanceDueToSend + budget.otherToSend).toBeLessThanOrEqual(90);
++  });
++});
+diff --git a/lib/email-cap.ts b/lib/email-cap.ts
+new file mode 100644
+index 0000000..b57cf77
+--- /dev/null
++++ b/lib/email-cap.ts
+@@ -0,0 +1,74 @@
++/**
++ * Daily email send budget — PRD §24.2.
++ *
++ * Three rules, from the PRD plus one refinement agreed during Milestone 5
++ * planning:
++ *   - PAYMENT_REJECTED is uncapped entirely — not handled by this file at
++ *     all. The worker just attempts every queued one, stopping only if
++ *     Resend itself returns 429 (§24.2: "never dropped").
++ *   - BALANCE_DUE gets up to 80/day (§24.2's "balance-due batching" rule).
++ *   - ORDER_CONFIRMED + READY_FOR_FULFILMENT ("other" below) are
++ *     guaranteed at least 10/day *before* BALANCE_DUE touches anything —
++ *     otherwise a big batch-due event could crowd them out entirely on a
++ *     busy day, which is exactly the scenario flagged during planning.
++ *     Whatever ceiling headroom BALANCE_DUE doesn't end up using (either
++ *     because its own 80 cap, or simply because fewer than that are
++ *     actually queued) flows back to "other" instead of going to waste.
++ *   - Both stay under a combined 90/day ceiling (§24.2's internal safety
++ *     threshold, deliberately below Resend's real 100/day hard limit).
++ *
++ * This only computes *how many* of each to attempt this run — it doesn't
++ * send anything or know about specific email rows. Kept pure so the
++ * cascading-leftover logic (the trickiest part) is directly testable
++ * without a database or a mocked Resend call.
++ */
++
++const DAILY_CEILING = 90;
++const BALANCE_DUE_DAILY_CAP = 80;
++const OTHER_DAILY_FLOOR = 10;
++
++export interface EmailCapCounts {
++  /** BALANCE_DUE emails already sent today (any priority — but this is always P0). */
++  balanceDueSentToday: number;
++  /** ORDER_CONFIRMED + READY_FOR_FULFILMENT emails already sent today, combined. */
++  otherSentToday: number;
++  /** BALANCE_DUE rows currently QUEUED and eligible to send. */
++  balanceDueQueuedAvailable: number;
++  /** ORDER_CONFIRMED + READY_FOR_FULFILMENT rows currently QUEUED and eligible to send. */
++  otherQueuedAvailable: number;
++}
++
++export interface EmailSendBudget {
++  balanceDueToSend: number;
++  otherToSend: number;
++}
++
++export function computeEmailSendBudget(counts: EmailCapCounts): EmailSendBudget {
++  const sentToday = counts.balanceDueSentToday + counts.otherSentToday;
++
++  // 1. Guarantee "other" its floor first, before balance-due gets anything —
++  //    bounded by what's actually queued and by ceiling headroom.
++  const otherFloorCap = Math.max(0, Math.min(OTHER_DAILY_FLOOR - counts.otherSentToday, DAILY_CEILING - sentToday));
++  const otherFloorSend = Math.min(otherFloorCap, counts.otherQueuedAvailable);
++  const sentAfterFloor = sentToday + otherFloorSend;
++
++  // 2. balance-due gets up to its own cap, bounded by remaining ceiling
++  //    headroom and by what's actually queued.
++  const balanceDueCap = Math.max(
++    0,
++    Math.min(BALANCE_DUE_DAILY_CAP - counts.balanceDueSentToday, DAILY_CEILING - sentAfterFloor)
++  );
++  const balanceDueSend = Math.min(balanceDueCap, counts.balanceDueQueuedAvailable);
++  const sentAfterBalanceDue = sentAfterFloor + balanceDueSend;
++
++  // 3. Any ceiling headroom balance-due didn't use (own cap, or simply
++  //    nothing left queued) goes to "other" — bounded by what's queued
++  //    beyond what the floor above already claimed.
++  const remainingCeiling = Math.max(0, DAILY_CEILING - sentAfterBalanceDue);
++  const otherOverflowSend = Math.min(remainingCeiling, counts.otherQueuedAvailable - otherFloorSend);
++
++  return {
++    balanceDueToSend: balanceDueSend,
++    otherToSend: otherFloorSend + otherOverflowSend,
++  };
++}
+diff --git a/lib/email-queue.ts b/lib/email-queue.ts
+new file mode 100644
+index 0000000..5152d07
+--- /dev/null
++++ b/lib/email-queue.ts
+@@ -0,0 +1,49 @@
++/**
++ * Email queuing — PRD §17 (4 core emails), §24 (queue worker).
++ *
++ * Queuing an email is just an insert into `emails`, done inside the same
++ * transaction as whatever order event caused it — same reasoning as
++ * lib/audit.ts: if the transaction rolls back, the email never should have
++ * been queued either. Actually *sending* is a completely separate concern
++ * (supabase/functions/send-queued-emails), on purpose — §24.3 "email
++ * failure must never block order state". Queuing can never fail the way
++ * sending can (no network call, no third-party API), so putting it in the
++ * same transaction as the state change costs nothing and guarantees the two
++ * never disagree about what happened.
++ */
++
++import { emails } from "../db/schema.ts";
++
++export type EmailTemplate = "ORDER_CONFIRMED" | "PAYMENT_REJECTED" | "BALANCE_DUE" | "READY_FOR_FULFILMENT";
++export type EmailPriority = "P0" | "P1";
++
++/** Minimal shape any drizzle transaction/db needs to support to queue an email. */
++export interface EmailQueueWriter {
++  insert(table: typeof emails): {
++    values(row: NewEmailRow): Promise<unknown>;
++  };
++}
++
++export interface NewEmailRow {
++  orderId: string;
++  toAddress: string;
++  template: EmailTemplate;
++  priority: EmailPriority;
++}
++
++export interface QueueEmailInput {
++  orderId: string;
++  toAddress: string;
++  template: EmailTemplate;
++  priority: EmailPriority;
++}
++
++/** Writes one queued-email row. Must be called with a transaction, not a standalone db handle. */
++export async function queueEmail(tx: EmailQueueWriter, input: QueueEmailInput): Promise<void> {
++  await tx.insert(emails).values({
++    orderId: input.orderId,
++    toAddress: input.toAddress,
++    template: input.template,
++    priority: input.priority,
++  });
++}
+diff --git a/lib/order-number.ts b/lib/order-number.ts
+new file mode 100644
+index 0000000..3b80fb7
+--- /dev/null
++++ b/lib/order-number.ts
+@@ -0,0 +1,21 @@
++/**
++ * "#010007" style — 01/02 encodes fulfilment method, last 4 digits are the
++ * sequence within that type (db/schema.ts pickup_order_seq/shipping_order_seq).
++ * Falls back to a short id slice if orderNumber isn't set yet (fulfilment
++ * method not chosen — §7.2 "configured later").
++ *
++ * Shared between the frontend (order page) and the email worker (subject
++ * lines, §17.2 "subject line contains order ID") — moved here (Milestone 5)
++ * rather than duplicated, so both always show the exact same format.
++ */
++export function formatOrderNumber(
++  fulfilmentMethod: string | null,
++  orderNumber: number | null,
++  fallbackId: string
++): string {
++  if (orderNumber == null || !fulfilmentMethod) {
++    return fallbackId.slice(0, 8);
++  }
++  const typeCode = fulfilmentMethod === "SHIPPING" ? "02" : "01";
++  return `#${typeCode}${String(orderNumber).padStart(4, "0")}`;
++}
+diff --git a/lib/orders.test.ts b/lib/orders.test.ts
+index 2919895..3541df3 100644
+--- a/lib/orders.test.ts
++++ b/lib/orders.test.ts
+@@ -55,6 +55,7 @@ function baseOrder(overrides: Partial<OrderRow> = {}): OrderRow {
+     amountPaid: "0",
+     submissionToken: "tok-1",
+     accessToken: "acc-1",
++    accessTokenEncrypted: null,
+     createdAt: new Date(),
+     ...overrides,
+   };
+diff --git a/src/components/order-timeline.tsx b/src/components/order-timeline.tsx
+new file mode 100644
+index 0000000..9ce7183
+--- /dev/null
++++ b/src/components/order-timeline.tsx
+@@ -0,0 +1,61 @@
++/**
++ * Renders the pure timeline data from src/lib/order-timeline.ts as a
++ * vertical checklist — §16.3. Purely presentational: all the "which steps,
++ * in what state" logic lives in buildOrderTimeline, so this component has
++ * nothing to unit test beyond what's already covered there.
++ */
++
++import { Check } from "lucide-react";
++import { cn } from "@/lib/utils";
++import type { OrderTimeline } from "@/lib/order-timeline";
++
++export function OrderTimelineDisplay({ timeline }: { timeline: OrderTimeline }) {
++  return (
++    <div className="space-y-1">
++      {timeline.steps.map((step, i) => (
++        <div key={step.key} className="flex items-center gap-3">
++          <span
++            className={cn(
++              "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs",
++              step.state === "done" && "border-green-600 bg-green-600 text-white",
++              step.state === "current" && "border-blue-600 text-blue-600 font-semibold",
++              step.state === "upcoming" && "border-gray-300 text-gray-300"
++            )}
++          >
++            {step.state === "done" ? <Check className="h-3.5 w-3.5" /> : i + 1}
++          </span>
++          <span
++            className={cn(
++              "text-sm",
++              step.state === "done" && "text-gray-700",
++              step.state === "current" && "font-semibold text-blue-700",
++              step.state === "upcoming" && "text-gray-400"
++            )}
++          >
++            {step.label}
++          </span>
++        </div>
++      ))}
++      {timeline.terminalNote && (
++        <div className="flex items-center gap-3 pt-1">
++          <span
++            className={cn(
++              "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs text-white",
++              timeline.terminalNote.tone === "cancelled" ? "bg-red-600" : "bg-amber-600"
++            )}
++          >
++            !
++          </span>
++          <span
++            className={cn(
++              "text-sm font-semibold",
++              timeline.terminalNote.tone === "cancelled" ? "text-red-700" : "text-amber-700"
++            )}
++          >
++            {timeline.terminalNote.label}
++          </span>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/lib/order-timeline.test.ts b/src/lib/order-timeline.test.ts
+new file mode 100644
+index 0000000..ea57781
+--- /dev/null
++++ b/src/lib/order-timeline.test.ts
+@@ -0,0 +1,110 @@
++import { describe, it, expect } from "vitest";
++import { buildOrderTimeline } from "./order-timeline";
++
++describe("order timeline (§16.3)", () => {
++  it("ready stock, pickup: no stock-received or balance-paid steps", () => {
++    const t = buildOrderTimeline({
++      status: "PAYMENT_VERIFIED",
++      salesMode: "READY_STOCK",
++      paymentType: "FULL",
++      fulfilmentMethod: "PICKUP",
++    });
++    expect(t.steps.map((s) => s.key)).toEqual(["ORDER_PLACED", "PAYMENT_VERIFIED", "READY", "FULFILLED"]);
++    expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "current", "upcoming"]);
++    expect(t.steps.find((s) => s.key === "READY")?.label).toBe("Ready for pickup");
++    expect(t.steps.find((s) => s.key === "FULFILLED")?.label).toBe("Picked up");
++  });
++
++  it("ready stock, shipping: same shape, shipping labels", () => {
++    const t = buildOrderTimeline({
++      status: "READY_TO_SHIP",
++      salesMode: "READY_STOCK",
++      paymentType: "FULL",
++      fulfilmentMethod: "SHIPPING",
++    });
++    expect(t.steps.find((s) => s.key === "READY")?.label).toBe("Packed, ready to ship");
++    expect(t.steps.find((s) => s.key === "FULFILLED")?.label).toBe("Shipped");
++    expect(t.steps.find((s) => s.key === "READY")?.state).toBe("done");
++    expect(t.steps.find((s) => s.key === "FULFILLED")?.state).toBe("current");
++  });
++
++  it("pre-order, full payment: has stock-received, no balance-paid", () => {
++    const t = buildOrderTimeline({
++      status: "AWAITING_STOCK",
++      salesMode: "PRE_ORDER",
++      paymentType: "FULL",
++      fulfilmentMethod: "PICKUP",
++    });
++    expect(t.steps.map((s) => s.key)).toEqual(["ORDER_PLACED", "PAYMENT_VERIFIED", "STOCK_RECEIVED", "READY", "FULFILLED"]);
++    // still waiting on stock — payment verified is done, stock received is the current step
++    expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "current", "upcoming", "upcoming"]);
++  });
++
++  it("pre-order, deposit: has both stock-received and balance-paid, in order", () => {
++    const t = buildOrderTimeline({
++      status: "BALANCE_DUE",
++      salesMode: "PRE_ORDER",
++      paymentType: "DP",
++      fulfilmentMethod: "SHIPPING",
++    });
++    expect(t.steps.map((s) => s.key)).toEqual([
++      "ORDER_PLACED",
++      "PAYMENT_VERIFIED",
++      "STOCK_RECEIVED",
++      "BALANCE_PAID",
++      "READY",
++      "FULFILLED",
++    ]);
++    // stock has arrived (BALANCE_DUE implies it), balance payment is now the current step
++    expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "done", "current", "upcoming", "upcoming"]);
++    expect(t.steps.find((s) => s.key === "PAYMENT_VERIFIED")?.label).toBe("Deposit verified");
++  });
++
++  it("pre-order, deposit, resolves stock immediately without waiting: skips straight to balance-paid as current", () => {
++    // The edge case in verify-payment where stock happens to already be on
++    // hand — order never visibly sits in AWAITING_STOCK. Same expected
++    // display as the case above; this just checks READY_FOR_FULFILMENT
++    // (a FULL pre-order landing here directly) doesn't get confused with
++    // a DP one landing on BALANCE_DUE first.
++    const t = buildOrderTimeline({
++      status: "READY_FOR_FULFILMENT",
++      salesMode: "PRE_ORDER",
++      paymentType: "FULL",
++      fulfilmentMethod: "PICKUP",
++    });
++    expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "done", "current", "upcoming"]);
++  });
++
++  it("everything done: picked up / shipped / completed all fully check off", () => {
++    for (const status of ["PICKED_UP", "SHIPPED", "COMPLETED"] as const) {
++      const t = buildOrderTimeline({
++        status,
++        salesMode: "PRE_ORDER",
++        paymentType: "DP",
++        fulfilmentMethod: "PICKUP",
++      });
++      expect(t.steps.every((s) => s.state === "done")).toBe(true);
++    }
++  });
++
++  it("cancelled: shows order placed, then a cancelled marker — not a fabricated history", () => {
++    const t = buildOrderTimeline({
++      status: "CANCELLED",
++      salesMode: "PRE_ORDER",
++      paymentType: "DP",
++      fulfilmentMethod: "SHIPPING",
++    });
++    expect(t.steps).toEqual([{ key: "ORDER_PLACED", label: "Order placed", state: "done" }]);
++    expect(t.terminalNote).toEqual({ label: "Cancelled", tone: "cancelled" });
++  });
++
++  it("refund required: same shape as cancelled, different label/tone", () => {
++    const t = buildOrderTimeline({
++      status: "REFUND_REQUIRED",
++      salesMode: "READY_STOCK",
++      paymentType: "FULL",
++      fulfilmentMethod: "PICKUP",
++    });
++    expect(t.terminalNote).toEqual({ label: "Refund in progress", tone: "refund" });
++  });
++});
+diff --git a/src/lib/order-timeline.ts b/src/lib/order-timeline.ts
+new file mode 100644
+index 0000000..46dc7af
+--- /dev/null
++++ b/src/lib/order-timeline.ts
+@@ -0,0 +1,124 @@
++/**
++ * Customer-facing order timeline — §16.3.
++ *
++ * Which steps show, and which are done/current/upcoming, depends on three
++ * things about the order: pre-order vs ready stock, full payment vs
++ * deposit, pickup vs shipping. Kept as one pure function (no fetching, no
++ * React) so it's directly testable, matching how lib/order-state-machine.ts
++ * and lib/batch-allocation.ts are structured elsewhere in this project.
++ *
++ * Deliberately simpler than the full 13-status state machine — several
++ * internal statuses (RESERVED, AWAITING_STOCK) don't get their own visible
++ * step; they just mean "still on the previous step". See PROGRESS_RANK
++ * below for exactly which statuses count as which step being done.
++ */
++
++export type OrderStatus =
++  | "PAYMENT_PENDING"
++  | "PAYMENT_VERIFIED"
++  | "RESERVED"
++  | "AWAITING_STOCK"
++  | "BALANCE_DUE"
++  | "READY_FOR_FULFILMENT"
++  | "READY_FOR_PICKUP"
++  | "PICKED_UP"
++  | "READY_TO_SHIP"
++  | "SHIPPED"
++  | "COMPLETED"
++  | "CANCELLED"
++  | "REFUND_REQUIRED";
++
++export interface OrderTimelineInput {
++  status: OrderStatus;
++  salesMode: "PRE_ORDER" | "READY_STOCK";
++  paymentType: "DP" | "FULL";
++  fulfilmentMethod: "PICKUP" | "SHIPPING" | null;
++}
++
++export type TimelineStepState = "done" | "current" | "upcoming";
++
++export interface TimelineStep {
++  key: string;
++  label: string;
++  state: TimelineStepState;
++}
++
++export interface OrderTimeline {
++  steps: TimelineStep[];
++  /**
++   * Set only for CANCELLED/REFUND_REQUIRED, shown after the steps instead
++   * of continuing them. We deliberately don't try to reconstruct exactly
++   * how far a cancelled order got — the orders row only holds its current
++   * status, not a history of prior ones, so "Order placed, then
++   * Cancelled" is the most this can honestly show without pulling in the
++   * audit log (which guests can't read anyway).
++   */
++  terminalNote: { label: string; tone: "cancelled" | "refund" } | null;
++}
++
++/**
++ * How far a *normal* (non-cancelled) order has progressed, expressed as
++ * the highest step-rank now complete (see the rank values used in
++ * buildOrderTimeline below). Statuses not listed here don't add progress
++ * beyond "order placed" (rank 0) — currently none are missing, but this
++ * fails safe rather than throwing if the state machine ever grows a status
++ * this file doesn't know about yet.
++ */
++const STATUS_DONE_RANK: Record<OrderStatus, number> = {
++  PAYMENT_PENDING: 0,
++  PAYMENT_VERIFIED: 1,
++  RESERVED: 1, // no separate visible step — same displayed progress as PAYMENT_VERIFIED
++  AWAITING_STOCK: 1, // still waiting on "stock received"
++  BALANCE_DUE: 2, // stock question is resolved by the time this is reached
++  READY_FOR_FULFILMENT: 3, // includes "balance paid" for DP orders, which is how this status is reached
++  READY_FOR_PICKUP: 4,
++  READY_TO_SHIP: 4,
++  PICKED_UP: 6,
++  SHIPPED: 6,
++  COMPLETED: 6,
++  CANCELLED: 0, // unused — handled as a special case below
++  REFUND_REQUIRED: 0, // unused — handled as a special case below
++};
++
++export function buildOrderTimeline(input: OrderTimelineInput): OrderTimeline {
++  if (input.status === "CANCELLED" || input.status === "REFUND_REQUIRED") {
++    return {
++      steps: [{ key: "ORDER_PLACED", label: "Order placed", state: "done" }],
++      terminalNote:
++        input.status === "CANCELLED"
++          ? { label: "Cancelled", tone: "cancelled" }
++          : { label: "Refund in progress", tone: "refund" },
++    };
++  }
++
++  const isPreOrder = input.salesMode === "PRE_ORDER";
++  const isDp = input.paymentType === "DP";
++  const isShipping = input.fulfilmentMethod === "SHIPPING";
++
++  const stepDefs: { key: string; label: string; rank: number }[] = [
++    { key: "ORDER_PLACED", label: "Order placed", rank: 0 },
++    { key: "PAYMENT_VERIFIED", label: isDp ? "Deposit verified" : "Payment verified", rank: 1 },
++  ];
++  if (isPreOrder) {
++    stepDefs.push({ key: "STOCK_RECEIVED", label: "Stock received", rank: 2 });
++  }
++  if (isDp) {
++    stepDefs.push({ key: "BALANCE_PAID", label: "Balance paid", rank: 3 });
++  }
++  stepDefs.push({ key: "READY", label: isShipping ? "Packed, ready to ship" : "Ready for pickup", rank: 4 });
++  stepDefs.push({ key: "FULFILLED", label: isShipping ? "Shipped" : "Picked up", rank: 6 });
++
++  const doneRank = STATUS_DONE_RANK[input.status] ?? 0;
++  let currentAssigned = false;
++
++  const steps: TimelineStep[] = stepDefs.map((def) => {
++    if (def.rank <= doneRank) return { key: def.key, label: def.label, state: "done" };
++    if (!currentAssigned) {
++      currentAssigned = true;
++      return { key: def.key, label: def.label, state: "current" };
++    }
++    return { key: def.key, label: def.label, state: "upcoming" };
++  });
++
++  return { steps, terminalNote: null };
++}
+diff --git a/src/lib/utils.ts b/src/lib/utils.ts
+index 8e67423..c6d532e 100644
+--- a/src/lib/utils.ts
++++ b/src/lib/utils.ts
+@@ -1,6 +1,12 @@
+ import { clsx, type ClassValue } from "clsx";
+ import { twMerge } from "tailwind-merge";
+ 
++// Milestone 5: moved to the shared lib/ folder so the email worker (Deno)
++// can use the exact same format — re-exported here so every existing
++// `import { formatOrderNumber } from "@/lib/utils"` in this codebase keeps
++// working unchanged.
++export { formatOrderNumber } from "../../lib/order-number";
++
+ export function cn(...inputs: ClassValue[]) {
+   return twMerge(clsx(inputs));
+ }
+@@ -9,24 +15,6 @@ export function formatIDR(value: string | number): string {
+   return `Rp ${Number(value).toLocaleString("id-ID")}`;
+ }
+ 
+-/**
+- * "#010007" style — 01/02 encodes fulfilment method, last 4 digits are the
+- * sequence within that type (db/schema.ts pickup_order_seq/shipping_order_seq).
+- * Falls back to a short id slice if orderNumber isn't set yet (fulfilment
+- * method not chosen — §7.2 "configured later").
+- */
+-export function formatOrderNumber(
+-  fulfilmentMethod: string | null,
+-  orderNumber: number | null,
+-  fallbackId: string
+-): string {
+-  if (orderNumber == null || !fulfilmentMethod) {
+-    return fallbackId.slice(0, 8);
+-  }
+-  const typeCode = fulfilmentMethod === "SHIPPING" ? "02" : "01";
+-  return `#${typeCode}${String(orderNumber).padStart(4, "0")}`;
+-}
+-
+ type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "warning" | "info" | "success";
+ 
+ /**
+diff --git a/src/pages/OrderPage.tsx b/src/pages/OrderPage.tsx
+index c82aa06..173078f 100644
+--- a/src/pages/OrderPage.tsx
++++ b/src/pages/OrderPage.tsx
+@@ -1,9 +1,10 @@
+ import { useEffect, useState } from "react";
+ import { useParams } from "react-router-dom";
+ import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
+-import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
++import { formatIDR, formatOrderNumber } from "@/lib/utils";
++import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
++import { OrderTimelineDisplay } from "@/components/order-timeline";
+ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+-import { Badge } from "../components/ui/badge";
+ import { Button } from "@/components/ui/button";
+ 
+ // Raw Postgres column names (snake_case) — these queries go straight through
+@@ -13,6 +14,8 @@ interface OrderRow {
+   id: string;
+   order_number: number | null;
+   status: string;
++  sales_mode: string;
++  payment_type: string;
+   merchandise_subtotal: string;
+   shipping_cost: string | null;
+   amount_paid: string;
+@@ -92,12 +95,19 @@ export default function OrderPage() {
+     async function load(token: string) {
+       const client = createGuestOrderClient(token);
+ 
++      // Milestone 5: no `.eq("access_token", token)` filter here anymore —
++      // access_token now stores a hash (db/schema.ts), so comparing it to
++      // the raw token directly would never match. RLS's own policy already
++      // restricts an anon read to exactly the one order whose hash matches
++      // the x-order-access-token header (see createGuestOrderClient), so a
++      // plain unfiltered select on this table already returns at most one
++      // row — the redundant client-side filter was never load-bearing for
++      // security, only for clarity, and now it'd just be wrong.
+       const { data: order, error: orderError } = await client
+         .from("orders")
+         .select(
+-          "id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
++          "id, order_number, status, sales_mode, payment_type, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
+         )
+-        .eq("access_token", token)
+         .maybeSingle();
+ 
+       if (cancelled) return;
+@@ -273,19 +283,29 @@ export default function OrderPage() {
+   const total = Number(order.merchandise_subtotal) + shippingCost;
+   const balanceDue = total - Number(order.amount_paid);
+ 
++  const timeline = buildOrderTimeline({
++    status: order.status as OrderStatus,
++    salesMode: order.sales_mode as "PRE_ORDER" | "READY_STOCK",
++    paymentType: order.payment_type as "DP" | "FULL",
++    fulfilmentMethod: (order.fulfilment_method as "PICKUP" | "SHIPPING" | null) ?? null,
++  });
++
+   return (
+     <main className="p-8 max-w-2xl mx-auto space-y-6">
+       <div>
+-        <div className="flex items-center gap-3">
+-          <h1 className="text-2xl font-semibold">
+-            Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
+-          </h1>
+-          <Badge variant={statusBadgeVariant(order.status)}>{order.status.replaceAll("_", " ")}</Badge>
+-        </div>
++        <h1 className="text-2xl font-semibold">
++          Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
++        </h1>
+         {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
+         <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+       </div>
+ 
++      <Card>
++        <CardContent>
++          <OrderTimelineDisplay timeline={timeline} />
++        </CardContent>
++      </Card>
++
+       <Card>
+         <CardHeader>
+           <CardTitle>Items</CardTitle>
+diff --git a/supabase/functions/_shared/email-templates.ts b/supabase/functions/_shared/email-templates.ts
+new file mode 100644
+index 0000000..eeeae2f
+--- /dev/null
++++ b/supabase/functions/_shared/email-templates.ts
+@@ -0,0 +1,49 @@
++/**
++ * Email content — §17.1 (the 4 core emails), §17.2 (body rules).
++ *
++ * §17.2: "One link only. No order details, no tables, no images in the
++ * email body. Subject line contains order ID and action keyword. Footer:
++ * business name only." Plain text throughout is a deliberate match to
++ * that, not a placeholder for a real HTML template later — the PRD wants
++ * these minimal on purpose (§17: "short nudges").
++ */
++
++import type { EmailTemplate } from "../../../lib/email-queue.ts";
++
++export interface EmailRenderContext {
++  /** Formatted like "#010007" — lib/order-number.ts, same format the order page itself shows. */
++  orderNumber: string;
++  /** Full URL to the order page. */
++  orderLink: string;
++  businessName: string;
++}
++
++export interface RenderedEmail {
++  subject: string;
++  text: string;
++}
++
++export function renderEmail(template: EmailTemplate, ctx: EmailRenderContext): RenderedEmail {
++  switch (template) {
++    case "ORDER_CONFIRMED":
++      return {
++        subject: `Order ${ctx.orderNumber} confirmed`,
++        text: `Order ${ctx.orderNumber} confirmed. Track here: ${ctx.orderLink}\n\n${ctx.businessName}`,
++      };
++    case "PAYMENT_REJECTED":
++      return {
++        subject: `Action required for order ${ctx.orderNumber}`,
++        text: `Action required for order ${ctx.orderNumber}: ${ctx.orderLink}\n\n${ctx.businessName}`,
++      };
++    case "BALANCE_DUE":
++      return {
++        subject: `Order ${ctx.orderNumber} is ready — balance due`,
++        text: `Order ${ctx.orderNumber} is ready. Pay balance: ${ctx.orderLink}\n\n${ctx.businessName}`,
++      };
++    case "READY_FOR_FULFILMENT":
++      return {
++        subject: `Order ${ctx.orderNumber} is ready`,
++        text: `Order ${ctx.orderNumber} is ready: ${ctx.orderLink}\n\n${ctx.businessName}`,
++      };
++  }
++}
+diff --git a/supabase/functions/_shared/tokens.ts b/supabase/functions/_shared/tokens.ts
+new file mode 100644
+index 0000000..473b155
+--- /dev/null
++++ b/supabase/functions/_shared/tokens.ts
+@@ -0,0 +1,28 @@
++/**
++ * Order access token generation — Milestone 5 (§16.1, §27).
++ *
++ * This only generates the *raw* token. Everything derived from it — the
++ * one-way hash used for the everyday "is this the right customer" check,
++ * and the separately-reversible copy the email worker uses to rebuild a
++ * link later — is computed in SQL via pgcrypto, right at the point of
++ * insert/compare/read (db/schema.ts's requestAccessToken, and the queries
++ * in create-order, resubmit-payment, submit-balance-payment,
++ * send-queued-emails). Keeping both derived forms computed by the same
++ * pgcrypto functions in one place (the database) means there's no second,
++ * hand-written JS implementation that could quietly drift from what the RLS
++ * policy actually checks.
++ */
++
++const RAW_TOKEN_BYTES = 32; // §16.1/§27: "32+ bytes, base64url encoded"
++
++export function generateAccessToken(): string {
++  const bytes = new Uint8Array(RAW_TOKEN_BYTES);
++  crypto.getRandomValues(bytes);
++  return base64UrlEncode(bytes);
++}
++
++function base64UrlEncode(bytes: Uint8Array): string {
++  let binary = "";
++  for (const byte of bytes) binary += String.fromCharCode(byte);
++  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++}
+diff --git a/supabase/functions/create-order/index.ts b/supabase/functions/create-order/index.ts
+index 552a4fe..ae8949c 100644
+--- a/supabase/functions/create-order/index.ts
++++ b/supabase/functions/create-order/index.ts
+@@ -59,6 +59,16 @@ import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents
+ import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
+ import { logAudit } from "../../../lib/audit.ts";
+ import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
++import { generateAccessToken } from "../_shared/tokens.ts";
++
++// Milestone 5 (§16.1, §27) — the same secret used to both write and later
++// read back the reversible copy of the access token (see db/schema.ts's
++// accessTokenEncrypted comment). Required, not optional: an order created
++// without this set would have no way to ever email its own link again.
++const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
++if (!accessTokenEncKey) {
++  throw new Error("ACCESS_TOKEN_ENC_KEY must be set as a Supabase Edge Function secret.");
++}
+ 
+ // Letters (incl. common accented/Indonesian names), spaces, apostrophes,
+ // hyphens — matches how the checkout form validates client-side; this is
+@@ -300,7 +310,13 @@ Deno.serve(async (req) => {
+ 
+       const [customer] = await tx.insert(customers).values(input.customer).returning();
+ 
+-      const accessToken = crypto.randomUUID();
++      // Milestone 5 (§16.1, §27) — the raw token is generated here, in JS,
++      // then handed straight to the customer in the response below. It's
++      // never written to the database in this raw form: only its one-way
++      // hash (for the everyday access check) and a separately-reversible
++      // copy (for the email worker, later) get stored. See db/schema.ts's
++      // accessToken/accessTokenEncrypted comments for why both exist.
++      const rawAccessToken = generateAccessToken();
+ 
+       let insertedOrder: typeof orders.$inferSelect;
+       try {
+@@ -322,7 +338,8 @@ Deno.serve(async (req) => {
+             merchandiseSubtotal,
+             shippingCost: shipmentValues ? shipmentValues.cost : null,
+             submissionToken: input.submissionToken,
+-            accessToken,
++            accessToken: sql`encode(digest(${rawAccessToken}, 'sha256'), 'hex')`,
++            accessTokenEncrypted: sql`encode(pgp_sym_encrypt(${rawAccessToken}, ${accessTokenEncKey}), 'base64')`,
+           })
+           .returning();
+       } catch (err) {
+@@ -366,17 +383,22 @@ Deno.serve(async (req) => {
+         },
+       });
+ 
+-      return insertedOrder;
++      return { order: insertedOrder, rawAccessToken };
+     });
+ 
+     return json(
+       {
+-        orderId: order.id,
+-        orderNumber: order.orderNumber,
+-        accessToken: order.accessToken,
+-        merchandiseSubtotal: order.merchandiseSubtotal,
+-        shippingCost: order.shippingCost,
+-        status: order.status,
++        orderId: order.order.id,
++        orderNumber: order.order.orderNumber,
++        // The raw token generated above — order.order.accessToken at this
++        // point is the hash that got stored, not something the customer
++        // can use. This is the only place in the system the raw value ever
++        // gets handed out directly (every later email rebuilds the same
++        // link from the encrypted copy instead — see send-queued-emails).
++        accessToken: order.rawAccessToken,
++        merchandiseSubtotal: order.order.merchandiseSubtotal,
++        shippingCost: order.order.shippingCost,
++        status: order.order.status,
+       },
+       201
+     );
+diff --git a/supabase/functions/prepare-pickup/index.ts b/supabase/functions/prepare-pickup/index.ts
+index 346e05b..5f403ff 100644
+--- a/supabase/functions/prepare-pickup/index.ts
++++ b/supabase/functions/prepare-pickup/index.ts
+@@ -26,8 +26,9 @@ import { db } from "../_shared/db.ts";
+ import { handleCors } from "../_shared/cors.ts";
+ import { HttpError, json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
+ import { requireAdmin } from "../_shared/auth.ts";
+-import { orders, pickupTokens } from "../../../db/schema.ts";
++import { orders, pickupTokens, customers } from "../../../db/schema.ts";
+ import { transitionOrder } from "../../../lib/orders.ts";
++import { queueEmail } from "../../../lib/email-queue.ts";
+ 
+ const prepareSchema = z.object({ orderId: z.string().uuid() });
+ 
+@@ -77,6 +78,25 @@ Deno.serve(async (req) => {
+         stockAvailable: true, // unused by this transition
+       });
+ 
++      // §17.1 — "ready for fulfilment", P1. One email covers both outcomes
++      // below (pickup QR or shipping) — queued here, once, before they
++      // branch, rather than duplicated in each branch.
++      const [order] = await tx
++        .select({ customerId: orders.customerId })
++        .from(orders)
++        .where(eq(orders.id, input.orderId));
++      if (order) {
++        const [customer] = await tx.select({ email: customers.email }).from(customers).where(eq(customers.id, order.customerId));
++        if (customer) {
++          await queueEmail(tx, {
++            orderId: input.orderId,
++            toAddress: customer.email,
++            template: "READY_FOR_FULFILMENT",
++            priority: "P1",
++          });
++        }
++      }
++
+       if (to !== "READY_FOR_PICKUP") {
+         // SHIPPING orders land on READY_TO_SHIP instead — no QR needed here.
+         // Shipping's own prep flow (packing, labels) is Milestone 3.
+diff --git a/supabase/functions/record-batch-receipt/index.ts b/supabase/functions/record-batch-receipt/index.ts
+index 336eabf..6ef92b2 100644
+--- a/supabase/functions/record-batch-receipt/index.ts
++++ b/supabase/functions/record-batch-receipt/index.ts
+@@ -36,9 +36,10 @@ import { db } from "../_shared/db.ts";
+ import { handleCors } from "../_shared/cors.ts";
+ import { HttpError, json, errorResponse } from "../_shared/http.ts";
+ import { requireAdmin } from "../_shared/auth.ts";
+-import { batchItems, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
++import { batchItems, orders, orderItems, inventory, inventoryTransactions, customers } from "../../../db/schema.ts";
+ import { transitionOrder } from "../../../lib/orders.ts";
+ import { logAudit } from "../../../lib/audit.ts";
++import { queueEmail } from "../../../lib/email-queue.ts";
+ import { allocateReceivedStock, type WaitingOrder, type VariantStock } from "../../../lib/batch-allocation.ts";
+ 
+ const recordReceiptSchema = z.object({
+@@ -166,13 +167,40 @@ Deno.serve(async (req) => {
+         });
+       }
+ 
++      // Milestone 5 — one lookup for every promoted order's customer email
++      // rather than one query per order in the loop below.
++      const promotedCustomerEmailByOrder = new Map<string, string>();
++      if (promoted.length > 0) {
++        const rows = await tx
++          .select({ orderId: orders.id, email: customers.email })
++          .from(orders)
++          .innerJoin(customers, eq(orders.customerId, customers.id))
++          .where(
++            inArray(
++              orders.id,
++              promoted.map((o) => o.orderId)
++            )
++          );
++        for (const row of rows) promotedCustomerEmailByOrder.set(row.orderId, row.email);
++      }
++
+       for (const order of promoted) {
+-        await transitionOrder(tx, {
++        const { to } = await transitionOrder(tx, {
+           orderId: order.orderId,
+           event: "STOCK_RECEIVED",
+           actorId: admin.id,
+           stockAvailable: true,
+         });
++
++        // §17.1 — P0. If it lands on READY_FOR_FULFILMENT instead (already
++        // paid in full), no email here — that order's next and only
++        // remaining email is "ready for fulfilment", from prepare-pickup.
++        if (to === "BALANCE_DUE") {
++          const email = promotedCustomerEmailByOrder.get(order.orderId);
++          if (email) {
++            await queueEmail(tx, { orderId: order.orderId, toAddress: email, template: "BALANCE_DUE", priority: "P0" });
++          }
++        }
+       }
+ 
+       return {
+diff --git a/supabase/functions/resubmit-payment/index.ts b/supabase/functions/resubmit-payment/index.ts
+index 135b230..c195a2f 100644
+--- a/supabase/functions/resubmit-payment/index.ts
++++ b/supabase/functions/resubmit-payment/index.ts
+@@ -22,6 +22,12 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
+ import { orders, payments } from "../../../db/schema.ts";
+ import { logAudit } from "../../../lib/audit.ts";
+ 
++// Milestone 5 — orders.accessToken now stores a hash, not the raw value
++// (see db/schema.ts). The client still sends the raw token it was given;
++// hash it the same way (pgcrypto, matching db/schema.ts's requestAccessToken)
++// before comparing, or every lookup here would simply never match.
++const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
++
+ const resubmitSchema = z.object({
+   orderId: z.string().uuid(),
+   accessToken: z.string().min(1),
+@@ -62,7 +68,7 @@ Deno.serve(async (req) => {
+       const [order] = await tx
+         .select()
+         .from(orders)
+-        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, input.accessToken)));
++        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
+ 
+       // Deliberately generic — doesn't reveal whether the order exists at
+       // all if the token is wrong, same reasoning as scan-pickup's "invalid
+diff --git a/supabase/functions/send-queued-emails/index.ts b/supabase/functions/send-queued-emails/index.ts
+new file mode 100644
+index 0000000..77ae277
+--- /dev/null
++++ b/supabase/functions/send-queued-emails/index.ts
+@@ -0,0 +1,228 @@
++/**
++ * POST /send-queued-emails — scheduled worker, §24.2.
++ *
++ * Not an admin action and not customer-facing — see the note in
++ * db/schema.ts and the Milestone 5 planning notes on why this has no
++ * canSendEmails permission: sending is system-triggered, not a manual
++ * admin action. Auth works differently here too: every other function is
++ * listed in supabase/config.toml with verify_jwt = false and does its own
++ * requireAdmin() check; this one is deliberately left OUT of that list, so
++ * the platform's default (verify_jwt = true) is the actual auth boundary —
++ * the only real caller is the pg_cron schedule (see
++ * db/migrations/0004_milestone5_email_worker_schedule.sql), which invokes
++ * this with a genuine service-role JWT.
++ *
++ * Order of work:
++ *   1. Count today's sends so far (UTC calendar day) and what's queued.
++ *   2. Work out today's remaining budget for BALANCE_DUE and the
++ *      "other" group (ORDER_CONFIRMED + READY_FOR_FULFILMENT) — see
++ *      lib/email-cap.ts for the actual cap/floor/overflow logic.
++ *   3. Send PAYMENT_REJECTED first (fully uncapped), then BALANCE_DUE
++ *      (oldest order — by reservedAt — first), then "other" (oldest
++ *      queued first).
++ *   4. A single 429 from Resend anywhere stops the rest of this run —
++ *      that means the real daily limit is hit, not just our own internal
++ *      threshold, so nothing else would succeed either. Whatever's left
++ *      just stays QUEUED and gets picked up by a later run (§24.2 "never
++ *      dropped" / "defer to next day").
++ */
++
++import { eq, and, asc, inArray, gte, sql } from "drizzle-orm";
++import { db } from "../_shared/db.ts";
++import { handleCors } from "../_shared/cors.ts";
++import { json } from "../_shared/http.ts";
++import { emails, orders } from "../../../db/schema.ts";
++import { computeEmailSendBudget } from "../../../lib/email-cap.ts";
++import type { EmailTemplate } from "../../../lib/email-queue.ts";
++import { renderEmail } from "../_shared/email-templates.ts";
++import { formatOrderNumber } from "../../../lib/order-number.ts";
++
++const resendApiKey = Deno.env.get("RESEND_API_KEY");
++if (!resendApiKey) throw new Error("RESEND_API_KEY must be set as a Supabase Edge Function secret.");
++
++const resendFromAddress = Deno.env.get("RESEND_FROM_ADDRESS");
++if (!resendFromAddress) throw new Error("RESEND_FROM_ADDRESS must be set as a Supabase Edge Function secret.");
++
++// Milestone 5 (§16.1, §27) — same key create-order used to write this
++// column; needed here to read it back. See db/schema.ts's
++// accessTokenEncrypted comment for why a hash alone isn't enough.
++const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
++if (!accessTokenEncKey) throw new Error("ACCESS_TOKEN_ENC_KEY must be set as a Supabase Edge Function secret.");
++
++const frontendBaseUrl = Deno.env.get("FRONTEND_BASE_URL");
++if (!frontendBaseUrl) throw new Error("FRONTEND_BASE_URL must be set as a Supabase Edge Function secret.");
++
++// Cosmetic only (email footer, §17.2) — not worth failing startup over, so
++// this one gets a plain fallback instead of throwing like the secrets above.
++const businessName = Deno.env.get("BUSINESS_NAME") ?? "Your Store";
++
++const OTHER_TEMPLATES: EmailTemplate[] = ["ORDER_CONFIRMED", "READY_FOR_FULFILMENT"];
++
++interface ResendResult {
++  ok: boolean;
++  rateLimited: boolean;
++  error: string | null;
++}
++
++async function sendViaResend(params: { to: string; subject: string; text: string }): Promise<ResendResult> {
++  const res = await fetch("https://api.resend.com/emails", {
++    method: "POST",
++    headers: {
++      Authorization: `Bearer ${resendApiKey}`,
++      "Content-Type": "application/json",
++    },
++    body: JSON.stringify({
++      from: resendFromAddress,
++      to: params.to,
++      subject: params.subject,
++      text: params.text,
++    }),
++  });
++
++  if (res.ok) return { ok: true, rateLimited: false, error: null };
++  if (res.status === 429) return { ok: false, rateLimited: true, error: "Resend daily limit reached (429)." };
++  const body = await res.text().catch(() => "");
++  return { ok: false, rateLimited: false, error: `Resend error ${res.status}: ${body}` };
++}
++
++Deno.serve(async (req) => {
++  const preflight = handleCors(req);
++  if (preflight) return preflight;
++
++  if (req.method !== "POST") {
++    return json({ error: "Method not allowed." }, 405);
++  }
++
++  const todayStart = new Date();
++  todayStart.setUTCHours(0, 0, 0, 0);
++
++  // ── 1. Counts ──
++  const sentToday = await db
++    .select({ template: emails.template })
++    .from(emails)
++    .where(and(eq(emails.status, "SENT"), gte(emails.sentAt, todayStart)));
++
++  const balanceDueSentToday = sentToday.filter((e) => e.template === "BALANCE_DUE").length;
++  const otherSentToday = sentToday.filter((e) => OTHER_TEMPLATES.includes(e.template as EmailTemplate)).length;
++
++  const queuedBalanceDue = await db
++    .select({ id: emails.id })
++    .from(emails)
++    .where(and(eq(emails.status, "QUEUED"), eq(emails.template, "BALANCE_DUE")));
++
++  const queuedOther = await db
++    .select({ id: emails.id })
++    .from(emails)
++    .where(and(eq(emails.status, "QUEUED"), inArray(emails.template, OTHER_TEMPLATES)));
++
++  // ── 2. Budget ──
++  const budget = computeEmailSendBudget({
++    balanceDueSentToday,
++    otherSentToday,
++    balanceDueQueuedAvailable: queuedBalanceDue.length,
++    otherQueuedAvailable: queuedOther.length,
++  });
++
++  // ── 3. Fetch the actual rows to attempt, in priority + fairness order ──
++  const rejectedRows = await db
++    .select()
++    .from(emails)
++    .where(and(eq(emails.status, "QUEUED"), eq(emails.template, "PAYMENT_REJECTED")))
++    .orderBy(asc(emails.queuedAt));
++
++  const balanceDueRows =
++    budget.balanceDueToSend > 0
++      ? (
++          await db
++            .select({ email: emails })
++            .from(emails)
++            .innerJoin(orders, eq(emails.orderId, orders.id))
++            .where(and(eq(emails.status, "QUEUED"), eq(emails.template, "BALANCE_DUE")))
++            .orderBy(asc(orders.reservedAt))
++            .limit(budget.balanceDueToSend)
++        ).map((r) => r.email)
++      : [];
++
++  const otherRows =
++    budget.otherToSend > 0
++      ? await db
++          .select()
++          .from(emails)
++          .where(and(eq(emails.status, "QUEUED"), inArray(emails.template, OTHER_TEMPLATES)))
++          .orderBy(asc(emails.queuedAt))
++          .limit(budget.otherToSend)
++      : [];
++
++  const toSend = [...rejectedRows, ...balanceDueRows, ...otherRows];
++
++  // ── Batch-fetch link context for every order involved, once. NULL
++  // access_token_encrypted (an order created before this column existed,
++  // not yet backfilled — see the Milestone 5 setup notes) decrypts to NULL
++  // rather than erroring, since pgp_sym_decrypt is a strict SQL function;
++  // handled below via the ctx.rawToken null check. ──
++  const orderIds = [...new Set(toSend.map((row) => row.orderId).filter((id): id is string => id !== null))];
++
++  const orderContextRows =
++    orderIds.length > 0
++      ? await db
++          .select({
++            id: orders.id,
++            orderNumber: orders.orderNumber,
++            fulfilmentMethod: orders.fulfilmentMethod,
++            rawToken: sql<string | null>`pgp_sym_decrypt(decode(${orders.accessTokenEncrypted}, 'base64'), ${accessTokenEncKey})`,
++          })
++          .from(orders)
++          .where(inArray(orders.id, orderIds))
++      : [];
++  const orderContextById = new Map(orderContextRows.map((row) => [row.id, row]));
++
++  // ── 4. Send ──
++  let sentCount = 0;
++  let failedCount = 0;
++  let stoppedForRateLimit = false;
++
++  for (const row of toSend) {
++    if (stoppedForRateLimit) break;
++
++    if (!row.orderId) {
++      // Shouldn't happen for these 4 templates — every queueEmail call
++      // passes a real orderId — but nothing to link to without one.
++      console.error(`send-queued-emails: email ${row.id} has no orderId, marking failed`);
++      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
++      failedCount++;
++      continue;
++    }
++
++    const ctx = orderContextById.get(row.orderId);
++    if (!ctx || !ctx.rawToken) {
++      // Most likely cause: an order created before Milestone 5's
++      // accessTokenEncrypted column existed, and the one-time backfill
++      // hasn't been run yet — see the Milestone 5 setup notes.
++      console.error(`send-queued-emails: no usable link for order ${row.orderId} (email ${row.id}), marking failed`);
++      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
++      failedCount++;
++      continue;
++    }
++
++    const rendered = renderEmail(row.template as EmailTemplate, {
++      orderNumber: formatOrderNumber(ctx.fulfilmentMethod, ctx.orderNumber, row.orderId),
++      orderLink: `${frontendBaseUrl}/orders/${ctx.rawToken}`,
++      businessName,
++    });
++
++    const result = await sendViaResend({ to: row.toAddress, subject: rendered.subject, text: rendered.text });
++
++    if (result.ok) {
++      await db.update(emails).set({ status: "SENT", sentAt: new Date() }).where(eq(emails.id, row.id));
++      sentCount++;
++    } else if (result.rateLimited) {
++      stoppedForRateLimit = true;
++    } else {
++      console.error(`send-queued-emails: failed to send email ${row.id}: ${result.error}`);
++      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
++      failedCount++;
++    }
++  }
++
++  return json({ sent: sentCount, failed: failedCount, stoppedForRateLimit });
++});
+diff --git a/supabase/functions/submit-balance-payment/index.ts b/supabase/functions/submit-balance-payment/index.ts
+index f7bb1ef..1b6351c 100644
+--- a/supabase/functions/submit-balance-payment/index.ts
++++ b/supabase/functions/submit-balance-payment/index.ts
+@@ -23,6 +23,9 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
+ import { orders, payments } from "../../../db/schema.ts";
+ import { logAudit } from "../../../lib/audit.ts";
+ 
++// Milestone 5 — see the same note in resubmit-payment/index.ts.
++const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
++
+ const submitBalanceSchema = z.object({
+   orderId: z.string().uuid(),
+   accessToken: z.string().min(1),
+@@ -64,7 +67,7 @@ Deno.serve(async (req) => {
+       const [order] = await tx
+         .select()
+         .from(orders)
+-        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, input.accessToken)));
++        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
+ 
+       // Deliberately generic — doesn't reveal whether the order exists at
+       // all if the token is wrong, same reasoning as scan-pickup's "invalid
+diff --git a/supabase/functions/verify-payment/index.ts b/supabase/functions/verify-payment/index.ts
+index aea17a7..6b1f518 100644
+--- a/supabase/functions/verify-payment/index.ts
++++ b/supabase/functions/verify-payment/index.ts
+@@ -40,9 +40,10 @@ import { db } from "../_shared/db.ts";
+ import { handleCors } from "../_shared/cors.ts";
+ import { HttpError, json, errorResponse } from "../_shared/http.ts";
+ import { requireAdmin } from "../_shared/auth.ts";
+-import { payments, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
++import { payments, orders, orderItems, inventory, inventoryTransactions, customers } from "../../../db/schema.ts";
+ import { transitionOrder } from "../../../lib/orders.ts";
+ import { logAudit } from "../../../lib/audit.ts";
++import { queueEmail } from "../../../lib/email-queue.ts";
+ 
+ const verifyPaymentSchema = z.discriminatedUnion("decision", [
+   z.object({ orderId: z.string().uuid(), decision: z.literal("VERIFY") }),
+@@ -118,6 +119,11 @@ Deno.serve(async (req) => {
+         throw new HttpError(404, "Order not found.");
+       }
+ 
++      // Milestone 5 — every branch below either queues an email or
++      // explicitly doesn't; all of them need the address if they do, so
++      // it's fetched once here rather than repeated per branch.
++      const [customer] = await tx.select().from(customers).where(eq(customers.id, order.customerId));
++
+       const [payment] = await tx
+         .select()
+         .from(payments)
+@@ -147,6 +153,15 @@ Deno.serve(async (req) => {
+           after: { status: "REJECTED", rejectionReason: input.rejectionReason },
+         });
+ 
++        // §17.1 — P0, uncapped, applies whether this was the initial
++        // payment or a balance payment; the PRD doesn't distinguish the two.
++        await queueEmail(tx, {
++          orderId: order.id,
++          toAddress: customer.email,
++          template: "PAYMENT_REJECTED",
++          priority: "P0",
++        });
++
+         // No order-state-machine event exists for "payment rejected" — the
+         // order simply stays in whatever status it was already in
+         // (PAYMENT_PENDING or BALANCE_DUE) so the customer can resubmit (§26).
+@@ -181,6 +196,10 @@ Deno.serve(async (req) => {
+ 
+       // ── Balance payment (DP order's remaining amount) ──
+       if (order.status === "BALANCE_DUE") {
++        // §17.1 — no email here. "Balance due" already went out when the
++        // order first reached this status; the only email left for this
++        // order's journey is "ready for fulfilment", queued later by
++        // prepare-pickup once staff actually stages it.
+         const { to } = await transitionOrder(tx, {
+           orderId: input.orderId,
+           event: "BALANCE_PAYMENT_VERIFIED",
+@@ -198,6 +217,17 @@ Deno.serve(async (req) => {
+         stockAvailable: true, // not evaluated until STOCK_STATUS_EVALUATED below; unused by this transition
+       });
+ 
++      // §17.1 — "order confirmed + payment verified", P1. Fires once, only
++      // for the initial payment (the BALANCE_DUE branch above returns
++      // before reaching here) — regardless of what the stock-evaluation
++      // branches below end up deciding.
++      await queueEmail(tx, {
++        orderId: order.id,
++        toAddress: customer.email,
++        template: "ORDER_CONFIRMED",
++        priority: "P1",
++      });
++
+       if (order.salesMode === "READY_STOCK") {
+         // Ready stock must physically exist by definition (§5.2) — re-check
+         // now rather than trusting create-order's check, since another order
+@@ -254,6 +284,19 @@ Deno.serve(async (req) => {
+         stockAvailable: alreadyAvailable,
+       });
+ 
++      // §17.1 — P0. Only reachable here in the edge case where this
++      // batch's stock was already on hand at verification time; the normal
++      // path (stock arriving later) queues this from record-batch-receipt
++      // instead.
++      if (to === "BALANCE_DUE") {
++        await queueEmail(tx, {
++          orderId: order.id,
++          toAddress: customer.email,
++          template: "BALANCE_DUE",
++          priority: "P0",
++        });
++      }
++
+       return { orderStatus: to as string | null };
+     });
+ 
+-- 
+2.43.0

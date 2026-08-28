@@ -296,7 +296,14 @@ export const batchItems = pgTable(
 // this a real security boundary — RLS `using` applies to every query
 // regardless of what WHERE clause the client's own code adds, so a client
 // can't just omit a filter and read every order.
-const requestAccessToken = sql`(current_setting('request.headers', true)::json ->> 'x-order-access-token')`;
+//
+// Milestone 5: the raw token the client sends is hashed here (SHA-256, via
+// pgcrypto's digest()) before comparing — orders.access_token now stores
+// that hash, never the raw value (§16.1, §27 "stored hashed in the
+// database"). Same hash algorithm/encoding used everywhere this token is
+// checked (this policy, resubmit-payment, submit-balance-payment) so a
+// value hashed one way always matches a value hashed the other way.
+const requestAccessToken = sql`encode(digest((current_setting('request.headers', true)::json ->> 'x-order-access-token'), 'sha256'), 'hex')`;
 
 // Separate counters per fulfilment method so order numbers read as
 // "#010001" (pickup) / "#020001" (shipping) — sequential within each type,
@@ -340,7 +347,24 @@ export const orders = pgTable(
       .notNull()
       .default("0"),
     submissionToken: text("submission_token").notNull().unique(), // §19 duplicate-submission protection
-    accessToken: text("access_token").notNull().unique(), // §16, §27 guest order access
+    // Milestone 5 (§16.1, §27): stores encode(digest(raw, 'sha256'), 'hex')
+    // — the raw token is never written here. Verifying "is this the right
+    // customer" only ever needs a one-way check (hash what they sent,
+    // compare), so a plain hash is the correct tool for this column.
+    accessToken: text("access_token").notNull().unique(),
+    // Milestone 5: a *separately* reversible copy of the same raw token
+    // (pgcrypto pgp_sym_encrypt, keyed by the ACCESS_TOKEN_ENC_KEY Edge
+    // Function secret — see supabase/functions/_shared/tokens.ts), stored
+    // as base64 text. This exists for exactly one reason: the email worker
+    // sends the *same* order-page link across up to 4 separate emails over
+    // an order's lifetime, and a one-way hash alone makes that
+    // impossible — nothing, including our own system, can turn a SHA-256
+    // hash back into the raw value. A plain hash still fully protects the
+    // everyday "is this the right customer" check above (that check never
+    // needs the raw value back); this column is the one narrow exception,
+    // usable only by code holding the encryption key (the email worker),
+    // not by anything reading the database directly.
+    accessTokenEncrypted: text("access_token_encrypted"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -528,6 +552,14 @@ export const pickupTokens = pgTable(
   ]
 ).enableRLS();
 
+// Milestone 5: RLS enabled with no policies — same deny-all posture as
+// customers (holds toAddress, real customer PII). Nothing reads or writes
+// this table directly today (queuing happens inside Edge Function
+// transactions on the service-role connection, which bypasses RLS
+// regardless), but this table had no RLS at all before now, which is the
+// same kind of gap products/batches/inventory had before Milestone 4 closed
+// it — closing it here rather than leaving it for whoever builds the first
+// direct read of this table later.
 export const emails = pgTable("emails", {
   id: uuid("id").primaryKey().defaultRandom(),
   orderId: uuid("order_id").references(() => orders.id),
@@ -537,7 +569,7 @@ export const emails = pgTable("emails", {
   status: emailStatusEnum("status").notNull().default("QUEUED"),
   queuedAt: timestamp("queued_at").notNull().defaultNow(),
   sentAt: timestamp("sent_at"),
-});
+}).enableRLS();
 
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").primaryKey().defaultRandom(),

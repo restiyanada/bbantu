@@ -23,6 +23,9 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
+// Milestone 5 — see the same note in resubmit-payment/index.ts.
+const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
+
 const submitBalanceSchema = z.object({
   orderId: z.string().uuid(),
   accessToken: z.string().min(1),
@@ -64,7 +67,7 @@ Deno.serve(async (req) => {
       const [order] = await tx
         .select()
         .from(orders)
-        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, input.accessToken)));
+        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
 
       // Deliberately generic — doesn't reveal whether the order exists at
       // all if the token is wrong, same reasoning as scan-pickup's "invalid

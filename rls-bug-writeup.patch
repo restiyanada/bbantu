@@ -1,0 +1,54 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index c87ed25..1b2f6ff 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -476,6 +476,49 @@ Fixed live for now via `DROP POLICY` + `CREATE POLICY` (with the exact
+ schema-as-code and the live database match again, this just didn't go
+ through `push`.
+ 
++**⚠️ It happened again, much bigger, and the warning above didn't prevent
++it.** Milestone 4's push (`d07afd5`/`7aada48`, adding every `staff_can_*` /
++`canManageProductsBatches` policy plus the four `anyone_can_read_*` catalog
++policies) hit the identical bug. Not caught at the time — it surfaced days
++later, live, during Milestone 2 admin UI testing: `/admin/products`'
++"Create product" button was permanently disabled (a `canManageProductsBatches`
++check with nothing behind it), and separately the public storefront showed
++"Nothing available to order right now" for any genuinely anonymous customer
++(incognito), because `anyone_can_read_products` — a plain `using: sql\`true\``
++— had also been pushed with a NULL `qual`. Both symptom and root cause took
++a long back-and-forth to isolate precisely because a NULL condition doesn't
++error — it just denies silently, and (confusingly) other overlapping
++policies on the same table can mask the break, e.g. an authenticated admin
++could still browse products via the (correctly-pushed) `staff_can_manage_products`
++`ALL` policy, while the broken `anyone_can_read_products` `SELECT` policy
++sat unnoticed underneath it.
++
++13 policies total were confirmed NULL and fixed live the same way (`DROP` +
++`CREATE` with the literal `db/schema.ts` condition): `staff_can_manage_products`,
++`staff_can_manage_product_variants`, `staff_can_manage_batches`,
++`staff_can_manage_batch_items`, `staff_can_read_inventory`,
++`staff_can_create_inventory_rows`, `staff_can_read_all_orders`,
++`staff_can_read_all_order_items`, `staff_can_read_own_admin_row` (this one
++had to be added fresh — `admin_users` had RLS enabled with *zero* policies,
++which independently breaks every other table's `exists(select 1 from
++admin_users ...)` check, since that subquery is itself subject to
++`admin_users`'s own RLS for a non-owner role), `anyone_can_read_products`,
++`anyone_can_read_product_variants`, `anyone_can_read_batches`,
++`anyone_can_read_batch_items`.
++
++**The lesson isn't "remember not to use push" — that clearly doesn't work as
++a written warning alone.** Concretely, going forward:
++- After *any* `drizzle-kit push` that touches a table with `pgPolicy(...)`
++  in its definition, run the verification query above **before** considering
++  the push done, not as an optional afterthought.
++- Prefer `drizzle-kit generate` + `drizzle-kit migrate` for anything RLS-related,
++  per the original guidance above — it's not just theoretically safer, it's
++  now confirmed safer twice.
++- If a page/action that depends on RLS starts behaving like "permanently
++  disabled with no error" or "works for me but not for a fresh/anonymous
++  session," check `pg_policies` for `NULL` conditions first — it's now
++  happened twice, on two different tables, both times just like this.
++
+ ### Verified live against the real Supabase project
+ 
+ Everything below was originally written as "unverified — needs a real

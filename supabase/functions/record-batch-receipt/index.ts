@@ -36,9 +36,10 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { requireAdmin } from "../_shared/auth.ts";
-import { batchItems, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
+import { batchItems, orders, orderItems, inventory, inventoryTransactions, customers } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { queueEmail } from "../../../lib/email-queue.ts";
 import { allocateReceivedStock, type WaitingOrder, type VariantStock } from "../../../lib/batch-allocation.ts";
 
 const recordReceiptSchema = z.object({
@@ -166,13 +167,40 @@ Deno.serve(async (req) => {
         });
       }
 
+      // Milestone 5 — one lookup for every promoted order's customer email
+      // rather than one query per order in the loop below.
+      const promotedCustomerEmailByOrder = new Map<string, string>();
+      if (promoted.length > 0) {
+        const rows = await tx
+          .select({ orderId: orders.id, email: customers.email })
+          .from(orders)
+          .innerJoin(customers, eq(orders.customerId, customers.id))
+          .where(
+            inArray(
+              orders.id,
+              promoted.map((o) => o.orderId)
+            )
+          );
+        for (const row of rows) promotedCustomerEmailByOrder.set(row.orderId, row.email);
+      }
+
       for (const order of promoted) {
-        await transitionOrder(tx, {
+        const { to } = await transitionOrder(tx, {
           orderId: order.orderId,
           event: "STOCK_RECEIVED",
           actorId: admin.id,
           stockAvailable: true,
         });
+
+        // §17.1 — P0. If it lands on READY_FOR_FULFILMENT instead (already
+        // paid in full), no email here — that order's next and only
+        // remaining email is "ready for fulfilment", from prepare-pickup.
+        if (to === "BALANCE_DUE") {
+          const email = promotedCustomerEmailByOrder.get(order.orderId);
+          if (email) {
+            await queueEmail(tx, { orderId: order.orderId, toAddress: email, template: "BALANCE_DUE", priority: "P0" });
+          }
+        }
       }
 
       return {

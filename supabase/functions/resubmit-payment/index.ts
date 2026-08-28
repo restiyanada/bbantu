@@ -22,6 +22,12 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
+// Milestone 5 — orders.accessToken now stores a hash, not the raw value
+// (see db/schema.ts). The client still sends the raw token it was given;
+// hash it the same way (pgcrypto, matching db/schema.ts's requestAccessToken)
+// before comparing, or every lookup here would simply never match.
+const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
+
 const resubmitSchema = z.object({
   orderId: z.string().uuid(),
   accessToken: z.string().min(1),
@@ -62,7 +68,7 @@ Deno.serve(async (req) => {
       const [order] = await tx
         .select()
         .from(orders)
-        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, input.accessToken)));
+        .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
 
       // Deliberately generic — doesn't reveal whether the order exists at
       // all if the token is wrong, same reasoning as scan-pickup's "invalid

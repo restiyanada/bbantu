@@ -26,8 +26,9 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
 import { requireAdmin } from "../_shared/auth.ts";
-import { orders, pickupTokens } from "../../../db/schema.ts";
+import { orders, pickupTokens, customers } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
+import { queueEmail } from "../../../lib/email-queue.ts";
 
 const prepareSchema = z.object({ orderId: z.string().uuid() });
 
@@ -76,6 +77,25 @@ Deno.serve(async (req) => {
         actorId: admin.id,
         stockAvailable: true, // unused by this transition
       });
+
+      // §17.1 — "ready for fulfilment", P1. One email covers both outcomes
+      // below (pickup QR or shipping) — queued here, once, before they
+      // branch, rather than duplicated in each branch.
+      const [order] = await tx
+        .select({ customerId: orders.customerId })
+        .from(orders)
+        .where(eq(orders.id, input.orderId));
+      if (order) {
+        const [customer] = await tx.select({ email: customers.email }).from(customers).where(eq(customers.id, order.customerId));
+        if (customer) {
+          await queueEmail(tx, {
+            orderId: input.orderId,
+            toAddress: customer.email,
+            template: "READY_FOR_FULFILMENT",
+            priority: "P1",
+          });
+        }
+      }
 
       if (to !== "READY_FOR_PICKUP") {
         // SHIPPING orders land on READY_TO_SHIP instead — no QR needed here.

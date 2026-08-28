@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
-import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
+import { formatIDR, formatOrderNumber } from "@/lib/utils";
+import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
+import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Badge } from "../components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 // Raw Postgres column names (snake_case) — these queries go straight through
@@ -13,6 +14,8 @@ interface OrderRow {
   id: string;
   order_number: number | null;
   status: string;
+  sales_mode: string;
+  payment_type: string;
   merchandise_subtotal: string;
   shipping_cost: string | null;
   amount_paid: string;
@@ -92,12 +95,19 @@ export default function OrderPage() {
     async function load(token: string) {
       const client = createGuestOrderClient(token);
 
+      // Milestone 5: no `.eq("access_token", token)` filter here anymore —
+      // access_token now stores a hash (db/schema.ts), so comparing it to
+      // the raw token directly would never match. RLS's own policy already
+      // restricts an anon read to exactly the one order whose hash matches
+      // the x-order-access-token header (see createGuestOrderClient), so a
+      // plain unfiltered select on this table already returns at most one
+      // row — the redundant client-side filter was never load-bearing for
+      // security, only for clarity, and now it'd just be wrong.
       const { data: order, error: orderError } = await client
         .from("orders")
         .select(
-          "id, order_number, status, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
+          "id, order_number, status, sales_mode, payment_type, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
         )
-        .eq("access_token", token)
         .maybeSingle();
 
       if (cancelled) return;
@@ -273,18 +283,28 @@ export default function OrderPage() {
   const total = Number(order.merchandise_subtotal) + shippingCost;
   const balanceDue = total - Number(order.amount_paid);
 
+  const timeline = buildOrderTimeline({
+    status: order.status as OrderStatus,
+    salesMode: order.sales_mode as "PRE_ORDER" | "READY_STOCK",
+    paymentType: order.payment_type as "DP" | "FULL",
+    fulfilmentMethod: (order.fulfilment_method as "PICKUP" | "SHIPPING" | null) ?? null,
+  });
+
   return (
     <main className="p-8 max-w-2xl mx-auto space-y-6">
       <div>
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">
-            Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
-          </h1>
-          <Badge variant={statusBadgeVariant(order.status)}>{order.status.replaceAll("_", " ")}</Badge>
-        </div>
+        <h1 className="text-2xl font-semibold">
+          Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
+        </h1>
         {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
         <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
       </div>
+
+      <Card>
+        <CardContent>
+          <OrderTimelineDisplay timeline={timeline} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

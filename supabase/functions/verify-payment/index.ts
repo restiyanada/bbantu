@@ -40,9 +40,10 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { requireAdmin } from "../_shared/auth.ts";
-import { payments, orders, orderItems, inventory, inventoryTransactions } from "../../../db/schema.ts";
+import { payments, orders, orderItems, inventory, inventoryTransactions, customers } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { queueEmail } from "../../../lib/email-queue.ts";
 
 const verifyPaymentSchema = z.discriminatedUnion("decision", [
   z.object({ orderId: z.string().uuid(), decision: z.literal("VERIFY") }),
@@ -118,6 +119,11 @@ Deno.serve(async (req) => {
         throw new HttpError(404, "Order not found.");
       }
 
+      // Milestone 5 — every branch below either queues an email or
+      // explicitly doesn't; all of them need the address if they do, so
+      // it's fetched once here rather than repeated per branch.
+      const [customer] = await tx.select().from(customers).where(eq(customers.id, order.customerId));
+
       const [payment] = await tx
         .select()
         .from(payments)
@@ -145,6 +151,15 @@ Deno.serve(async (req) => {
           action: "payment rejected",
           before: { status: "PENDING" },
           after: { status: "REJECTED", rejectionReason: input.rejectionReason },
+        });
+
+        // §17.1 — P0, uncapped, applies whether this was the initial
+        // payment or a balance payment; the PRD doesn't distinguish the two.
+        await queueEmail(tx, {
+          orderId: order.id,
+          toAddress: customer.email,
+          template: "PAYMENT_REJECTED",
+          priority: "P0",
         });
 
         // No order-state-machine event exists for "payment rejected" — the
@@ -181,6 +196,10 @@ Deno.serve(async (req) => {
 
       // ── Balance payment (DP order's remaining amount) ──
       if (order.status === "BALANCE_DUE") {
+        // §17.1 — no email here. "Balance due" already went out when the
+        // order first reached this status; the only email left for this
+        // order's journey is "ready for fulfilment", queued later by
+        // prepare-pickup once staff actually stages it.
         const { to } = await transitionOrder(tx, {
           orderId: input.orderId,
           event: "BALANCE_PAYMENT_VERIFIED",
@@ -196,6 +215,17 @@ Deno.serve(async (req) => {
         event: "PAYMENT_VERIFIED",
         actorId: admin.id,
         stockAvailable: true, // not evaluated until STOCK_STATUS_EVALUATED below; unused by this transition
+      });
+
+      // §17.1 — "order confirmed + payment verified", P1. Fires once, only
+      // for the initial payment (the BALANCE_DUE branch above returns
+      // before reaching here) — regardless of what the stock-evaluation
+      // branches below end up deciding.
+      await queueEmail(tx, {
+        orderId: order.id,
+        toAddress: customer.email,
+        template: "ORDER_CONFIRMED",
+        priority: "P1",
       });
 
       if (order.salesMode === "READY_STOCK") {
@@ -253,6 +283,19 @@ Deno.serve(async (req) => {
         actorId: admin.id,
         stockAvailable: alreadyAvailable,
       });
+
+      // §17.1 — P0. Only reachable here in the edge case where this
+      // batch's stock was already on hand at verification time; the normal
+      // path (stock arriving later) queues this from record-batch-receipt
+      // instead.
+      if (to === "BALANCE_DUE") {
+        await queueEmail(tx, {
+          orderId: order.id,
+          toAddress: customer.email,
+          template: "BALANCE_DUE",
+          priority: "P0",
+        });
+      }
 
       return { orderStatus: to as string | null };
     });

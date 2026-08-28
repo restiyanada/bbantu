@@ -1,30 +1,18 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+// Milestone 5: moved to the shared lib/ folder so the email worker (Deno)
+// can use the exact same format — re-exported here so every existing
+// `import { formatOrderNumber } from "@/lib/utils"` in this codebase keeps
+// working unchanged.
+export { formatOrderNumber } from "../../lib/order-number";
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export function formatIDR(value: string | number): string {
   return `Rp ${Number(value).toLocaleString("id-ID")}`;
-}
-
-/**
- * "#010007" style — 01/02 encodes fulfilment method, last 4 digits are the
- * sequence within that type (db/schema.ts pickup_order_seq/shipping_order_seq).
- * Falls back to a short id slice if orderNumber isn't set yet (fulfilment
- * method not chosen — §7.2 "configured later").
- */
-export function formatOrderNumber(
-  fulfilmentMethod: string | null,
-  orderNumber: number | null,
-  fallbackId: string
-): string {
-  if (orderNumber == null || !fulfilmentMethod) {
-    return fallbackId.slice(0, 8);
-  }
-  const typeCode = fulfilmentMethod === "SHIPPING" ? "02" : "01";
-  return `#${typeCode}${String(orderNumber).padStart(4, "0")}`;
 }
 
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "warning" | "info" | "success";
