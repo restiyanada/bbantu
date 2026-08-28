@@ -435,7 +435,7 @@ export default function HomePage() {
   return (
     <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-8">
       <div className="space-y-1.5">
-        <h1 className="text-3xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
+        <h1 className="text-4xl font-bold tracking-tight">Pre-Order &amp; Ready Stock System</h1>
         <p className="text-muted-foreground">Pick an item, enter your details, and place your order.</p>
         <Button asChild size="sm" variant="outline" className="mt-1">
           <Link to="/orders/find">

@@ -222,7 +222,7 @@ export default function AdminProductsPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Products</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Products</h1>
           <p className="text-muted-foreground mt-1">
             Create products and variants here, independent of any batch. Batches pick from what's created here.
           </p>

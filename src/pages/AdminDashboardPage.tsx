@@ -453,7 +453,7 @@ export default function AdminDashboardPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 space-y-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Orders</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
           <p className="text-muted-foreground mt-1">
             Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
           </p>

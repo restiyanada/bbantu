@@ -90,7 +90,7 @@ export default function AdminAuditLogPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 space-y-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Audit log</h1>
         </div>
 
         {!canView && (

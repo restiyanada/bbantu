@@ -306,7 +306,7 @@ export default function OrderPage() {
   return (
     <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">
+        <h1 className="text-4xl font-bold tracking-tight">
           Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
         </h1>
         {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}

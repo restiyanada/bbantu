@@ -283,7 +283,7 @@ export default function AdminBatchesPage() {
     <AdminLayout>
       <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Batches</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Batches</h1>
           <p className="text-muted-foreground mt-1">Create a pre-order batch from existing products.</p>
         </div>
 
