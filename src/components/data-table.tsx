@@ -3,6 +3,11 @@ import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from "@tan
 import { X } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+interface DataTableColumnMeta {
+  className?: string;
+}
 
 export interface DataTableFilter<TData> {
   label: string;
@@ -95,7 +100,10 @@ export function DataTable<TData>({
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="text-left p-3 font-medium text-muted-foreground text-xs uppercase tracking-wide whitespace-nowrap"
+                    className={cn(
+                      "text-left p-3 font-medium text-muted-foreground text-xs uppercase tracking-wide whitespace-nowrap",
+                      (header.column.columnDef.meta as DataTableColumnMeta | undefined)?.className
+                    )}
                   >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                   </th>
@@ -107,7 +115,10 @@ export function DataTable<TData>({
             {table.getRowModel().rows.map((row) => (
               <tr key={row.id} className="border-t align-top hover:bg-muted/40 transition-colors">
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="p-3">
+                  <td
+                    key={cell.id}
+                    className={cn("p-3", (cell.column.columnDef.meta as DataTableColumnMeta | undefined)?.className)}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}

@@ -222,6 +222,7 @@ export default function AdminDashboardPage() {
     columnHelper.accessor("salesMode", {
       header: "Mode",
       cell: (info) => <span className="text-xs">{info.getValue() === "PRE_ORDER" ? "Pre-order" : "Ready stock"}</span>,
+      meta: { className: "hidden sm:table-cell" },
     }),
     columnHelper.accessor("status", {
       header: "Status",
@@ -234,6 +235,7 @@ export default function AdminDashboardPage() {
     columnHelper.accessor("fulfilmentMethod", {
       header: "Fulfilment",
       cell: (info) => info.getValue() ?? "—",
+      meta: { className: "hidden md:table-cell" },
     }),
     columnHelper.display({
       id: "open",
@@ -299,7 +301,7 @@ export default function AdminDashboardPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
           <p className="text-muted-foreground mt-1">
-            Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
+            Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have.
           </p>
         </div>
 

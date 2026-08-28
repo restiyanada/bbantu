@@ -449,16 +449,24 @@ export default function AdminBatchesPage() {
 
       {batches?.map((batch) => (
         <Card key={batch.id}>
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
-            <div>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div className="space-y-1.5">
               <CardTitle>{batch.name}</CardTitle>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-xs text-muted-foreground">
                 {new Date(batch.open_at).toLocaleString("id-ID")} → {new Date(batch.close_at).toLocaleString("id-ID")}
-                {" · "}
-                {batch.allowed_payment_types.join("/")}
-                {" · "}
-                {batch.allowed_fulfilment_methods.join("+")}
               </p>
+              <div className="flex flex-wrap gap-1">
+                {batch.allowed_payment_types.map((t) => (
+                  <Badge key={t} variant="secondary">
+                    {t === "DP" ? "50% deposit" : "Full payment"}
+                  </Badge>
+                ))}
+                {batch.allowed_fulfilment_methods.map((m) => (
+                  <Badge key={m} variant="outline">
+                    {m === "PICKUP" ? "Pickup" : "Shipping"}
+                  </Badge>
+                ))}
+              </div>
             </div>
             <div className="text-right shrink-0">
               <Select
@@ -486,21 +494,23 @@ export default function AdminBatchesPage() {
               const moqExceeded = item.moq != null && committed > item.moq;
               return (
                 <div key={item.id} className="flex items-center justify-between gap-3 border-t pt-3 first:border-0 first:pt-0 text-sm">
-                  <div>
-                    <p className="font-medium">
+                  <div className="space-y-1">
+                    <p className="font-medium flex items-center gap-1.5">
                       {item.product_variants.products?.name ?? "Product"} — {item.product_variants.name}
+                      {moqExceeded && <Badge variant="warning">over MOQ</Badge>}
                     </p>
-                    <p className="text-muted-foreground">
-                      Ordered: {committed}
-                      {item.moq != null && ` / MOQ ${item.moq}`}
-                      {moqExceeded && (
-                        <Badge variant="warning" className="ml-1">
-                          over MOQ
-                        </Badge>
-                      )}
-                      {" · "}
-                      On hand: {stock?.onHand ?? 0} · Reserved: {stock?.reserved ?? 0}
-                    </p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                      <span>
+                        Ordered <span className="font-medium text-foreground">{committed}</span>
+                        {item.moq != null && ` / MOQ ${item.moq}`}
+                      </span>
+                      <span>
+                        On hand <span className="font-medium text-foreground">{stock?.onHand ?? 0}</span>
+                      </span>
+                      <span>
+                        Reserved <span className="font-medium text-foreground">{stock?.reserved ?? 0}</span>
+                      </span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <Input

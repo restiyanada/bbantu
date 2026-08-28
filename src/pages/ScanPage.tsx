@@ -144,7 +144,7 @@ export default function ScanPage() {
         {!canScan && (
           <Card className="border-destructive/50">
             <CardContent className="pt-6 text-sm text-destructive">
-              You don't have the "Scan / confirm pickup" permission (§18.4). The camera and lookup below are
+              You don't have the "Scan / confirm pickup" permission. The camera and lookup below are
               disabled — ask an admin with this permission to grant it if you need to use this page.
             </CardContent>
           </Card>

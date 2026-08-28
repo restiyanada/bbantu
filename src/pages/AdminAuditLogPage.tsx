@@ -95,8 +95,8 @@ export default function AdminAuditLogPage() {
 
         {!canView && (
           <p className="text-sm text-muted-foreground">
-            This account doesn't have the "View audit log" permission (§18.4). Ask an admin with that permission to
-            grant it if you need access.
+            This account doesn't have the "View audit log" permission. Ask an admin with that permission to grant it
+            if you need access.
           </p>
         )}
 
