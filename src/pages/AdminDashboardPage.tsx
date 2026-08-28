@@ -425,27 +425,16 @@ export default function AdminDashboardPage() {
               )}
 
               {rejectingId === openOrder.id ? (
-                <div className="space-y-2 pt-1">
+                <div className="pt-1">
                   <PaymentRejectionForm
                     submitting={isActioningOpen}
                     onSubmit={(values) => handleReject(openOrder.id, values.reason)}
+                    onCancel={() => setRejectingId(null)}
                   />
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setRejectingId(null)}>
-                    Cancel
-                  </Button>
                 </div>
               ) : (
                 openOrder.payment?.status === "PENDING" && (
-                  <div className="flex gap-2 pt-1">
-                    <Button
-                      size="sm"
-                      variant="success"
-                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
-                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
-                      onClick={() => handleVerify(openOrder.id)}
-                    >
-                      {isActioningOpen ? "Verifying…" : "Verify"}
-                    </Button>
+                  <div className="flex justify-end gap-2 pt-1">
                     <Button
                       size="sm"
                       variant="destructive"
@@ -454,6 +443,15 @@ export default function AdminDashboardPage() {
                       onClick={() => setRejectingId(openOrder.id)}
                     >
                       Reject
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="success"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => handleVerify(openOrder.id)}
+                    >
+                      {isActioningOpen ? "Verifying…" : "Verify"}
                     </Button>
                   </div>
                 )
@@ -473,22 +471,34 @@ export default function AdminDashboardPage() {
                   {openOrder.shipment.courier}
                   {openOrder.shipment.service ? ` — ${openOrder.shipment.service}` : ""} · {formatIDR(openOrder.shipment.cost ?? "0")}
                 </p>
-                {openOrder.shipment.trackingNumber ? (
+                {openOrder.shipment.trackingNumber && (
                   <p className="text-sm font-mono">Tracking: {openOrder.shipment.trackingNumber}</p>
-                ) : (
-                  trackingEntryId === openOrder.id ? (
-                    <div className="space-y-2 pt-1">
-                      <TrackingForm
-                        currentCost={openOrder.shipment.cost}
-                        submitting={isActioningOpen}
-                        onSubmit={(values) => handleRecordTracking(openOrder.id, values)}
-                      />
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setTrackingEntryId(null)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  ) : (
-                    openOrder.status === "READY_TO_SHIP" && (
+                )}
+
+                {trackingEntryId === openOrder.id && (
+                  <div className="pt-1">
+                    <TrackingForm
+                      currentCost={openOrder.shipment.cost}
+                      submitting={isActioningOpen}
+                      onSubmit={(values) => handleRecordTracking(openOrder.id, values)}
+                      onCancel={() => setTrackingEntryId(null)}
+                    />
+                  </div>
+                )}
+
+                {trackingEntryId !== openOrder.id && (
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!canManageShipping}
+                      title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                      onClick={() => void handlePrintLabels([openOrder])}
+                    >
+                      <Printer className="size-3.5" />
+                      Print label
+                    </Button>
+                    {!openOrder.shipment.trackingNumber && openOrder.status === "READY_TO_SHIP" && (
                       <Button
                         size="sm"
                         variant="info"
@@ -498,24 +508,14 @@ export default function AdminDashboardPage() {
                       >
                         Record tracking
                       </Button>
-                    )
-                  )
+                    )}
+                  </div>
                 )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!canManageShipping}
-                  title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
-                  onClick={() => void handlePrintLabels([openOrder])}
-                >
-                  <Printer className="size-3.5" />
-                  Print label
-                </Button>
               </div>
             )}
 
             {openOrder.status === "READY_FOR_FULFILMENT" && (
-              <div className="pt-4 border-t">
+              <div className="pt-4 border-t flex justify-end">
                 <Button
                   size="sm"
                   variant="info"

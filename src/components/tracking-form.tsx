@@ -21,10 +21,11 @@ export type RecordTrackingValues = z.infer<typeof recordTrackingSchema>;
 interface TrackingFormProps {
   currentCost: string | null;
   onSubmit: (values: RecordTrackingValues) => void | Promise<void>;
+  onCancel?: () => void;
   submitting?: boolean;
 }
 
-export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingFormProps) {
+export function TrackingForm({ currentCost, onSubmit, onCancel, submitting }: TrackingFormProps) {
   const {
     register,
     handleSubmit,
@@ -58,9 +59,16 @@ export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingForm
           )}
         </div>
       </details>
-      <Button type="submit" size="sm" variant="success" disabled={submitting}>
-        {submitting ? "Saving…" : "Mark shipped"}
-      </Button>
+      <div className="flex justify-end gap-2">
+        {onCancel && (
+          <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+        <Button type="submit" size="sm" variant="success" disabled={submitting}>
+          {submitting ? "Saving…" : "Mark shipped"}
+        </Button>
+      </div>
     </form>
   );
 }

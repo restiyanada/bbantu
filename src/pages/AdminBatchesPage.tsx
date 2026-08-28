@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AdminLayout from "@/components/AdminLayout";
 
 const BATCH_STATUSES = [
@@ -412,9 +412,16 @@ export default function AdminBatchesPage() {
 
             {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-            <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
-              {submitting ? "Creating…" : "Create batch"}
-            </Button>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
+                {submitting ? "Creating…" : "Create batch"}
+              </Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

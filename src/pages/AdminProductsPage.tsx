@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label, RequiredMark, OptionalMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AdminLayout from "@/components/AdminLayout";
 
 const IMAGE_BUCKET = "product-images";
@@ -339,9 +339,16 @@ export default function AdminProductsPage() {
 
               {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-              <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
-                {submitting ? "Creating…" : "Create product"}
-              </Button>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button type="button" variant="outline">
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
+                  {submitting ? "Creating…" : "Create product"}
+                </Button>
+              </DialogFooter>
             </form>
           </DialogContent>
         </Dialog>

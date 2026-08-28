@@ -13,11 +13,13 @@ type RejectPaymentValues = z.infer<typeof rejectPaymentSchema>;
 
 interface PaymentRejectionFormProps {
   onSubmit: (values: RejectPaymentValues) => void | Promise<void>;
+  onCancel?: () => void;
   submitting?: boolean;
 }
 
 export function PaymentRejectionForm({
   onSubmit,
+  onCancel,
   submitting,
 }: PaymentRejectionFormProps) {
   const {
@@ -46,9 +48,16 @@ export function PaymentRejectionForm({
           <p className="text-destructive text-xs">{errors.reason.message}</p>
         )}
       </div>
-      <Button type="submit" variant="destructive" disabled={submitting}>
-        {submitting ? "Rejecting…" : "Reject payment"}
-      </Button>
+      <div className="flex justify-end gap-2">
+        {onCancel && (
+          <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+        <Button type="submit" variant="destructive" size="sm" disabled={submitting}>
+          {submitting ? "Rejecting…" : "Reject payment"}
+        </Button>
+      </div>
     </form>
   );
 }
