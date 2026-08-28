@@ -1,38 +1,3 @@
-/**
- * POST /scan-pickup — staff scans/looks up a pickup code and, optionally,
- * confirms the pickup (§13).
- *
- * Three input shapes:
- *   { token }                 → look up by pickup code, no state change
- *   { token, confirm: true }  → transitions READY_FOR_PICKUP → PICKED_UP
- *   { phone }                 → search fallback: lists READY_FOR_PICKUP
- *                                orders for that phone number, each with its
- *                                own pickup token, so staff can pick the
- *                                right one and re-call with { token } to see
- *                                full details / confirm. Phone alone never
- *                                confirms a pickup directly (§27 — phone
- *                                numbers aren't secret, so they're a search
- *                                shortcut, not proof of identity).
- *
- * Two-phase by design for the token path, matching §13.2 ("staff must
- * explicitly confirm the pickup" as a deliberate action after reviewing
- * order details, not automatic on scan).
- *
- * §26 "Invalid QR must produce a safe error without revealing customer
- * information" — an unknown token gets a generic error, nothing else.
- * §13.3 "Already-picked-up QR must never release goods a second time" —
- * enforced by transitionOrder itself: PICKUP_CONFIRMED isn't a valid event
- * from PICKED_UP, so a repeat confirm throws OrderTransitionError → 409.
- *
- * ⚠️ §13.3 also requires unauthenticated scan sessions to see only a generic
- * "Login required" message — nothing else. Milestone 4: requireAdmin throws
- * HttpError(401) for that case (no session at all), which errorResponse maps
- * to a 401 with a generic message — the frontend ScanPage shows its own
- * "Login required" UI on any 401, never surfacing order data. A logged-in
- * admin without canScanConfirmPickup gets a 403 instead (they're staff, just
- * not permitted for this action — a different case from "not logged in").
- */
-
 import { eq, and } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
@@ -111,11 +76,8 @@ Deno.serve(async (req) => {
           orderId: order.id,
           event: "PICKUP_CONFIRMED",
           actorId: admin.id,
-          stockAvailable: true, // unused by this transition
+          stockAvailable: true,
         });
-        // Milestone 6 (§8/§19 retention clock) — see db/schema.ts's
-        // fulfilledAt comment for why this is its own column/stamp site
-        // rather than something transitionOrder sets centrally.
         await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
       }
 

@@ -10,12 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AdminLayout from "@/components/AdminLayout";
 
-// Milestone 4: batches/batch_items now have RLS (db/schema.ts) requiring
-// canManageProductsBatches for writes — same "disabled here is UX, RLS is
-// enforcement" split as AdminProductsPage. record-batch-receipt (an Edge
-// Function, not a direct write) already required canAdjustInventory as of
-// this milestone too.
-
 const BATCH_STATUSES = [
   "DRAFT",
   "OPEN",
@@ -34,7 +28,7 @@ const batchSchema = z
     closeAt: z.string().min(1, "Close date/time is required."),
     allowDp: z.boolean(),
     allowFull: z.boolean(),
-    allowShipping: z.boolean(), // pickup is always on — see note below
+    allowShipping: z.boolean(),
   })
   .refine((v) => v.allowDp || v.allowFull, {
     message: "Allow at least one payment type.",
@@ -47,7 +41,6 @@ interface ItemDraft {
   moq: string;
 }
 
-// Raw PostgREST column names.
 interface RawVariantOption {
   id: string;
   name: string;
@@ -95,8 +88,6 @@ export default function AdminBatchesPage() {
   const [inventoryByVariant, setInventoryByVariant] = useState<Map<string, { onHand: number; reserved: number }>>(
     new Map()
   );
-  // batchId -> variantId -> quantity across every non-cancelled order (§10.3
-  // "informational only" — a live count, not a stored/enforced number).
   const [committedByBatchVariant, setCommittedByBatchVariant] = useState<Map<string, Map<string, number>>>(new Map());
 
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -137,10 +128,6 @@ export default function AdminBatchesPage() {
       return;
     }
 
-    // Cast through `unknown` first: without generated Database types, the
-    // untyped supabase-js client can't know these embeds (products,
-    // product_variants) are one-to-one rather than one-to-many, and infers
-    // arrays for them — same reasoning as OrderPage.tsx's raw-row interfaces.
     const rawVariants = ((variantsResult.data as unknown) as RawVariantOption[] | null) ?? [];
     const rawBatches = ((batchesResult.data as unknown) as RawBatch[] | null) ?? [];
     setVariantOptions(rawVariants);
@@ -171,8 +158,6 @@ export default function AdminBatchesPage() {
     );
 
     const orderRows = (ordersResult.data as RawOrderRow[] | null) ?? [];
-    // §10.3 — informational only: every non-cancelled order counts as
-    // "ordered quantity", verified or not.
     const relevantOrderIds = orderRows.filter((o) => o.status !== "CANCELLED").map((o) => o.id);
     const orderIdToBatchId = new Map(orderRows.map((o) => [o.id, o.batch_id]));
 
@@ -219,9 +204,6 @@ export default function AdminBatchesPage() {
     }
 
     const allowedPaymentTypes = [...(values.allowDp ? ["DP"] : []), ...(values.allowFull ? ["FULL"] : [])];
-    // Pickup is always included — shipping isn't functional until Milestone
-    // 3 (no address/cost calc yet), so a shipping-only batch is never
-    // produced from this form regardless of what's checked.
     const allowedFulfilmentMethods = ["PICKUP", ...(values.allowShipping ? ["SHIPPING"] : [])];
 
     setSubmitting(true);

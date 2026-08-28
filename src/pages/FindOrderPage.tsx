@@ -4,17 +4,6 @@ import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-/**
- * Order access recovery (§16.2, Milestone 6, item 30) — the customer-facing
- * form for supabase/functions/recover-order-access.
- *
- * Deviates from §16.2's phone+email pair: this asks for phone + order
- * number instead (see the Edge Function's own comment for why) — the order
- * number is already shown on the order page and in every email, so it's
- * something a guest is realistically likely to still have even without
- * their original link.
- */
-
 interface RecoveredOrder {
   orderNumber: string;
   fulfilmentMethod: string | null;
@@ -43,9 +32,6 @@ export default function FindOrderPage() {
 
     if (invokeError) {
       setStatus("error");
-      // Deliberately generic — mirrors the same "don't reveal too much"
-      // instinct as resubmit-payment/scan-pickup, and a 429 (rate limited)
-      // shouldn't tell a guest anything more specific either.
       setError("We couldn't look that up right now. Please try again in a moment.");
       return;
     }

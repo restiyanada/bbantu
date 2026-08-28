@@ -6,19 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import AdminLayout from "@/components/AdminLayout";
 
-/**
- * Audit log viewer (§20, Milestone 6, item 32) — reads via
- * supabase/functions/list-audit-logs (a direct RLS read isn't possible
- * here without opening up admin_users; see that function's own comment).
- *
- * §18.4's usual "disabled, not hidden" pattern (AdminProductsPage,
- * AdminBatchesPage) doesn't quite fit this page: those disable individual
- * *actions* on a page everyone can still see, but canViewAuditLog gates
- * the whole page's content, not one button on it — so this shows a plain
- * "you don't have permission" message instead, same shape as
- * RequireAdmin's own "not authorized" state.
- */
-
 interface AuditLogRow {
   id: string;
   entityType: string;

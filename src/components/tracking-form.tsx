@@ -3,11 +3,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 
-// §26 "Shipping cost can be manually corrected, but the override must be
-// audited" — costOverrideReason is required whenever costOverride is
-// filled in, same shape as rejectPaymentSchema requiring a reason. Both are
-// optional together — most orders will just record a tracking number with
-// no cost change at all.
 const recordTrackingSchema = z
   .object({
     trackingNumber: z.string().trim().min(1, "Tracking number is required."),

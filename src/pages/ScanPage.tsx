@@ -41,9 +41,6 @@ export default function ScanPage() {
   const [manualToken, setManualToken] = useState("");
   const [currentToken, setCurrentToken] = useState<string | null>(null);
 
-  // Phone-number fallback (§16/§27 — a search shortcut, not proof of
-  // identity: staff still confirms by picking the right name below, the
-  // same as they would after scanning).
   const [phoneQuery, setPhoneQuery] = useState("");
   const [phoneMatches, setPhoneMatches] = useState<PhoneMatch[] | null>(null);
   const [phoneSearching, setPhoneSearching] = useState(false);
@@ -68,8 +65,6 @@ export default function ScanPage() {
     const scanner = new QrScanner(
       videoRef.current,
       (scanResult) => {
-        // Pause immediately on a hit so the same code isn't re-processed
-        // every frame while we look it up / show the result.
         void scanner.pause();
         void lookupToken(scanResult.data);
       },
@@ -85,7 +80,6 @@ export default function ScanPage() {
       scanner.stop();
       scanner.destroy();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canScan]);
 
   async function handleConfirm() {

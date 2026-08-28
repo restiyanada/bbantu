@@ -1,20 +1,3 @@
-/**
- * POST /list-orders — returns recent orders for the admin action screen.
- *
- * The admin screen can't just read `orders` directly via supabase-js: the
- * RLS policy on that table (db/schema.ts) deliberately only allows a guest
- * to read *their own* order, matched by access token header (§16, §27) —
- * there's no "staff" role yet for RLS to grant broader access to (that's
- * Milestone 4). So for now, this is a small Edge Function using the service
- * role connection (bypasses RLS) to return what the admin screen needs.
- *
- * Milestone 4: requires a real Supabase Auth session, but no specific §18.4
- * permission — every admin can see this regardless of individual toggles
- * ("the dashboard itself is read-only for everyone regardless of
- * permissions", §18.4). `requireAdmin(req, null)` means exactly that: any
- * row in admin_users, no particular flag checked.
- */
-
 import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
@@ -55,8 +38,6 @@ Deno.serve(async (req) => {
 
     const orderIds = rows.map((r) => r.id);
 
-    // Milestone 3 — only SHIPPING orders have a row here, so this is a
-    // straightforward map-by-orderId, same shape as latestByOrder below.
     const shipmentRows =
       orderIds.length > 0 ? await db.select().from(shipments).where(inArray(shipments.orderId, orderIds)) : [];
     const shipmentByOrder = new Map(shipmentRows.map((s) => [s.orderId, s]));
@@ -78,10 +59,6 @@ Deno.serve(async (req) => {
             .where(inArray(payments.orderId, orderIds))
         : [];
 
-    // The proof should stay visible to admins after verify/reject (§8/§19 —
-    // retained 30 days post-completion), not just while a payment is still
-    // PENDING. So this now keeps the *latest* payment per order regardless
-    // of status, rather than only ones still awaiting a decision.
     const latestByOrder = new Map<string, (typeof allPayments)[number]>();
     for (const p of allPayments) {
       const current = latestByOrder.get(p.orderId);
@@ -95,8 +72,6 @@ Deno.serve(async (req) => {
         const latest = latestByOrder.get(row.id);
         if (!latest) return { ...row, payment: null, shipment };
 
-        // Skip the signing round-trip once retention has actually deleted
-        // the object — it can't resolve to anything anyway.
         const proofUrl = latest.proofDeletedAt ? null : await getSignedProofUrl(latest.proofFileUrl);
         return { ...row, payment: { ...latest, proofUrl }, shipment };
       })

@@ -26,7 +26,7 @@ describe("order state machine — PRD §32 acceptance scenarios", () => {
 
     ctx.stockAvailable = true;
     s = transition(s, "STOCK_RECEIVED", ctx);
-    expect(s).toBe("READY_FOR_FULFILMENT"); // FULL paid, skips BALANCE_DUE
+    expect(s).toBe("READY_FOR_FULFILMENT");
 
     s = transition(s, "PREPARE_FOR_FULFILMENT", ctx);
     expect(s).toBe("READY_FOR_PICKUP");
@@ -54,8 +54,6 @@ describe("order state machine — PRD §32 acceptance scenarios", () => {
 
     ctx.stockAvailable = true;
     s = transition(s, "STOCK_RECEIVED", ctx);
-    // §9 (v1.2): AWAITING_STOCK and BALANCE_DUE are never simultaneous —
-    // stock arriving resolves straight into BALANCE_DUE for DP orders.
     expect(s).toBe("BALANCE_DUE");
 
     s = transition(s, "BALANCE_PAYMENT_VERIFIED", ctx);

@@ -1,35 +1,3 @@
-/**
- * POST /record-batch-receipt — admin logs a supplier delivery for one batch
- * line item (§10.3, §11, §26 — Milestone 2).
- *
- * Two things happen in one transaction:
- *
- *   1. Bookkeeping: `inventory.onHand` for that variant goes up by the
- *      received quantity, logged as an inventory_transactions row. No
- *      "publish surplus" gate — surplus becomes sellable ready stock the
- *      moment it's on hand (§12, resolved for Milestone 2: no extra
- *      approval step).
- *   2. Promotion: every order in AWAITING_STOCK for this batch that
- *      includes this variant is a candidate. lib/batch-allocation.ts decides
- *      who actually gets promoted — oldest payment-verification time first
- *      (§26), all-or-nothing per order (a multi-item order only advances
- *      once every one of its items clears, never partially). Promoted
- *      orders fire the existing STOCK_RECEIVED transition (already in
- *      lib/order-state-machine.ts, unchanged since Milestone 1) — DP orders
- *      land on BALANCE_DUE, FULL orders land on READY_FOR_FULFILMENT.
- *
- * This is a bookkeeping event only, not gated on batch.status — an admin
- * can record a receipt whenever goods physically arrive, matching §10.3's
- * "MOQ is informational only" spirit extended to the rest of procurement.
- *
- * Orders that don't get covered simply stay in AWAITING_STOCK — no automatic
- * cancellation (§26 shortfall rule: "remaining orders are cancelled manually
- * by admin", not by this endpoint).
- *
- * Milestone 4: requires a real Supabase Auth session with
- * admin_users.canAdjustInventory — see supabase/functions/_shared/auth.ts.
- */
-
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
@@ -74,9 +42,6 @@ Deno.serve(async (req) => {
         throw new HttpError(404, "This batch item doesn't exist.");
       }
 
-      // 1. Bookkeeping — add to on-hand. Upsert in case this variant has
-      // never had a physical inventory row before (a pre-order-only product
-      // that's never existed as ready stock).
       await tx
         .insert(inventory)
         .values({ variantId: batchItem.variantId, onHand: input.quantityReceived, reserved: 0 })
@@ -100,9 +65,6 @@ Deno.serve(async (req) => {
         after: { quantityReceived: input.quantityReceived },
       });
 
-      // 2. Promotion — every AWAITING_STOCK order in this batch that
-      // touches this variant is a candidate; but the all-or-nothing check
-      // needs *every* item on each candidate order, not just this one.
       const candidateOrders = await tx
         .select({ id: orders.id, reservedAt: orders.reservedAt })
         .from(orders)
@@ -116,8 +78,6 @@ Deno.serve(async (req) => {
         );
 
       if (candidateOrders.length === 0) {
-        // No one's waiting on this variant right now — the receipt still
-        // counted for inventory, there's just nothing to promote.
         return { received: input.quantityReceived, promoted: 0, stillWaiting: 0 };
       }
 
@@ -133,9 +93,6 @@ Deno.serve(async (req) => {
 
       const waitingOrders: WaitingOrder[] = candidateOrders.map((o) => ({
         orderId: o.id,
-        // Every order reaching AWAITING_STOCK was stamped in verify-payment
-        // right before — this should never be null in practice, but fall
-        // back to "now" (lowest priority) rather than crash if it somehow is.
         reservedAt: o.reservedAt ?? new Date(),
         items: itemsByOrder.get(o.id) ?? [],
       }));
@@ -167,8 +124,6 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Milestone 5 — one lookup for every promoted order's customer email
-      // rather than one query per order in the loop below.
       const promotedCustomerEmailByOrder = new Map<string, string>();
       if (promoted.length > 0) {
         const rows = await tx
@@ -192,9 +147,6 @@ Deno.serve(async (req) => {
           stockAvailable: true,
         });
 
-        // §17.1 — P0. If it lands on READY_FOR_FULFILMENT instead (already
-        // paid in full), no email here — that order's next and only
-        // remaining email is "ready for fulfilment", from prepare-pickup.
         if (to === "BALANCE_DUE") {
           const email = promotedCustomerEmailByOrder.get(order.orderId);
           if (email) {

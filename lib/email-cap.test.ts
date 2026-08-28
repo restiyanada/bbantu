@@ -19,8 +19,6 @@ describe("email send budget (§24.2)", () => {
       balanceDueQueuedAvailable: 5,
       otherQueuedAvailable: 50,
     });
-    // balance-due only has 5 to send; the other 75 of ceiling headroom
-    // goes to "other" instead of sitting unused.
     expect(budget).toEqual({ balanceDueToSend: 5, otherToSend: 50 });
   });
 
@@ -51,8 +49,6 @@ describe("email send budget (§24.2)", () => {
       balanceDueQueuedAvailable: 50,
       otherQueuedAvailable: 50,
     });
-    // balance-due: 80 cap - 75 sent = 5 left. other floor already met (10/10),
-    // ceiling headroom = 90 - 85 = 5, all of which balance-due can take.
     expect(budget.balanceDueToSend).toBe(5);
     expect(budget.otherToSend).toBe(0);
   });
@@ -68,9 +64,6 @@ describe("email send budget (§24.2)", () => {
   });
 
   it("other's floor is protected even when balance-due alone would have filled the whole ceiling", () => {
-    // The exact scenario raised during planning: a big batch receipt makes
-    // many orders balance-due on the same day plenty of "ready" orders
-    // also need their nudge — other must still get its guaranteed 10.
     const budget = computeEmailSendBudget({
       balanceDueSentToday: 0,
       otherSentToday: 0,

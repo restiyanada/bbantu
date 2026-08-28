@@ -9,14 +9,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import AdminLayout from "@/components/AdminLayout";
 
-// Milestone 4: products/product_variants/inventory now have RLS
-// (db/schema.ts) requiring canManageProductsBatches for writes — this page
-// still writes to those tables directly with the browser client (unchanged
-// from before; "save what the user typed" per architecture.md's own rule of
-// thumb), but the write is now enforced server-side, not just disabled here
-// for UX. The disabled state below is the friendly first line; RLS is what
-// actually stops it.
-
 const IMAGE_BUCKET = "product-images";
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -32,13 +24,6 @@ interface VariantDraft {
   price: string;
 }
 
-/**
- * Formats a price as the admin types it, Indonesian-style: "." as the
- * thousands separator, "," as the decimal separator (opposite of en-US,
- * matches formatIDR's toLocaleString("id-ID") used everywhere else in the
- * app). Only digits and at most one comma survive — pasting "Rp 150.000"
- * still works, since punctuation just gets stripped and re-inserted.
- */
 function formatPriceDisplay(raw: string): string {
   const cleaned = raw.replace(/[^0-9,]/g, "");
   const firstComma = cleaned.indexOf(",");
@@ -49,15 +34,12 @@ function formatPriceDisplay(raw: string): string {
   return decPart !== undefined ? `${withThousands},${decPart}` : withThousands;
 }
 
-/** Reverses formatPriceDisplay back into the plain decimal string ("150000.50") the DB column expects. */
 function parsePriceForSubmit(display: string): string {
   const [intPart, decPart] = display.split(",");
   const digitsOnly = (intPart ?? "").replace(/\./g, "");
   return decPart ? `${digitsOnly}.${decPart}` : digitsOnly;
 }
 
-// Raw PostgREST column names — these queries go straight through
-// supabase-js, not drizzle (same convention as OrderPage.tsx).
 interface RawVariantRow {
   id: string;
   name: string;
@@ -190,11 +172,6 @@ export default function AdminProductsPage() {
 
     setSubmitting(true);
     try {
-      // Sequential, best-effort writes — supabase-js/PostgREST has no
-      // multi-table transaction primitive from the browser, same tradeoff
-      // Milestone 1 already accepted for manual SQL-console product
-      // seeding. If a later step fails, fix up the partial rows via Drizzle
-      // Studio — acceptable risk for a 3-person internal admin tool.
       let imageUrl: string | null = null;
       if (imageFile) {
         const path = `${crypto.randomUUID()}-${imageFile.name}`;
@@ -220,8 +197,6 @@ export default function AdminProductsPage() {
         throw new Error("Product was created, but adding its variants failed — check Drizzle Studio.");
       }
 
-      // One inventory row per variant, starting at zero — record-batch-receipt
-      // and future ready-stock restocks both add to this.
       const { error: inventoryError } = await supabase
         .from("inventory")
         .insert((insertedVariants as { id: string }[]).map((v) => ({ variant_id: v.id, on_hand: 0, reserved: 0 })));

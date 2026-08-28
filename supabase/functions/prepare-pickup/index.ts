@@ -1,25 +1,3 @@
-/**
- * POST /prepare-pickup — admin marks a READY_FOR_FULFILMENT order as staged
- * and ready, generating its pickup QR token (§13, §14).
- *
- * Modeled as a distinct admin action from verify-payment because the state
- * machine (lib/order-state-machine.ts) treats READY_FOR_FULFILMENT and
- * READY_FOR_PICKUP as separate states with their own event
- * (PREPARE_FOR_FULFILMENT) — "payment/reservation settled" and "physically
- * staged for pickup" are different facts, even though for ready-stock items
- * they often happen close together in practice.
- *
- * Milestone 4: requires a real Supabase Auth session. This endpoint branches
- * on the order's own fulfilment method internally (§13.1), so which §18.4
- * permission it demands branches the same way: canScanConfirmPickup for a
- * PICKUP order, canManageShipping for a SHIPPING one ("pack orders" in the
- * §18.4 permission table is exactly this step for the shipping path — this
- * function marks it READY_TO_SHIP, matching record-tracking's later step
- * which already requires canManageShipping). Checked *before* the state
- * transition runs, from the order's current fulfilmentMethod, so an admin
- * lacking the right permission never causes the transition's side effects.
- */
-
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
@@ -32,11 +10,6 @@ import { queueEmail } from "../../../lib/email-queue.ts";
 
 const prepareSchema = z.object({ orderId: z.string().uuid() });
 
-// Short (not a full UUID) so staff can type it as a manual fallback if the
-// camera doesn't work — 6 chars from a 32-symbol alphabet is ~1 billion
-// combinations, comfortably unguessable for a booth-pickup code (§13.3)
-// without being painful to type. Alphabet excludes 0/O/1/I/L to avoid
-// characters that look alike when handwritten or read off a phone screen.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function generatePickupCode(length = 6): string {
   const bytes = new Uint8Array(length);
@@ -75,12 +48,9 @@ Deno.serve(async (req) => {
         orderId: input.orderId,
         event: "PREPARE_FOR_FULFILMENT",
         actorId: admin.id,
-        stockAvailable: true, // unused by this transition
+        stockAvailable: true,
       });
 
-      // §17.1 — "ready for fulfilment", P1. One email covers both outcomes
-      // below (pickup QR or shipping) — queued here, once, before they
-      // branch, rather than duplicated in each branch.
       const [order] = await tx
         .select({ customerId: orders.customerId })
         .from(orders)
@@ -98,14 +68,9 @@ Deno.serve(async (req) => {
       }
 
       if (to !== "READY_FOR_PICKUP") {
-        // SHIPPING orders land on READY_TO_SHIP instead — no QR needed here.
-        // Shipping's own prep flow (packing, labels) is Milestone 3.
         return { status: to, pickupToken: null as string | null };
       }
 
-      // Astronomically unlikely to collide (~1 billion combinations), but
-      // the retry is cheap insurance against the unique constraint on
-      // pickup_tokens.token.
       let token = "";
       for (let attempt = 0; attempt < 5; attempt++) {
         token = generatePickupCode();

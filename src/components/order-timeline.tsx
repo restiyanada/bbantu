@@ -1,10 +1,3 @@
-/**
- * Renders the pure timeline data from src/lib/order-timeline.ts as a
- * vertical checklist — §16.3. Purely presentational: all the "which steps,
- * in what state" logic lives in buildOrderTimeline, so this component has
- * nothing to unit test beyond what's already covered there.
- */
-
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OrderTimeline } from "@/lib/order-timeline";

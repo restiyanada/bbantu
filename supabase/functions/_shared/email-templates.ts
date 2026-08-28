@@ -1,19 +1,7 @@
-/**
- * Email content — §17.1 (the 4 core emails), §17.2 (body rules).
- *
- * §17.2: "One link only. No order details, no tables, no images in the
- * email body. Subject line contains order ID and action keyword. Footer:
- * business name only." Plain text throughout is a deliberate match to
- * that, not a placeholder for a real HTML template later — the PRD wants
- * these minimal on purpose (§17: "short nudges").
- */
-
 import type { EmailTemplate } from "../../../lib/email-queue.ts";
 
 export interface EmailRenderContext {
-  /** Formatted like "#010007" — lib/order-number.ts, same format the order page itself shows. */
   orderNumber: string;
-  /** Full URL to the order page. */
   orderLink: string;
   businessName: string;
 }

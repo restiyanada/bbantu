@@ -1,20 +1,3 @@
-/**
- * POST /submit-balance-payment — customer pays the remaining balance on a
- * DP pre-order once it reaches BALANCE_DUE (§8.2, §9, Milestone 2).
- *
- * Customer-facing, not admin-facing — same reasoning as resubmit-payment:
- * the access token (§16/§27) is what proves ownership, not the order id
- * alone. Also doubles as the resubmission path if a balance payment gets
- * rejected — there's nothing structurally different between "first attempt"
- * and "resubmission" here (unlike the initial-payment flow, there's no
- * separate order status to protect), so one endpoint covers both: it's
- * simply "submit a new payment for this order" whenever the order is
- * BALANCE_DUE and there isn't already a payment under review.
- *
- * verify-payment (already handles both initial and balance payments) is
- * what actually verifies/rejects the row this creates.
- */
-
 import { eq, and, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
@@ -23,7 +6,6 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
-// Milestone 5 — see the same note in resubmit-payment/index.ts.
 const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
 
 const submitBalanceSchema = z.object({
@@ -50,8 +32,6 @@ Deno.serve(async (req) => {
     return json({ error: "Invalid JSON body." }, 400);
   }
 
-  // Same existence check as create-order/resubmit-payment — don't trust a
-  // claimed path.
   const proofRows = await db.execute<{ exists: number }>(
     sql`select 1 as exists from storage.objects where bucket_id = 'payment-proofs' and name = ${input.proofFileUrl} limit 1`
   );
@@ -69,9 +49,6 @@ Deno.serve(async (req) => {
         .from(orders)
         .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
 
-      // Deliberately generic — doesn't reveal whether the order exists at
-      // all if the token is wrong, same reasoning as scan-pickup's "invalid
-      // code" response (§26).
       if (!order) {
         throw new HttpError(404, "Order not found.");
       }

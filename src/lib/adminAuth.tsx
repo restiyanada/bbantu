@@ -2,11 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 
-/**
- * §18.4 permission flags for the logged-in admin, as returned by the
- * `whoami` Edge Function. Mirrors db/schema.ts admin_users exactly (minus
- * id/name/email, which live alongside these on the same object below).
- */
 export interface AdminProfile {
   id: string;
   name: string;
@@ -20,15 +15,11 @@ export interface AdminProfile {
 }
 
 interface AdminAuthState {
-  /** True until the initial session check + (if logged in) whoami call both resolve. */
   loading: boolean;
   session: Session | null;
-  /** Non-null only once whoami has confirmed this session belongs to a real admin_users row. */
   admin: AdminProfile | null;
-  /** Set when a session exists but whoami rejected it (e.g. not an admin) — distinct from "no session at all". */
   profileError: string | null;
   signOut: () => Promise<void>;
-  /** Re-runs whoami — useful right after an admin's own permissions might have changed. */
   refreshProfile: () => Promise<void>;
 }
 
@@ -72,10 +63,6 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
       if (active) setLoading(false);
     });
 
-    // Magic-link sign-in (and sign-out from another tab) both land here —
-    // supabase-js already parses the callback URL/session for us
-    // (detectSessionInUrl defaults true), so this listener is all that's
-    // needed to react to it.
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (!active) return;
       setSession(newSession);

@@ -29,7 +29,6 @@ interface PaymentSettingsRow {
   account_holder_name: string;
 }
 
-// Raw PostgREST embed shapes for open batches (Milestone 2).
 interface RawBatchItem {
   id: string;
   variant_id: string;
@@ -57,7 +56,6 @@ interface BatchOption {
   items: SelectableItem[];
 }
 
-// Milestone 3 — shipping address + rate quote.
 interface LocationOption {
   code: string;
   name: string;
@@ -70,11 +68,9 @@ interface JneRateOption {
 }
 
 const PROOF_BUCKET = "payment-proofs";
-const MAX_PROOF_BYTES = 5 * 1024 * 1024; // 5MB, matches supabase/storage_setup.sql
+const MAX_PROOF_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
-// Same patterns as create-order's server-side validation — this is the UX
-// nicety only; the Edge Function re-validates identically (§3 principle 5).
 const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
 const PHONE_PATTERN = /^[0-9]{8,15}$/;
 
@@ -92,10 +88,6 @@ export default function HomePage() {
   const [batches, setBatches] = useState<BatchOption[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // "READY_STOCK" or a batch id — which section the customer is ordering
-  // from right now. An order can only belong to one sales mode/batch
-  // (orders.batchId is a single column), so switching sections clears
-  // quantities rather than trying to merge across them.
   const [activeSource, setActiveSource] = useState<string>("READY_STOCK");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemsError, setItemsError] = useState<string | null>(null);
@@ -104,10 +96,6 @@ export default function HomePage() {
 
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
 
-  // Milestone 3 — fulfilment method + shipping address/rate quote state.
-  // Kept as plain useState, not folded into the react-hook-form `customer`
-  // resolver above — same convention already used for items/proof upload:
-  // only the customer name/phone/email block uses react-hook-form here.
   const [fulfilmentMethod, setFulfilmentMethod] = useState<"PICKUP" | "SHIPPING">("PICKUP");
   const [provinces, setProvinces] = useState<LocationOption[] | null>(null);
   const [cities, setCities] = useState<LocationOption[] | null>(null);
@@ -123,9 +111,6 @@ export default function HomePage() {
   const [rateLoading, setRateLoading] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
 
-  // Payment proof upload state. `proofPath` is what actually gets sent to
-  // create-order — a Storage path within PROOF_BUCKET, not a public URL (the
-  // bucket has no public read at all, see supabase/storage_setup.sql).
   const [proofPath, setProofPath] = useState<string | null>(null);
   const [proofFileName, setProofFileName] = useState<string | null>(null);
   const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
@@ -133,12 +118,6 @@ export default function HomePage() {
   const [proofError, setProofError] = useState<string | null>(null);
   const proofInputRef = useRef<HTMLInputElement>(null);
 
-  // Client-generated once per visit — the unique constraint on
-  // orders.submission_token is what actually enforces "one order per
-  // submit" (§19); this is just the value that gets reused if the button
-  // is double-clicked, and swapped for a new one after a failed attempt.
-  // Also used as the upload path prefix, so a proof can be uploaded before
-  // the order (and its id) exists yet.
   const [submissionToken, setSubmissionToken] = useState(() => crypto.randomUUID());
 
   const {
@@ -152,9 +131,6 @@ export default function HomePage() {
     let cancelled = false;
 
     async function load() {
-      // Products/variants and open batches have no RLS (public storefront
-      // catalog, §5) — a plain read, not something that needs the guest
-      // order-access token.
       const [productsResult, batchesResult, settingsResult] = await Promise.all([
         supabase
           .from("products")
@@ -177,9 +153,6 @@ export default function HomePage() {
         setProducts((productsResult.data as ProductRow[] | null) ?? []);
       }
 
-      // Cast through `unknown` first: without generated Database types, the
-      // untyped supabase-js client can't know these nested embeds are
-      // one-to-one rather than one-to-many.
       const rawBatches = ((batchesResult.data as unknown) as
         | (RawBatch & { batch_items: RawBatchItem[] })[]
         | null) ?? [];
@@ -207,9 +180,6 @@ export default function HomePage() {
     };
   }, []);
 
-  // Milestone 3 — provinces are a small, rarely-changing, free-to-call list
-  // (§15.2), loaded once regardless of whether the customer ever picks
-  // Shipping, so the dropdown is instant if they do.
   useEffect(() => {
     let cancelled = false;
     async function loadProvinces() {
@@ -309,17 +279,13 @@ export default function HomePage() {
     }
 
     setRates(fetchedRates);
-    setSelectedServiceCode(fetchedRates[0].serviceCode); // cheapest/first by default — customer can change it
+    setSelectedServiceCode(fetchedRates[0].serviceCode);
   }
 
   const activeBatch = activeSource === "READY_STOCK" ? null : batches?.find((b) => b.id === activeSource) ?? null;
 
-  // Ready stock has no batch to restrict it — Shipping is always offered.
-  // A pre-order batch only offers Shipping if it was configured to (§13.1).
   const shippingAllowed = activeBatch ? activeBatch.allowedFulfilmentMethods.includes("SHIPPING") : true;
 
-  // Unified list of what's orderable in the currently-active section, so
-  // quantity state / subtotal math doesn't need two separate code paths.
   const activeItems: SelectableItem[] =
     activeSource === "READY_STOCK"
       ? (products ?? []).flatMap((p) =>
@@ -357,9 +323,6 @@ export default function HomePage() {
   const selectedRate = rates?.find((r) => r.serviceCode === selectedServiceCode) ?? null;
   const shippingCostCents = fulfilmentMethod === "SHIPPING" && selectedRate ? Math.round(selectedRate.price * 100) : 0;
 
-  // Shipping (when chosen) is always paid in full alongside whatever's due
-  // now — same design as create-order's server-side calc (see that file's
-  // doc comment for the reasoning and the open flag on this interpretation).
   const amountDueNowCents = (effectivePaymentType === "DP" ? depositCents : subtotalCents) + shippingCostCents;
   const grandTotalCents = subtotalCents + shippingCostCents;
 
@@ -439,9 +402,6 @@ export default function HomePage() {
         ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
         ...(fulfilmentMethod === "SHIPPING"
           ? {
-              // Recipient is the same person filling out "Your details" —
-              // no separate name/phone entry, per feedback that asking twice
-              // was redundant. Already validated by customerSchema above.
               shipping: {
                 recipientName: customer.name,
                 recipientPhone: customer.phone,
@@ -459,11 +419,6 @@ export default function HomePage() {
       setSubmitError(
         (data as { error?: string } | null)?.error ?? "Something went wrong placing your order. Please try again."
       );
-      // A fresh token for the retry avoids any ambiguity about whether the
-      // failed attempt's token might be considered used server-side. The
-      // already-uploaded proof stays valid (it's keyed by the old token's
-      // folder), but the new submission needs a token of its own too, so
-      // simplest is to ask for a fresh upload alongside the fresh token.
       setSubmissionToken(crypto.randomUUID());
       setProofPath(null);
       setProofFileName(null);
@@ -756,9 +711,6 @@ export default function HomePage() {
                     />
                   </div>
 
-                  {/* Recipient is whoever filled in "Your details" above —
-                      no separate name/phone entry. This just reflects those
-                      fields live so it's clear who the package is going to. */}
                   <p className="text-xs text-gray-500">
                     Shipping to <span className="font-medium text-gray-700">{watch("name") || "—"}</span> ·{" "}
                     {watch("phone") || "—"}

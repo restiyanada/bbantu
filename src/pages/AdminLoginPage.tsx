@@ -3,14 +3,6 @@ import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-/**
- * Staff login (§18.4, Milestone 4) — Supabase Auth magic link, no password.
- * Supabase emails a sign-in link; clicking it redirects back here (or
- * wherever `emailRedirectTo` points) with a session already established.
- * AdminAuthProvider (src/lib/adminAuth.tsx) picks that session up
- * automatically via onAuthStateChange — this page only has to trigger the
- * email, not handle the callback itself.
- */
 export default function AdminLoginPage() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");

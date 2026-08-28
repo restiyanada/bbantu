@@ -349,13 +349,6 @@ export default function AdminDashboardPage() {
         }
 
         if (order.status === "READY_FOR_FULFILMENT") {
-          // Same underlying prepare-pickup Edge Function handles both —
-          // it already branches on fulfilmentMethod internally (Milestone 1
-          // designed READY_FOR_PICKUP/READY_TO_SHIP as siblings under one
-          // PREPARE_FOR_FULFILMENT event). Only the label differs here.
-          // Permission mirrors the Edge Function's own split (§18.4):
-          // shipping orders need canManageShipping, pickup orders need
-          // canScanConfirmPickup.
           const isShipping = order.fulfilmentMethod === "SHIPPING";
           const label = isShipping ? "Prepare for shipment" : "Prepare for pickup";
           const canPrepare = isShipping ? admin?.canManageShipping ?? false : admin?.canScanConfirmPickup ?? false;

@@ -8,9 +8,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 
-// Raw Postgres column names (snake_case) — these queries go straight through
-// supabase-js/PostgREST, not drizzle, so they use the actual DB column names
-// from db/schema.ts, not the camelCase TS property names.
 interface OrderRow {
   id: string;
   order_number: number | null;
@@ -69,7 +66,6 @@ export default function OrderPage() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
 
-  // Resubmission (after a rejected payment) UI state.
   const [resubmitPath, setResubmitPath] = useState<string | null>(null);
   const [resubmitFileName, setResubmitFileName] = useState<string | null>(null);
   const [resubmitPreviewUrl, setResubmitPreviewUrl] = useState<string | null>(null);
@@ -78,8 +74,6 @@ export default function OrderPage() {
   const [resubmitError, setResubmitError] = useState<string | null>(null);
   const resubmitInputRef = useRef<HTMLInputElement>(null);
 
-  // Balance payment (DP order's remaining amount, Milestone 2) UI state —
-  // same shape as resubmission above, just a different endpoint.
   const [balancePath, setBalancePath] = useState<string | null>(null);
   const [balanceFileName, setBalanceFileName] = useState<string | null>(null);
   const [balancePreviewUrl, setBalancePreviewUrl] = useState<string | null>(null);
@@ -100,14 +94,6 @@ export default function OrderPage() {
     async function load(token: string) {
       const client = createGuestOrderClient(token);
 
-      // Milestone 5: no `.eq("access_token", token)` filter here anymore —
-      // access_token now stores a hash (db/schema.ts), so comparing it to
-      // the raw token directly would never match. RLS's own policy already
-      // restricts an anon read to exactly the one order whose hash matches
-      // the x-order-access-token header (see createGuestOrderClient), so a
-      // plain unfiltered select on this table already returns at most one
-      // row — the redundant client-side filter was never load-bearing for
-      // security, only for clarity, and now it'd just be wrong.
       const { data: order, error: orderError } = await client
         .from("orders")
         .select(
@@ -142,8 +128,6 @@ export default function OrderPage() {
           .select("courier, service, recipient_name, address, destination_district_name, tracking_number")
           .eq("order_id", order.id)
           .maybeSingle(),
-        // Ready-stock orders have no batch — batches table itself has no RLS
-        // (public catalog, same as products), so a plain read is fine here.
         order.batch_id
           ? supabase.from("batches").select("name").eq("id", order.batch_id).maybeSingle()
           : Promise.resolve({ data: null }),
@@ -488,9 +472,6 @@ export default function OrderPage() {
             <p className="text-gray-500">
               Show this code at the booth. Staff will scan it to confirm your pickup.
             </p>
-            {/* Rendering this as an actual scannable QR image (§13.3) is left
-                for a follow-up pass — this page is scoped to reading real
-                order data, not building the QR-rendering component yet. */}
             <p className="font-mono text-xs break-all bg-gray-100 rounded p-2">{pickupToken}</p>
           </CardContent>
         </Card>
