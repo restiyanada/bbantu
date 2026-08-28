@@ -37,7 +37,9 @@ export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingForm
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-2 w-64">
       <div>
-        <label className="text-xs font-medium">Tracking number</label>
+        <label className="text-xs font-medium">
+          Tracking number <span className="text-destructive">*</span>
+        </label>
         <input
           {...register("trackingNumber")}
           className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -51,7 +53,7 @@ export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingForm
         <div className="mt-2 space-y-2">
           <input
             {...register("costOverride")}
-            placeholder="New cost (IDR)"
+            placeholder="New cost (IDR) — optional"
             inputMode="decimal"
             className="w-full rounded-md border bg-background px-2 py-1 text-sm"
           />

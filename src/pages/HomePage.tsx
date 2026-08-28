@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 
 interface VariantRow {
   id: string;
@@ -127,8 +128,10 @@ export default function HomePage() {
   // bucket has no public read at all, see supabase/storage_setup.sql).
   const [proofPath, setProofPath] = useState<string | null>(null);
   const [proofFileName, setProofFileName] = useState<string | null>(null);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
   const [proofUploading, setProofUploading] = useState(false);
   const [proofError, setProofError] = useState<string | null>(null);
+  const proofInputRef = useRef<HTMLInputElement>(null);
 
   // Client-generated once per visit — the unique constraint on
   // orders.submission_token is what actually enforces "one order per
@@ -375,6 +378,7 @@ export default function HomePage() {
       return;
     }
 
+    setProofPreviewUrl(URL.createObjectURL(file));
     setProofUploading(true);
     const path = `${submissionToken}/${crypto.randomUUID()}-${file.name}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
@@ -386,6 +390,15 @@ export default function HomePage() {
     }
     setProofPath(path);
     setProofFileName(file.name);
+  }
+
+  function handleRemoveProof() {
+    if (proofPreviewUrl) URL.revokeObjectURL(proofPreviewUrl);
+    setProofPath(null);
+    setProofFileName(null);
+    setProofPreviewUrl(null);
+    setProofError(null);
+    if (proofInputRef.current) proofInputRef.current.value = "";
   }
 
   async function onSubmit(customer: CustomerValues) {
@@ -609,7 +622,7 @@ export default function HomePage() {
           <CardContent className="space-y-3">
             <div>
               <label htmlFor="name" className="text-sm font-medium">
-                Name
+                Name <span className="text-destructive">*</span>
               </label>
               <input
                 id="name"
@@ -620,7 +633,7 @@ export default function HomePage() {
             </div>
             <div>
               <label htmlFor="phone" className="text-sm font-medium">
-                Phone number
+                Phone number <span className="text-destructive">*</span>
               </label>
               <input
                 id="phone"
@@ -631,7 +644,7 @@ export default function HomePage() {
             </div>
             <div>
               <label htmlFor="email" className="text-sm font-medium">
-                Email
+                Email <span className="text-destructive">*</span>
               </label>
               <input
                 id="email"
@@ -675,7 +688,9 @@ export default function HomePage() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div>
-                      <label className="text-xs text-gray-500">Province</label>
+                      <label className="text-xs text-gray-500">
+                        Province <span className="text-destructive">*</span>
+                      </label>
                       <select
                         value={selectedProvinceCode}
                         onChange={(e) => void handleProvinceChange(e.target.value)}
@@ -692,7 +707,9 @@ export default function HomePage() {
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs text-gray-500">City / Regency</label>
+                      <label className="text-xs text-gray-500">
+                        City / Regency <span className="text-destructive">*</span>
+                      </label>
                       <select
                         value={selectedCityCode}
                         onChange={(e) => void handleCityChange(e.target.value)}
@@ -708,7 +725,9 @@ export default function HomePage() {
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs text-gray-500">District</label>
+                      <label className="text-xs text-gray-500">
+                        District <span className="text-destructive">*</span>
+                      </label>
                       <select
                         value={selectedDistrict?.code ?? ""}
                         onChange={(e) => handleDistrictChange(e.target.value)}
@@ -726,7 +745,9 @@ export default function HomePage() {
                   </div>
 
                   <div>
-                    <label className="text-xs text-gray-500">Street address, RT/RW, landmark, etc.</label>
+                    <label className="text-xs text-gray-500">
+                      Street address, RT/RW, landmark, etc. <span className="text-destructive">*</span>
+                    </label>
                     <textarea
                       value={addressDetail}
                       onChange={(e) => setAddressDetail(e.target.value)}
@@ -858,13 +879,16 @@ export default function HomePage() {
         {hasItems && (
           <Card>
             <CardHeader>
-              <CardTitle>Payment proof</CardTitle>
+              <CardTitle>
+                Payment proof <span className="text-destructive text-sm font-normal">*</span>
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-sm text-gray-500">
                 Upload a screenshot of your transfer receipt for the amount shown above.
               </p>
               <input
+                ref={proofInputRef}
                 type="file"
                 accept={ACCEPTED_PROOF_TYPES.join(",")}
                 onChange={handleProofFileChange}
@@ -872,7 +896,9 @@ export default function HomePage() {
                 className="text-sm"
               />
               {proofUploading && <p className="text-sm text-gray-500">Uploading…</p>}
-              {proofPath && !proofUploading && <p className="text-sm text-green-700">Uploaded: {proofFileName}</p>}
+              {proofPath && proofPreviewUrl && !proofUploading && (
+                <FileUploadPreview previewUrl={proofPreviewUrl} label={proofFileName ?? "Uploaded"} onRemove={handleRemoveProof} />
+              )}
               {proofError && <p className="text-destructive text-sm">{proofError}</p>}
             </CardContent>
           </Card>

@@ -34,7 +34,7 @@ export function PaymentRejectionForm({
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
       <div>
         <label htmlFor="reason" className="text-sm font-medium">
-          Rejection reason
+          Rejection reason <span className="text-destructive">*</span>
         </label>
         <textarea
           id="reason"

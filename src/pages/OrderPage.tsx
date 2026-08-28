@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber } from "@/lib/utils";
@@ -6,6 +6,7 @@ import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 
 // Raw Postgres column names (snake_case) — these queries go straight through
 // supabase-js/PostgREST, not drizzle, so they use the actual DB column names
@@ -71,17 +72,21 @@ export default function OrderPage() {
   // Resubmission (after a rejected payment) UI state.
   const [resubmitPath, setResubmitPath] = useState<string | null>(null);
   const [resubmitFileName, setResubmitFileName] = useState<string | null>(null);
+  const [resubmitPreviewUrl, setResubmitPreviewUrl] = useState<string | null>(null);
   const [resubmitUploading, setResubmitUploading] = useState(false);
   const [resubmitting, setResubmitting] = useState(false);
   const [resubmitError, setResubmitError] = useState<string | null>(null);
+  const resubmitInputRef = useRef<HTMLInputElement>(null);
 
   // Balance payment (DP order's remaining amount, Milestone 2) UI state —
   // same shape as resubmission above, just a different endpoint.
   const [balancePath, setBalancePath] = useState<string | null>(null);
   const [balanceFileName, setBalanceFileName] = useState<string | null>(null);
+  const [balancePreviewUrl, setBalancePreviewUrl] = useState<string | null>(null);
   const [balanceUploading, setBalanceUploading] = useState(false);
   const [balanceSubmitting, setBalanceSubmitting] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
+  const balanceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!accessToken) {
@@ -195,6 +200,7 @@ export default function OrderPage() {
       return;
     }
 
+    setResubmitPreviewUrl(URL.createObjectURL(file));
     setResubmitUploading(true);
     const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
@@ -206,6 +212,15 @@ export default function OrderPage() {
     }
     setResubmitPath(path);
     setResubmitFileName(file.name);
+  }
+
+  function handleRemoveResubmitProof() {
+    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
+    setResubmitPath(null);
+    setResubmitFileName(null);
+    setResubmitPreviewUrl(null);
+    setResubmitError(null);
+    if (resubmitInputRef.current) resubmitInputRef.current.value = "";
   }
 
   async function handleResubmit(orderId: string) {
@@ -224,8 +239,10 @@ export default function OrderPage() {
       return;
     }
 
+    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
     setResubmitPath(null);
     setResubmitFileName(null);
+    setResubmitPreviewUrl(null);
     setReloadKey((k) => k + 1);
   }
 
@@ -244,6 +261,7 @@ export default function OrderPage() {
       return;
     }
 
+    setBalancePreviewUrl(URL.createObjectURL(file));
     setBalanceUploading(true);
     const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
@@ -255,6 +273,15 @@ export default function OrderPage() {
     }
     setBalancePath(path);
     setBalanceFileName(file.name);
+  }
+
+  function handleRemoveBalanceProof() {
+    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
+    setBalancePath(null);
+    setBalanceFileName(null);
+    setBalancePreviewUrl(null);
+    setBalanceError(null);
+    if (balanceInputRef.current) balanceInputRef.current.value = "";
   }
 
   async function handleSubmitBalance(orderId: string) {
@@ -273,8 +300,10 @@ export default function OrderPage() {
       return;
     }
 
+    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
     setBalancePath(null);
     setBalanceFileName(null);
+    setBalancePreviewUrl(null);
     setReloadKey((k) => k + 1);
   }
 
@@ -377,6 +406,7 @@ export default function OrderPage() {
             )}
             <p className="text-gray-500">Upload a new payment proof to try again.</p>
             <input
+              ref={resubmitInputRef}
               type="file"
               accept={ACCEPTED_PROOF_TYPES.join(",")}
               onChange={handleResubmitFileChange}
@@ -384,8 +414,12 @@ export default function OrderPage() {
               className="text-sm"
             />
             {resubmitUploading && <p className="text-gray-500">Uploading…</p>}
-            {resubmitPath && !resubmitUploading && (
-              <p className="text-green-700">Uploaded: {resubmitFileName}</p>
+            {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
+              <FileUploadPreview
+                previewUrl={resubmitPreviewUrl}
+                label={resubmitFileName ?? "Uploaded"}
+                onRemove={handleRemoveResubmitProof}
+              />
             )}
             {resubmitError && <p className="text-destructive">{resubmitError}</p>}
             <Button
@@ -416,6 +450,7 @@ export default function OrderPage() {
                   Your item is ready — upload proof for the remaining balance of {formatIDR(balanceDue.toFixed(2))}.
                 </p>
                 <input
+                  ref={balanceInputRef}
                   type="file"
                   accept={ACCEPTED_PROOF_TYPES.join(",")}
                   onChange={handleBalanceFileChange}
@@ -423,8 +458,12 @@ export default function OrderPage() {
                   className="text-sm"
                 />
                 {balanceUploading && <p className="text-gray-500">Uploading…</p>}
-                {balancePath && !balanceUploading && (
-                  <p className="text-green-700">Uploaded: {balanceFileName}</p>
+                {balancePath && balancePreviewUrl && !balanceUploading && (
+                  <FileUploadPreview
+                    previewUrl={balancePreviewUrl}
+                    label={balanceFileName ?? "Uploaded"}
+                    onRemove={handleRemoveBalanceProof}
+                  />
                 )}
                 {balanceError && <p className="text-destructive">{balanceError}</p>}
                 <Button

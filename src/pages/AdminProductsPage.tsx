@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -91,6 +91,7 @@ export default function AdminProductsPage() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const {
     register,
@@ -146,8 +147,16 @@ export default function AdminProductsPage() {
       setSubmitError("Image is too large — please keep it under 5MB.");
       return;
     }
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     setImageFile(file);
     setImagePreviewUrl(URL.createObjectURL(file));
+  }
+
+  function handleRemoveImage() {
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    setImageFile(null);
+    setImagePreviewUrl(null);
+    if (imageInputRef.current) imageInputRef.current.value = "";
   }
 
   function updateVariant(index: number, field: keyof VariantDraft, value: string) {
@@ -222,8 +231,7 @@ export default function AdminProductsPage() {
 
       reset();
       setVariants([{ name: "", price: "" }]);
-      setImageFile(null);
-      setImagePreviewUrl(null);
+      handleRemoveImage();
       await loadProducts();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Something went wrong creating the product.");
@@ -251,7 +259,7 @@ export default function AdminProductsPage() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div>
               <label htmlFor="name" className="text-sm font-medium">
-                Product name
+                Product name <span className="text-destructive">*</span>
               </label>
               <input
                 id="name"
@@ -268,7 +276,7 @@ export default function AdminProductsPage() {
 
             <div>
               <label htmlFor="description" className="text-sm font-medium">
-                Description
+                Description <span className="text-muted-foreground font-normal">(optional)</span>
               </label>
               <textarea
                 id="description"
@@ -279,20 +287,31 @@ export default function AdminProductsPage() {
             </div>
 
             <div>
-              <label className="text-sm font-medium">Photo</label>
+              <label className="text-sm font-medium">
+                Photo <span className="text-muted-foreground font-normal">(optional)</span>
+              </label>
               <input
+                ref={imageInputRef}
                 type="file"
                 accept={ACCEPTED_IMAGE_TYPES.join(",")}
                 onChange={handleImageChange}
                 className="mt-1 block text-sm"
               />
               {imagePreviewUrl && (
-                <img src={imagePreviewUrl} alt="Preview" className="mt-2 h-24 w-24 rounded-md object-cover border" />
+                <div className="mt-2 flex items-center gap-2">
+                  <img src={imagePreviewUrl} alt="Preview" className="h-24 w-24 rounded-md object-cover border" />
+                  <button type="button" onClick={handleRemoveImage} className="text-xs text-destructive underline">
+                    Remove
+                  </button>
+                </div>
               )}
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Sizes / variants</label>
+              <label className="text-sm font-medium">
+                Sizes / variants <span className="text-destructive">*</span>
+              </label>
+              <p className="text-xs text-gray-500">At least one size/variant with a price is required.</p>
               {variants.map((variant, i) => (
                 <div key={i} className="flex gap-2">
                   <input
@@ -333,7 +352,14 @@ export default function AdminProductsPage() {
         </CardContent>
       </Card>
 
-      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+      {loadError && (
+        <p className="text-destructive text-sm">
+          {loadError}{" "}
+          <button type="button" className="underline" onClick={() => void loadProducts()}>
+            Retry
+          </button>
+        </p>
+      )}
       {products === null && !loadError && <p className="text-gray-500 text-sm">Loading products…</p>}
 
       {products !== null && (

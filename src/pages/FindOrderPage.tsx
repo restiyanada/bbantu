@@ -73,7 +73,7 @@ export default function FindOrderPage() {
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="space-y-1">
               <label htmlFor="phone" className="text-sm font-medium">
-                Phone number
+                Phone number <span className="text-destructive">*</span>
               </label>
               <input
                 id="phone"
@@ -87,7 +87,7 @@ export default function FindOrderPage() {
             </div>
             <div className="space-y-1">
               <label htmlFor="orderNumber" className="text-sm font-medium">
-                Order number
+                Order number <span className="text-destructive">*</span>
               </label>
               <input
                 id="orderNumber"

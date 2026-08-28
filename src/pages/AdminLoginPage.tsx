@@ -49,7 +49,7 @@ export default function AdminLoginPage() {
             <form onSubmit={handleSubmit} className="space-y-3">
               <div className="space-y-1">
                 <label htmlFor="email" className="text-sm font-medium">
-                  Work email
+                  Work email <span className="text-destructive">*</span>
                 </label>
                 <input
                   id="email"

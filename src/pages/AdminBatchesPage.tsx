@@ -313,7 +313,7 @@ export default function AdminBatchesPage() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div>
               <label htmlFor="name" className="text-sm font-medium">
-                Batch name
+                Batch name <span className="text-destructive">*</span>
               </label>
               <input
                 id="name"
@@ -324,10 +324,10 @@ export default function AdminBatchesPage() {
               {errors.name && <p className="text-destructive text-xs mt-1">{errors.name.message}</p>}
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <div className="flex-1">
                 <label htmlFor="openAt" className="text-sm font-medium">
-                  Opens
+                  Opens <span className="text-destructive">*</span>
                 </label>
                 <input
                   id="openAt"
@@ -339,7 +339,7 @@ export default function AdminBatchesPage() {
               </div>
               <div className="flex-1">
                 <label htmlFor="closeAt" className="text-sm font-medium">
-                  Closes
+                  Closes <span className="text-destructive">*</span>
                 </label>
                 <input
                   id="closeAt"
@@ -425,7 +425,14 @@ export default function AdminBatchesPage() {
         </CardContent>
       </Card>
 
-      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+      {loadError && (
+        <p className="text-destructive text-sm">
+          {loadError}{" "}
+          <button type="button" className="underline" onClick={() => void loadAll()}>
+            Retry
+          </button>
+        </p>
+      )}
       {receiptError && <p className="text-destructive text-sm">{receiptError}</p>}
       {receiptMessage && <p className="text-green-700 text-sm">{receiptMessage}</p>}
 

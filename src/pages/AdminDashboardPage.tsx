@@ -387,7 +387,14 @@ export default function AdminDashboardPage() {
           </p>
         </div>
 
-        {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+        {loadError && (
+          <p className="text-destructive text-sm">
+            {loadError}{" "}
+            <button type="button" className="underline" onClick={() => void loadOrders()}>
+              Retry
+            </button>
+          </p>
+        )}
         {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 
         {orders === null && !loadError && <p className="text-gray-500 text-sm">Loading orders…</p>}
