@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from "@tanstack/react-table";
+import { Input, Select } from "@/components/ui/input";
 
 export interface DataTableFilter<TData> {
   label: string;
@@ -49,33 +50,28 @@ export function DataTable<TData>({
       {hasControls && (
         <div className="flex flex-wrap gap-2 items-center">
           {searchableText && (
-            <input
+            <Input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={searchPlaceholder}
-              className="w-full sm:w-64 rounded-md border bg-background px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="w-full sm:w-64 h-8"
             />
           )}
           {filters?.map((f) => (
-            <select
-              key={f.label}
-              value={f.value}
-              onChange={(e) => f.onChange(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1.5 text-sm"
-            >
+            <Select key={f.label} value={f.value} onChange={(e) => f.onChange(e.target.value)} className="h-8 w-auto">
               <option value="">{f.label}</option>
               {f.options.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
                 </option>
               ))}
-            </select>
+            </Select>
           ))}
           {(search || filters?.some((f) => f.value)) && (
             <button
               type="button"
-              className="text-xs text-blue-600 underline"
+              className="text-xs text-primary underline underline-offset-2"
               onClick={() => {
                 setSearch("");
                 filters?.forEach((f) => f.onChange(""));
@@ -87,13 +83,16 @@ export function DataTable<TData>({
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-md border">
+      <div className="overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
-          <thead className="bg-muted">
+          <thead className="bg-muted/60">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
-                  <th key={header.id} className="text-left p-2 font-medium whitespace-nowrap">
+                  <th
+                    key={header.id}
+                    className="text-left p-3 font-medium text-muted-foreground text-xs uppercase tracking-wide whitespace-nowrap"
+                  >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                   </th>
                 ))}
@@ -102,9 +101,9 @@ export function DataTable<TData>({
           </thead>
           <tbody>
             {table.getRowModel().rows.map((row) => (
-              <tr key={row.id} className="border-t align-top">
+              <tr key={row.id} className="border-t align-top hover:bg-muted/40 transition-colors">
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="p-2">
+                  <td key={cell.id} className="p-3">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -112,7 +111,7 @@ export function DataTable<TData>({
             ))}
             {table.getRowModel().rows.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="p-4 text-center text-gray-500">
+                <td colSpan={columns.length} className="p-6 text-center text-muted-foreground">
                   {data.length === 0 ? emptyMessage : "No results match your search/filters."}
                 </td>
               </tr>

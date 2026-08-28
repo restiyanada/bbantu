@@ -8,6 +8,8 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input, Select } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 import AdminLayout from "@/components/AdminLayout";
 
 const BATCH_STATUSES = [
@@ -278,96 +280,81 @@ export default function AdminBatchesPage() {
 
   return (
     <AdminLayout>
-    <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Admin — Batches</h1>
-        <p className="text-muted-foreground mt-1">
-          Create a pre-order batch from existing products (Admin — Products). No login yet (§18.4 lands
-          in Milestone 4) — internal testing only.
-        </p>
-      </div>
+      <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Batches</h1>
+          <p className="text-muted-foreground mt-1">Create a pre-order batch from existing products.</p>
+        </div>
 
       <Card>
         <CardHeader>
           <CardTitle>New batch</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div>
-              <label htmlFor="name" className="text-sm font-medium">
-                Batch name <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="name"
-                {...register("name")}
-                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                placeholder="e.g. Q3 Hoodie Drop"
-              />
-              {errors.name && <p className="text-destructive text-xs mt-1">{errors.name.message}</p>}
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            <div className="space-y-1.5">
+              <Label htmlFor="name">
+                Batch name
+                <RequiredMark />
+              </Label>
+              <Input id="name" aria-invalid={!!errors.name} {...register("name")} placeholder="e.g. Q3 Hoodie Drop" />
+              {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3">
-              <div className="flex-1">
-                <label htmlFor="openAt" className="text-sm font-medium">
-                  Opens <span className="text-destructive">*</span>
-                </label>
-                <input
-                  id="openAt"
-                  type="datetime-local"
-                  {...register("openAt")}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                />
-                {errors.openAt && <p className="text-destructive text-xs mt-1">{errors.openAt.message}</p>}
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="openAt">
+                  Opens
+                  <RequiredMark />
+                </Label>
+                <Input id="openAt" type="datetime-local" aria-invalid={!!errors.openAt} {...register("openAt")} />
+                {errors.openAt && <p className="text-destructive text-xs">{errors.openAt.message}</p>}
               </div>
-              <div className="flex-1">
-                <label htmlFor="closeAt" className="text-sm font-medium">
-                  Closes <span className="text-destructive">*</span>
-                </label>
-                <input
-                  id="closeAt"
-                  type="datetime-local"
-                  {...register("closeAt")}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                />
-                {errors.closeAt && <p className="text-destructive text-xs mt-1">{errors.closeAt.message}</p>}
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="closeAt">
+                  Closes
+                  <RequiredMark />
+                </Label>
+                <Input id="closeAt" type="datetime-local" aria-invalid={!!errors.closeAt} {...register("closeAt")} />
+                {errors.closeAt && <p className="text-destructive text-xs">{errors.closeAt.message}</p>}
               </div>
             </div>
 
-            <div>
-              <p className="text-sm font-medium">Payment types allowed</p>
-              <div className="mt-1 flex flex-wrap gap-4 text-sm">
+            <div className="space-y-1.5">
+              <Label>Payment types allowed</Label>
+              <div className="flex flex-wrap gap-4 text-sm">
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowDp")} /> DP (50% deposit)
+                  <input type="checkbox" {...register("allowDp")} className="accent-primary" /> DP (50% deposit)
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowFull")} /> Full payment
+                  <input type="checkbox" {...register("allowFull")} className="accent-primary" /> Full payment
                 </label>
               </div>
-              {errors.allowFull && <p className="text-destructive text-xs mt-1">{errors.allowFull.message}</p>}
+              {errors.allowFull && <p className="text-destructive text-xs">{errors.allowFull.message}</p>}
             </div>
 
-            <div>
-              <p className="text-sm font-medium">Fulfilment</p>
-              <div className="mt-1 flex flex-wrap gap-4 text-sm">
-                <label className="flex items-center gap-1.5 text-gray-400">
+            <div className="space-y-1.5">
+              <Label>Fulfilment</Label>
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex items-center gap-1.5 text-muted-foreground">
                   <input type="checkbox" checked disabled /> Pickup (always on)
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowShipping")} /> Also allow shipping
+                  <input type="checkbox" {...register("allowShipping")} className="accent-primary" /> Also allow shipping
                 </label>
               </div>
-              <p className="text-xs text-amber-700 mt-1">
+              <p className="text-xs text-amber-700">
                 Shipping isn't functional yet (Milestone 3) — checking this only records the intent; checkout
                 will still only offer pickup for now.
               </p>
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm font-medium">Products in this batch</p>
-              {variantOptions === null && <p className="text-gray-500 text-sm">Loading products…</p>}
+              <Label>Products in this batch</Label>
+              {variantOptions === null && <p className="text-muted-foreground text-sm">Loading products…</p>}
               {variantOptions !== null && variantOptions.length === 0 && (
-                <p className="text-gray-500 text-sm">
-                  No products yet — create one on the Admin — Products screen first.
+                <p className="text-muted-foreground text-sm">
+                  No products yet — create one on the Products screen first.
                 </p>
               )}
               <div className="space-y-1.5">
@@ -379,17 +366,18 @@ export default function AdminBatchesPage() {
                         type="checkbox"
                         checked={!!selected}
                         onChange={(e) => toggleItem(variant.id, e.target.checked)}
+                        className="accent-primary"
                       />
                       <span className="flex-1">
                         {variant.products?.name ?? "Product"} — {variant.name} ({formatIDR(variant.price)})
                       </span>
                       {selected && (
-                        <input
+                        <Input
                           value={selected.moq}
                           onChange={(e) => updateItemMoq(variant.id, e.target.value)}
                           placeholder="MOQ"
                           inputMode="numeric"
-                          className="w-20 rounded-md border bg-background px-2 py-1 text-xs"
+                          className="w-20 h-8 text-xs"
                         />
                       )}
                     </div>
@@ -418,14 +406,14 @@ export default function AdminBatchesPage() {
       {receiptError && <p className="text-destructive text-sm">{receiptError}</p>}
       {receiptMessage && <p className="text-green-700 text-sm">{receiptMessage}</p>}
 
-      {batches === null && !loadError && <p className="text-gray-500 text-sm">Loading batches…</p>}
+      {batches === null && !loadError && <p className="text-muted-foreground text-sm">Loading batches…</p>}
 
       {batches?.map((batch) => (
         <Card key={batch.id}>
           <CardHeader className="flex flex-row items-center justify-between gap-4">
             <div>
               <CardTitle>{batch.name}</CardTitle>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 {new Date(batch.open_at).toLocaleString("id-ID")} → {new Date(batch.close_at).toLocaleString("id-ID")}
                 {" · "}
                 {batch.allowed_payment_types.join("/")}
@@ -433,21 +421,21 @@ export default function AdminBatchesPage() {
                 {batch.allowed_fulfilment_methods.join("+")}
               </p>
             </div>
-            <div className="text-right">
-              <select
+            <div className="text-right shrink-0">
+              <Select
                 value={batch.status}
                 onChange={(e) => handleStatusChange(batch.id, e.target.value)}
                 disabled={!canManage}
                 title={canManage ? undefined : "Requires the Manage products & batches permission"}
-                className="rounded-md border bg-background px-2 py-1 text-xs disabled:opacity-50"
+                className="h-8 text-xs"
               >
                 {BATCH_STATUSES.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
                 ))}
-              </select>
-              <p className="text-[11px] text-gray-500 mt-1 max-w-[160px]">
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1 max-w-[160px]">
                 {batch.status === "OPEN" ? "Visible to customers now." : "Only OPEN batches show at checkout."}
               </p>
             </div>
@@ -463,7 +451,7 @@ export default function AdminBatchesPage() {
                     <p className="font-medium">
                       {item.product_variants.products?.name ?? "Product"} — {item.product_variants.name}
                     </p>
-                    <p className="text-gray-500">
+                    <p className="text-muted-foreground">
                       Ordered: {committed}
                       {item.moq != null && ` / MOQ ${item.moq}`}
                       {moqExceeded && (
@@ -475,13 +463,13 @@ export default function AdminBatchesPage() {
                       On hand: {stock?.onHand ?? 0} · Reserved: {stock?.reserved ?? 0}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Input
                       value={receiptDrafts[item.id] ?? ""}
                       onChange={(e) => setReceiptDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       placeholder="Qty received"
                       inputMode="numeric"
-                      className="w-24 rounded-md border bg-background px-2 py-1 text-xs"
+                      className="w-24 h-8 text-xs"
                     />
                     <Button
                       size="sm"
@@ -499,7 +487,7 @@ export default function AdminBatchesPage() {
           </CardContent>
         </Card>
       ))}
-    </main>
+      </main>
     </AdminLayout>
   );
 }
