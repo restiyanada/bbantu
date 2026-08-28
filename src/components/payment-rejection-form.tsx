@@ -2,6 +2,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 
 const rejectPaymentSchema = z.object({
   reason: z.string().trim().min(1, "A rejection reason is required."),
@@ -28,19 +30,20 @@ export function PaymentRejectionForm({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
-      <div>
-        <label htmlFor="reason" className="text-sm font-medium">
-          Rejection reason <span className="text-destructive">*</span>
-        </label>
-        <textarea
+      <div className="space-y-1.5">
+        <Label htmlFor="reason">
+          Rejection reason
+          <RequiredMark />
+        </Label>
+        <Textarea
           id="reason"
           {...register("reason")}
+          aria-invalid={!!errors.reason}
           rows={3}
-          className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           placeholder="e.g. Transfer amount doesn't match order total"
         />
         {errors.reason && (
-          <p className="text-destructive text-xs mt-1">{errors.reason.message}</p>
+          <p className="text-destructive text-xs">{errors.reason.message}</p>
         )}
       </div>
       <Button type="submit" variant="destructive" disabled={submitting}>

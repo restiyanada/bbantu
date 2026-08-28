@@ -2,6 +2,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 
 const recordTrackingSchema = z
   .object({
@@ -31,32 +33,26 @@ export function TrackingForm({ currentCost, onSubmit, submitting }: TrackingForm
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-2 w-64">
-      <div>
-        <label className="text-xs font-medium">
-          Tracking number <span className="text-destructive">*</span>
-        </label>
-        <input
-          {...register("trackingNumber")}
-          className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        />
+      <div className="space-y-1">
+        <Label className="text-xs">
+          Tracking number
+          <RequiredMark />
+        </Label>
+        <Input {...register("trackingNumber")} aria-invalid={!!errors.trackingNumber} className="h-8 text-sm" />
         {errors.trackingNumber && (
-          <p className="text-destructive text-xs mt-1">{errors.trackingNumber.message}</p>
+          <p className="text-destructive text-xs">{errors.trackingNumber.message}</p>
         )}
       </div>
       <details className="text-xs">
-        <summary className="cursor-pointer text-gray-500">Override cost (currently {currentCost ?? "—"})</summary>
+        <summary className="cursor-pointer text-muted-foreground">Override cost (currently {currentCost ?? "—"})</summary>
         <div className="mt-2 space-y-2">
-          <input
+          <Input
             {...register("costOverride")}
             placeholder="New cost (IDR) — optional"
             inputMode="decimal"
-            className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+            className="h-8 text-sm"
           />
-          <input
-            {...register("costOverrideReason")}
-            placeholder="Reason (required if overriding)"
-            className="w-full rounded-md border bg-background px-2 py-1 text-sm"
-          />
+          <Input {...register("costOverrideReason")} placeholder="Reason (required if overriding)" className="h-8 text-sm" />
           {errors.costOverrideReason && (
             <p className="text-destructive text-xs">{errors.costOverrideReason.message}</p>
           )}

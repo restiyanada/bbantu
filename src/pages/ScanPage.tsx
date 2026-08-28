@@ -5,6 +5,7 @@ import { useAdminAuth } from "@/lib/adminAuth";
 import { formatOrderNumber } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import AdminLayout from "@/components/AdminLayout";
 
 interface ScanResult {
@@ -134,135 +135,135 @@ export default function ScanPage() {
 
   return (
     <AdminLayout>
-    <main className="p-4 sm:p-8 max-w-md mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Pickup Scanner</h1>
-        <p className="text-gray-500 mt-1 text-sm">Point the camera at the customer's pickup code.</p>
-      </div>
+      <main className="p-4 sm:p-8 max-w-md mx-auto space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Pickup Scanner</h1>
+          <p className="text-muted-foreground mt-1 text-sm">Point the camera at the customer's pickup code.</p>
+        </div>
 
-      {!canScan && (
-        <Card className="border-destructive/50">
-          <CardContent className="pt-6 text-sm text-destructive">
-            You don't have the "Scan / confirm pickup" permission (§18.4). The camera and lookup below are
-            disabled — ask an admin with this permission to grant it if you need to use this page.
+        {!canScan && (
+          <Card className="border-destructive/50">
+            <CardContent className="pt-6 text-sm text-destructive">
+              You don't have the "Scan / confirm pickup" permission (§18.4). The camera and lookup below are
+              disabled — ask an admin with this permission to grant it if you need to use this page.
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardContent className="pt-6">
+            <video ref={videoRef} className="w-full rounded-lg bg-black aspect-square object-cover" />
+            {cameraError && <p className="text-destructive text-sm mt-2">{cameraError}</p>}
           </CardContent>
         </Card>
-      )}
 
-      <Card>
-        <CardContent className="pt-6">
-          <video ref={videoRef} className="w-full rounded-md bg-black aspect-square object-cover" />
-          {cameraError && <p className="text-destructive text-sm mt-2">{cameraError}</p>}
-        </CardContent>
-      </Card>
+        {!result && !phoneMatches && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Camera not working?</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  value={manualToken}
+                  onChange={(e) => setManualToken(e.target.value)}
+                  placeholder="Paste pickup code"
+                  disabled={!canScan}
+                  className="flex-1"
+                />
+                <Button disabled={!canScan} onClick={handleManualLookup}>
+                  Look up
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">— or find by phone number —</p>
+              <div className="flex gap-2">
+                <Input
+                  value={phoneQuery}
+                  onChange={(e) => setPhoneQuery(e.target.value)}
+                  placeholder="Customer phone number"
+                  disabled={!canScan}
+                  className="flex-1"
+                />
+                <Button variant="outline" disabled={!canScan || phoneSearching} onClick={handlePhoneSearch}>
+                  {phoneSearching ? "Searching…" : "Search"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
-      {!result && !phoneMatches && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Camera not working?</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex gap-2">
-              <input
-                value={manualToken}
-                onChange={(e) => setManualToken(e.target.value)}
-                placeholder="Paste pickup code"
-                disabled={!canScan}
-                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-              />
-              <Button disabled={!canScan} onClick={handleManualLookup}>
-                Look up
-              </Button>
-            </div>
-            <p className="text-xs text-gray-400">— or find by phone number —</p>
-            <div className="flex gap-2">
-              <input
-                value={phoneQuery}
-                onChange={(e) => setPhoneQuery(e.target.value)}
-                placeholder="Customer phone number"
-                disabled={!canScan}
-                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-              />
-              <Button variant="outline" disabled={!canScan || phoneSearching} onClick={handlePhoneSearch}>
-                {phoneSearching ? "Searching…" : "Search"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {phoneMatches && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Select the right order</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {phoneMatches.map((match) => (
-              <button
-                key={match.orderId}
-                type="button"
-                onClick={() => lookupToken(match.pickupToken)}
-                className="w-full text-left flex justify-between items-center rounded-md border px-3 py-2 text-sm hover:bg-accent"
-              >
-                <span>{match.customerName}</span>
-                <span className="font-mono text-xs text-gray-500">
-                  {formatOrderNumber("PICKUP", match.orderNumber, match.orderId)}
-                </span>
-              </button>
-            ))}
-            <button
-              type="button"
-              className="text-xs text-gray-500 underline"
-              onClick={() => setPhoneMatches(null)}
-            >
-              Cancel
-            </button>
-          </CardContent>
-        </Card>
-      )}
-
-      {lookupError && <p className="text-destructive text-sm">{lookupError}</p>}
-
-      {result && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Order {formatOrderNumber("PICKUP", result.orderNumber, result.orderId)}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div>
-              <p>
-                <span className="font-medium">{result.customerName}</span> · {result.customerPhoneMasked}
-              </p>
-              {result.items.map((item, i) => (
-                <p key={i} className="text-gray-500">
-                  {item.name} × {item.quantity}
-                </p>
+        {phoneMatches && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Select the right order</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {phoneMatches.map((match) => (
+                <button
+                  key={match.orderId}
+                  type="button"
+                  onClick={() => lookupToken(match.pickupToken)}
+                  className="w-full text-left flex justify-between items-center rounded-lg border px-3 py-2 text-sm hover:bg-accent transition-colors"
+                >
+                  <span>{match.customerName}</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {formatOrderNumber("PICKUP", match.orderNumber, match.orderId)}
+                  </span>
+                </button>
               ))}
-              <p className="text-gray-500">Payment: {result.paymentStatus?.toLowerCase()}</p>
-            </div>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline"
+                onClick={() => setPhoneMatches(null)}
+              >
+                Cancel
+              </button>
+            </CardContent>
+          </Card>
+        )}
 
-            {result.alreadyPickedUp && result.confirmed && (
-              <p className="text-green-700 font-medium">Pickup confirmed.</p>
-            )}
-            {result.alreadyPickedUp && !result.confirmed && (
-              <p className="text-destructive font-medium">Already picked up — cannot release again.</p>
-            )}
-            {result.eligibleForPickup && !result.confirmed && (
-              <Button variant="success" onClick={handleConfirm} disabled={confirming || !canScan}>
-                {confirming ? "Confirming…" : "Confirm pickup"}
+        {lookupError && <p className="text-destructive text-sm">{lookupError}</p>}
+
+        {result && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Order {formatOrderNumber("PICKUP", result.orderNumber, result.orderId)}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div>
+                <p>
+                  <span className="font-medium">{result.customerName}</span> · {result.customerPhoneMasked}
+                </p>
+                {result.items.map((item, i) => (
+                  <p key={i} className="text-muted-foreground">
+                    {item.name} × {item.quantity}
+                  </p>
+                ))}
+                <p className="text-muted-foreground">Payment: {result.paymentStatus?.toLowerCase()}</p>
+              </div>
+
+              {result.alreadyPickedUp && result.confirmed && (
+                <p className="text-green-700 font-medium">Pickup confirmed.</p>
+              )}
+              {result.alreadyPickedUp && !result.confirmed && (
+                <p className="text-destructive font-medium">Already picked up — cannot release again.</p>
+              )}
+              {result.eligibleForPickup && !result.confirmed && (
+                <Button variant="success" onClick={handleConfirm} disabled={confirming || !canScan}>
+                  {confirming ? "Confirming…" : "Confirm pickup"}
+                </Button>
+              )}
+              {!result.eligibleForPickup && !result.alreadyPickedUp && (
+                <p className="text-muted-foreground">This order isn't ready for pickup yet ({result.orderStatus}).</p>
+              )}
+
+              <Button variant="outline" onClick={handleScanNext}>
+                Scan next
               </Button>
-            )}
-            {!result.eligibleForPickup && !result.alreadyPickedUp && (
-              <p className="text-gray-500">This order isn't ready for pickup yet ({result.orderStatus}).</p>
-            )}
-
-            <Button variant="outline" onClick={handleScanNext}>
-              Scan next
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-    </main>
+            </CardContent>
+          </Card>
+        )}
+      </main>
     </AdminLayout>
   );
 }
