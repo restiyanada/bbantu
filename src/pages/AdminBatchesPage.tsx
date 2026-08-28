@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { RotateCw } from "lucide-react";
+import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -236,6 +237,7 @@ export default function AdminBatchesPage() {
 
       reset();
       setSelectedItems({});
+      toast.success(`"${values.name}" created`);
       await loadAll();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Something went wrong creating the batch.");
@@ -245,7 +247,12 @@ export default function AdminBatchesPage() {
   }
 
   async function handleStatusChange(batchId: string, status: string) {
-    await supabase.from("batches").update({ status }).eq("id", batchId);
+    const { error } = await supabase.from("batches").update({ status }).eq("id", batchId);
+    if (error) {
+      toast.error("Couldn't update the batch status. Please try again.");
+      return;
+    }
+    toast.success(`Batch status set to ${status.replaceAll("_", " ")}`);
     await loadAll();
   }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { createColumnHelper } from "@tanstack/react-table";
 import { RotateCw, X, Printer } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
@@ -149,6 +150,7 @@ export default function AdminDashboardPage() {
       setActionError("Couldn't verify that payment. Please try again.");
       return;
     }
+    toast.success("Payment verified");
     await loadOrders();
   }
 
@@ -164,6 +166,7 @@ export default function AdminDashboardPage() {
       return;
     }
     setRejectingId(null);
+    toast.success("Payment rejected");
     await loadOrders();
   }
 
@@ -178,6 +181,7 @@ export default function AdminDashboardPage() {
       setActionError("Couldn't prepare that order. Please try again.");
       return;
     }
+    toast.success("Order marked ready");
     await loadOrders();
   }
 
@@ -200,6 +204,7 @@ export default function AdminDashboardPage() {
       return;
     }
     setTrackingEntryId(null);
+    toast.success("Tracking recorded");
     await loadOrders();
   }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { X, Plus, RotateCw } from "lucide-react";
+import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -210,6 +211,7 @@ export default function AdminProductsPage() {
       reset();
       setVariants([{ name: "", price: "" }]);
       handleRemoveImage();
+      toast.success(`"${values.name}" created`);
       await loadProducts();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Something went wrong creating the product.");

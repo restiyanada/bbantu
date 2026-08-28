@@ -10,10 +10,12 @@ import AdminLoginPage from "./pages/AdminLoginPage";
 import ScanPage from "./pages/ScanPage";
 import { AdminAuthProvider } from "./lib/adminAuth";
 import RequireAdmin from "./components/RequireAdmin";
+import { Toaster } from "./components/ui/sonner";
 
 export default function App() {
   return (
     <AdminAuthProvider>
+      <Toaster />
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/orders/find" element={<FindOrderPage />} />
