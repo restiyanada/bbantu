@@ -36,6 +36,13 @@
       "when": 1787893283317,
       "tag": "0005_milestone6_recovery_and_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787915767863,
+      "tag": "0007_add_shipping_label_sender_info",
+      "breakpoints": true
     }
   ]
 }

@@ -78,3 +78,34 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Shipping label printing (#print-labels-root) — only that element (and
+   its contents) should end up on paper, whatever page it's rendered from. */
+#print-labels-root {
+  display: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-labels-root,
+  #print-labels-root * {
+    visibility: visible;
+  }
+  #print-labels-root {
+    display: block;
+    position: absolute;
+    inset: 0;
+  }
+  .shipping-label {
+    padding: 16px;
+    border: 1px solid #000;
+    color: #000;
+    background: #fff;
+    page-break-after: always;
+  }
+  .shipping-label:last-child {
+    page-break-after: auto;
+  }
+}

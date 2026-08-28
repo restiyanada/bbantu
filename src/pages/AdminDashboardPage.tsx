@@ -11,6 +11,7 @@ import { TrackingForm } from "@/components/tracking-form";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import AdminLayout from "@/components/AdminLayout";
+import { ShippingLabel, type ShippingLabelSender } from "@/components/shipping-label";
 
 interface LatestPayment {
   id: string;
@@ -59,6 +60,43 @@ export default function AdminDashboardPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [fulfilmentFilter, setFulfilmentFilter] = useState("");
+  const [labelSender, setLabelSender] = useState<ShippingLabelSender | null>(null);
+  const [printQueue, setPrintQueue] = useState<OrderRow[]>([]);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const canManageShipping = admin?.canManageShipping ?? false;
+
+  useEffect(() => {
+    if (printQueue.length === 0) return;
+    const timer = setTimeout(() => window.print(), 50);
+    return () => clearTimeout(timer);
+  }, [printQueue]);
+
+  async function handlePrintLabels(ordersToPrint: OrderRow[]) {
+    setPrintError(null);
+    const shippable = ordersToPrint.filter((o) => o.shipment !== null);
+    if (shippable.length === 0) {
+      setPrintError("None of the selected orders have shipment details recorded yet.");
+      return;
+    }
+
+    let sender = labelSender;
+    if (!sender) {
+      const { data, error } = await supabase.functions.invoke("shipping-label-info");
+      if (error || !data?.settings) {
+        setPrintError("Couldn't load your shipping settings for the label. Ask an admin to set them in shipping_settings.");
+        return;
+      }
+      sender = {
+        name: data.settings.senderName,
+        phone: data.settings.senderPhone,
+        city: data.settings.originDistrictName,
+        address: data.settings.originAddress,
+      };
+      setLabelSender(sender);
+    }
+
+    setPrintQueue(shippable);
+  }
 
   const loadOrders = useCallback(async () => {
     setLoadError(null);
@@ -226,6 +264,15 @@ export default function AdminDashboardPage() {
                   <p className="font-mono text-xs">Tracking: {shipment.trackingNumber}</p>
                 )}
               </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!canManageShipping}
+                title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                onClick={() => void handlePrintLabels([row.original])}
+              >
+                Print label
+              </Button>
             </DialogContent>
           </Dialog>
         );
@@ -401,10 +448,22 @@ export default function AdminDashboardPage() {
 
         {orders !== null && (
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between gap-2">
               <CardTitle>Orders ({orders.length})</CardTitle>
+              {fulfilmentFilter === "SHIPPING" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canManageShipping}
+                  title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                  onClick={() => void handlePrintLabels(orders.filter((o) => o.fulfilmentMethod === "SHIPPING"))}
+                >
+                  Bulk print labels
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
+              {printError && <p className="text-destructive text-sm mb-2">{printError}</p>}
               <DataTable
                 columns={columns}
                 data={orders}
@@ -417,6 +476,15 @@ export default function AdminDashboardPage() {
           </Card>
         )}
       </main>
+
+      <div id="print-labels-root">
+        {labelSender &&
+          printQueue.map((order) =>
+            order.shipment ? (
+              <ShippingLabel key={order.id} sender={labelSender} order={{ ...order, shipment: order.shipment }} />
+            ) : null
+          )}
+      </div>
     </AdminLayout>
   );
 }

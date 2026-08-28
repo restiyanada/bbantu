@@ -1,0 +1,2 @@
+ALTER TABLE "shipping_settings" ADD COLUMN "sender_name" text DEFAULT '[Your shop name]' NOT NULL;--> statement-breakpoint
+ALTER TABLE "shipping_settings" ADD COLUMN "sender_phone" text DEFAULT '[Your phone number]' NOT NULL;

@@ -215,6 +215,13 @@ export const shippingSettings = pgTable("shipping_settings", {
   originDistrictCode: text("origin_district_code").notNull(), // api.co.id kecamatan code, e.g. "317405"
   originDistrictName: text("origin_district_name").notNull(), // human-readable, for the shipping label later
   originAddress: text("origin_address").notNull(), // street-level, for the shipping label later
+  // Milestone 7: the "from" name/phone printed on the shipping label itself
+  // (separate from originDistrictName/originAddress above, which are the
+  // *city*/street). Defaults to an obvious placeholder — same "admin edits
+  // it directly via SQL console" precedent as the rest of this table — so a
+  // label is never silently blank if nobody's filled these in yet.
+  senderName: text("sender_name").notNull().default("[Your shop name]"),
+  senderPhone: text("sender_phone").notNull().default("[Your phone number]"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
