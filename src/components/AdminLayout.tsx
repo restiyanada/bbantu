@@ -5,6 +5,7 @@ import { useAdminAuth } from "@/lib/adminAuth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { PushNotificationToggle } from "@/components/push-notification-toggle";
+import { InviteAdminDialog } from "@/components/invite-admin-dialog";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Orders", icon: ClipboardList },
@@ -71,6 +72,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             </div>
           )}
           <PushNotificationToggle kind="ADMIN" showLabel />
+          <InviteAdminDialog />
           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => void signOut()}>
             <LogOut className="size-4" />
             Sign out
