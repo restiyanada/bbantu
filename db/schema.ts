@@ -446,7 +446,7 @@ export const accessRecoveryAttempts = pgTable("access_recovery_attempts", {
 // over the service-role connection.
 //
 // Rows are only meaningful for RATE_LIMIT_WINDOW_MS (60s); everything older is
-// dead weight. See 0009's trailing note for the cleanup cron.
+// dead weight. See migration 0008's trailing note for the cleanup cron.
 export const rateLimitAttempts = pgTable(
   "rate_limit_attempts",
   {
