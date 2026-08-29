@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
@@ -13,6 +13,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
    server: { host: true },
 })
