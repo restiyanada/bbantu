@@ -1,10 +1,10 @@
-import { eq, and, gte, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
-import { json, errorResponse, getClientIp } from "../_shared/http.ts";
-import { customers, orders, accessRecoveryAttempts } from "../../../db/schema.ts";
-import { isRateLimited, windowStart } from "../../../lib/rate-limit.ts";
+import { json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
+import { customers, orders } from "../../../db/schema.ts";
 import { formatOrderNumber, parseOrderNumber } from "../../../lib/order-number.ts";
 
 const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
@@ -48,19 +48,10 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const ip = getClientIp(req);
-    const now = new Date();
-
-    const priorAttempts = await db
-      .select({ id: accessRecoveryAttempts.id })
-      .from(accessRecoveryAttempts)
-      .where(and(eq(accessRecoveryAttempts.ipAddress, ip), gte(accessRecoveryAttempts.createdAt, windowStart(now))));
-
-    if (isRateLimited(priorAttempts.length)) {
-      return json({ error: "Too many attempts. Please wait a minute and try again." }, 429);
-    }
-
-    await db.insert(accessRecoveryAttempts).values({ ipAddress: ip });
+    // §16.1/§27's 10/min/IP. Phone + order number is a much lower-entropy
+    // guessing surface than a 32-byte token, so this limit is the real defence
+    // here — not the choice of lookup fields.
+    await enforceRateLimit(req, "recover-order-access");
 
     const [order] = await db
       .select({

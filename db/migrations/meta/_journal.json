@@ -43,6 +43,13 @@
       "when": 1787915767863,
       "tag": "0007_add_shipping_label_sender_info",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787963178639,
+      "tag": "0008_rls_and_rate_limiting",
+      "breakpoints": true
     }
   ]
 }

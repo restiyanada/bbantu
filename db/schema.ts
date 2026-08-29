@@ -4,6 +4,7 @@ import {
   pgEnum,
   pgPolicy,
   pgSequence,
+  index,
   uuid,
   text,
   integer,
@@ -133,14 +134,33 @@ export const productVariants = pgTable(
   ]
 ).enableRLS();
 
-export const paymentSettings = pgTable("payment_settings", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  bankName: text("bank_name").notNull(),
-  accountNumber: text("account_number").notNull(),
-  accountHolderName: text("account_holder_name").notNull(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+// Read straight from the browser at checkout (HomePage) so the customer knows
+// which account to transfer to — hence the public select policy. There is
+// deliberately no insert/update/delete policy: with RLS on, that makes the row
+// service-role-only to write. Without RLS this table was anon-writable, which
+// would let anyone swap in their own bank account number and silently collect
+// every customer's payment.
+export const paymentSettings = pgTable(
+  "payment_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bankName: text("bank_name").notNull(),
+    accountNumber: text("account_number").notNull(),
+    accountHolderName: text("account_holder_name").notNull(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (_table) => [
+    pgPolicy("anyone_can_read_payment_settings", {
+      for: "select",
+      to: ["anon", "authenticated"],
+      using: sql`true`,
+    }),
+  ]
+).enableRLS();
 
+// No policies at all — deny-all for anon/authenticated. Only ever read by Edge
+// Functions (shipping-rates, create-order, shipping-label-info) over the
+// service-role connection, which bypasses RLS. Nothing in the browser touches it.
 export const shippingSettings = pgTable("shipping_settings", {
   id: uuid("id").primaryKey().defaultRandom(),
   originDistrictCode: text("origin_district_code").notNull(),
@@ -149,7 +169,7 @@ export const shippingSettings = pgTable("shipping_settings", {
   senderName: text("sender_name").notNull().default("[Your shop name]"),
   senderPhone: text("sender_phone").notNull().default("[Your phone number]"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}).enableRLS();
 
 export const batches = pgTable(
   "batches",
@@ -322,6 +342,9 @@ export const inventory = pgTable(
   ]
 ).enableRLS();
 
+// No policies at all — deny-all for anon/authenticated, same as audit_logs.
+// This is a stock-movement ledger written only by Edge Functions over the
+// service-role connection; nothing reads it from the browser.
 export const inventoryTransactions = pgTable("inventory_transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
   variantId: uuid("variant_id")
@@ -331,7 +354,7 @@ export const inventoryTransactions = pgTable("inventory_transactions", {
   reason: text("reason").notNull(),
   createdBy: uuid("created_by").references(() => adminUsers.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}).enableRLS();
 
 export const shipments = pgTable(
   "shipments",
@@ -404,9 +427,34 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }).enableRLS();
 
+// Superseded by rateLimitAttempts below, which does the same job with an
+// `endpoint` discriminator so several endpoints can be limited independently.
+// Kept (unused) rather than dropped in the same change that introduced its
+// replacement — dropping it is a separate, deliberate step once the new table
+// is confirmed working live.
 export const accessRecoveryAttempts = pgTable("access_recovery_attempts", {
   id: uuid("id").primaryKey().defaultRandom(),
   ipAddress: text("ip_address").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }).enableRLS();
+
+// Per-IP request log backing the §16.1/§19 rate limits. One row per attempt;
+// `endpoint` keeps each limited function's budget separate, so hammering the
+// shipping quote endpoint can't lock a customer out of order recovery.
+//
+// No policies — deny-all for anon/authenticated. Only Edge Functions touch it,
+// over the service-role connection.
+//
+// Rows are only meaningful for RATE_LIMIT_WINDOW_MS (60s); everything older is
+// dead weight. See 0009's trailing note for the cleanup cron.
+export const rateLimitAttempts = pgTable(
+  "rate_limit_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    endpoint: text("endpoint").notNull(),
+    ipAddress: text("ip_address").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("rate_limit_attempts_lookup_idx").on(table.endpoint, table.ipAddress, table.createdAt)]
+).enableRLS();
 

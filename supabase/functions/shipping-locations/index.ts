@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse, HttpError } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { getProvinces, getCities, getDistricts, ShippingProviderError } from "../_shared/shipping.ts";
 
 const locationsSchema = z.union([
@@ -28,6 +29,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Same paid-API exposure as shipping-rates. Limit is looser because the
+    // province → city → district cascade legitimately fires several times per
+    // checkout, and re-picking an address repeats it.
+    await enforceRateLimit(req, "shipping-locations", 60);
+
     if (input.level === "provinces") {
       return json({ items: await getProvinces() });
     }

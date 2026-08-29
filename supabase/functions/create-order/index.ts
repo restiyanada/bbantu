@@ -4,6 +4,7 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents, centsToDecimalString } from "../_shared/http.ts";
 import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
 import { generateAccessToken } from "../_shared/tokens.ts";
@@ -70,6 +71,14 @@ Deno.serve(async (req) => {
 
   if (input.fulfilmentMethod === "SHIPPING" && !input.shipping) {
     return json({ error: "Shipping details are required when shipping is the fulfilment method." }, 400);
+  }
+
+  // Before the storage lookup and the order transaction below, so an abusive
+  // caller can't make us do that work repeatedly (§16.1/§19).
+  try {
+    await enforceRateLimit(req, "create-order");
+  } catch (err) {
+    return errorResponse(err, "Unexpected error checking the rate limit.");
   }
 
   const quantityByVariant = new Map<string, number>();
