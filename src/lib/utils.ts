@@ -7,6 +7,25 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * `supabase.functions.invoke` swallows the Edge Function's actual response
+ * body into an opaque error object. The real reason — "you don't have this
+ * permission", "no pending payment to verify", a 500 — lives in
+ * `error.context`, a Response the caller has to read explicitly. Falling back
+ * to a canned message on every failure is why a permission or state error and
+ * a genuine outage looked identical in the admin UI.
+ */
+export async function functionErrorMessage(error: unknown, fallback: string): Promise<string> {
+  const context = (error as { context?: Response } | null)?.context;
+  if (!(context instanceof Response)) return fallback;
+  try {
+    const body = await context.clone().json();
+    return typeof body?.error === "string" ? body.error : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function formatIDR(value: string | number): string {
   return `Rp ${Number(value).toLocaleString("id-ID")}`;
 }

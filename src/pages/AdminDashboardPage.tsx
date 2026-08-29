@@ -4,7 +4,7 @@ import { RotateCw, X, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
-import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
+import { formatIDR, formatOrderNumber, functionErrorMessage, statusBadgeVariant } from "@/lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ interface LatestPayment {
   status: string;
   amount: string;
   proofUrl: string | null;
+  proofDeletedAt: string | null;
   rejectionReason: string | null;
 }
 
@@ -155,7 +156,7 @@ export default function AdminDashboardPage() {
     });
     setActioningId(null);
     if (error) {
-      setActionError("Couldn't verify that payment. Please try again.");
+      setActionError(await functionErrorMessage(error, "Couldn't verify that payment. Please try again."));
       return;
     }
     toast.success("Payment verified");
@@ -170,7 +171,7 @@ export default function AdminDashboardPage() {
     });
     setActioningId(null);
     if (error) {
-      setActionError("Couldn't reject that payment. Please try again.");
+      setActionError(await functionErrorMessage(error, "Couldn't reject that payment. Please try again."));
       return;
     }
     setRejectingId(null);
@@ -441,8 +442,12 @@ export default function AdminDashboardPage() {
                 <>
                   {openOrder.payment.proofUrl ? (
                     <img src={openOrder.payment.proofUrl} alt="Payment proof" className="w-full rounded-lg border mt-1" />
+                  ) : openOrder.payment.proofDeletedAt ? (
+                    <p className="text-sm text-muted-foreground">Proof deleted (30-day retention).</p>
                   ) : (
-                    <p className="text-sm text-muted-foreground">Proof expired.</p>
+                    <p className="text-sm text-destructive">
+                      Couldn't load the proof image — check the Edge Function logs for getSignedProofUrl.
+                    </p>
                   )}
                   {openOrder.payment.status === "REJECTED" && openOrder.payment.rejectionReason && (
                     <p className="text-sm text-destructive">Rejected: {openOrder.payment.rejectionReason}</p>

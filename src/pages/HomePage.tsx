@@ -936,7 +936,19 @@ export default function HomePage() {
                 <CardTitle>Order summary</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div className="flex justify-between">
+                <div className="space-y-1.5">
+                  {activeItems
+                    .filter((item) => (quantities[item.variantId] ?? 0) > 0)
+                    .map((item) => (
+                      <div key={item.variantId} className="flex justify-between gap-2">
+                        <span className="text-muted-foreground">
+                          {item.label} × {quantities[item.variantId]}
+                        </span>
+                        <span>{formatIDR((Number(item.price) * quantities[item.variantId]).toFixed(2))}</span>
+                      </div>
+                    ))}
+                </div>
+                <div className="flex justify-between pt-1 border-t">
                   <span>Merchandise subtotal</span>
                   <span className="font-medium">{formatIDR(subtotal)}</span>
                 </div>
