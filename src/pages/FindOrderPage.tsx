@@ -1,19 +1,11 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
-/**
- * Order access recovery (§16.2, Milestone 6, item 30) — the customer-facing
- * form for supabase/functions/recover-order-access.
- *
- * Deviates from §16.2's phone+email pair: this asks for phone + order
- * number instead (see the Edge Function's own comment for why) — the order
- * number is already shown on the order page and in every email, so it's
- * something a guest is realistically likely to still have even without
- * their original link.
- */
+import { Input } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 
 interface RecoveredOrder {
   orderNumber: string;
@@ -43,9 +35,6 @@ export default function FindOrderPage() {
 
     if (invokeError) {
       setStatus("error");
-      // Deliberately generic — mirrors the same "don't reveal too much"
-      // instinct as resubmit-payment/scan-pickup, and a 429 (rate limited)
-      // shouldn't tell a guest anything more specific either.
       setError("We couldn't look that up right now. Please try again in a moment.");
       return;
     }
@@ -70,32 +59,32 @@ export default function FindOrderPage() {
             your emails, e.g. #010007).
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="space-y-1">
-              <label htmlFor="phone" className="text-sm font-medium">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="phone">
                 Phone number
-              </label>
-              <input
+                <RequiredMark />
+              </Label>
+              <Input
                 id="phone"
                 type="tel"
                 required
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="081234567890"
               />
             </div>
-            <div className="space-y-1">
-              <label htmlFor="orderNumber" className="text-sm font-medium">
+            <div className="space-y-1.5">
+              <Label htmlFor="orderNumber">
                 Order number
-              </label>
-              <input
+                <RequiredMark />
+              </Label>
+              <Input
                 id="orderNumber"
                 type="text"
                 required
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
-                className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="#010007"
               />
             </div>
@@ -125,11 +114,12 @@ export default function FindOrderPage() {
             </div>
           )}
 
-          <p className="text-sm text-center">
-            <Link to="/" className="text-blue-600 underline">
+          <Button asChild size="sm" variant="ghost" className="w-full">
+            <Link to="/">
+              <ArrowLeft className="size-3.5" />
               Back home
             </Link>
-          </p>
+          </Button>
         </CardContent>
       </Card>
     </main>

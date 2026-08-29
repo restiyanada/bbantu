@@ -1,16 +1,10 @@
 import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
 
-/**
- * Staff login (§18.4, Milestone 4) — Supabase Auth magic link, no password.
- * Supabase emails a sign-in link; clicking it redirects back here (or
- * wherever `emailRedirectTo` points) with a session already established.
- * AdminAuthProvider (src/lib/adminAuth.tsx) picks that session up
- * automatically via onAuthStateChange — this page only has to trigger the
- * email, not handle the callback itself.
- */
 export default function AdminLoginPage() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
@@ -38,26 +32,28 @@ export default function AdminLoginPage() {
     <main className="min-h-screen flex items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Staff login</CardTitle>
+          <CardTitle className="text-xl">Staff login</CardTitle>
+          <CardDescription>Sign in with your work email to access the admin dashboard.</CardDescription>
         </CardHeader>
         <CardContent>
           {status === "sent" ? (
             <p className="text-sm text-muted-foreground">
-              Check <span className="font-medium">{email}</span> for a login link. You can close this tab.
+              Check <span className="font-medium text-foreground">{email}</span> for a login link. You can close
+              this tab.
             </p>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-3">
-              <div className="space-y-1">
-                <label htmlFor="email" className="text-sm font-medium">
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="email">
                   Work email
-                </label>
-                <input
+                  <RequiredMark />
+                </Label>
+                <Input
                   id="email"
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-md border px-3 py-2 text-sm"
                   placeholder="you@example.com"
                 />
               </div>

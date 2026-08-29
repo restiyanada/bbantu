@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { AlertCircle, Clock, Package, Truck, CheckCircle2 } from "lucide-react";
 import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FileUploadPreview } from "@/components/ui/file-upload-preview";
+import { Skeleton } from "@/components/ui/skeleton";
 
-// Raw Postgres column names (snake_case) — these queries go straight through
-// supabase-js/PostgREST, not drizzle, so they use the actual DB column names
-// from db/schema.ts, not the camelCase TS property names.
 interface OrderRow {
   id: string;
   order_number: number | null;
@@ -27,7 +27,7 @@ interface OrderRow {
 interface OrderItemRow {
   quantity: number;
   unit_price: string;
-  product_variants: { name: string } | null;
+  product_variants: { name: string; products: { image_url: string | null } | null } | null;
 }
 
 interface PaymentRow {
@@ -63,25 +63,44 @@ type LoadState =
       batchName: string | null;
     };
 
+type BannerTone = "neutral" | "destructive" | "amber" | "info" | "success";
+
+const BANNER_TONE_CLASSES: Record<BannerTone, string> = {
+  neutral: "bg-muted border-border",
+  destructive: "bg-red-50 border-red-200 text-red-900",
+  amber: "bg-amber-50 border-amber-200 text-amber-900",
+  info: "bg-blue-50 border-blue-200 text-blue-900",
+  success: "bg-green-50 border-green-200 text-green-900",
+};
+
+const BANNER_ICON_CLASSES: Record<BannerTone, string> = {
+  neutral: "bg-accent text-muted-foreground",
+  destructive: "bg-red-100 text-red-700",
+  amber: "bg-amber-100 text-amber-800",
+  info: "bg-blue-100 text-blue-800",
+  success: "bg-green-100 text-green-800",
+};
+
 export default function OrderPage() {
   const { accessToken } = useParams<{ accessToken: string }>();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
 
-  // Resubmission (after a rejected payment) UI state.
   const [resubmitPath, setResubmitPath] = useState<string | null>(null);
   const [resubmitFileName, setResubmitFileName] = useState<string | null>(null);
+  const [resubmitPreviewUrl, setResubmitPreviewUrl] = useState<string | null>(null);
   const [resubmitUploading, setResubmitUploading] = useState(false);
   const [resubmitting, setResubmitting] = useState(false);
   const [resubmitError, setResubmitError] = useState<string | null>(null);
+  const resubmitInputRef = useRef<HTMLInputElement>(null);
 
-  // Balance payment (DP order's remaining amount, Milestone 2) UI state —
-  // same shape as resubmission above, just a different endpoint.
   const [balancePath, setBalancePath] = useState<string | null>(null);
   const [balanceFileName, setBalanceFileName] = useState<string | null>(null);
+  const [balancePreviewUrl, setBalancePreviewUrl] = useState<string | null>(null);
   const [balanceUploading, setBalanceUploading] = useState(false);
   const [balanceSubmitting, setBalanceSubmitting] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
+  const balanceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!accessToken) {
@@ -95,14 +114,6 @@ export default function OrderPage() {
     async function load(token: string) {
       const client = createGuestOrderClient(token);
 
-      // Milestone 5: no `.eq("access_token", token)` filter here anymore —
-      // access_token now stores a hash (db/schema.ts), so comparing it to
-      // the raw token directly would never match. RLS's own policy already
-      // restricts an anon read to exactly the one order whose hash matches
-      // the x-order-access-token header (see createGuestOrderClient), so a
-      // plain unfiltered select on this table already returns at most one
-      // row — the redundant client-side filter was never load-bearing for
-      // security, only for clarity, and now it'd just be wrong.
       const { data: order, error: orderError } = await client
         .from("orders")
         .select(
@@ -124,7 +135,7 @@ export default function OrderPage() {
       const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
         client
           .from("order_items")
-          .select("quantity, unit_price, product_variants(name)")
+          .select("quantity, unit_price, product_variants(name, products(image_url))")
           .eq("order_id", order.id),
         client
           .from("payments")
@@ -137,8 +148,6 @@ export default function OrderPage() {
           .select("courier, service, recipient_name, address, destination_district_name, tracking_number")
           .eq("order_id", order.id)
           .maybeSingle(),
-        // Ready-stock orders have no batch — batches table itself has no RLS
-        // (public catalog, same as products), so a plain read is fine here.
         order.batch_id
           ? supabase.from("batches").select("name").eq("id", order.batch_id).maybeSingle()
           : Promise.resolve({ data: null }),
@@ -165,17 +174,23 @@ export default function OrderPage() {
 
   if (state.kind === "loading") {
     return (
-      <main className="p-8">
-        <p className="text-gray-500">Loading your order…</p>
+      <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
+        <div className="space-y-2">
+          <Skeleton className="h-9 w-64" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+        <Skeleton className="h-20 w-full rounded-2xl" />
+        <Skeleton className="h-40 w-full rounded-2xl" />
+        <Skeleton className="h-24 w-full rounded-2xl" />
       </main>
     );
   }
 
   if (state.kind === "error") {
     return (
-      <main className="p-8">
+      <main className="p-4 sm:p-8">
         <h1 className="text-2xl font-semibold">Order not found</h1>
-        <p className="text-gray-500 mt-2">{state.message}</p>
+        <p className="text-muted-foreground mt-2">{state.message}</p>
       </main>
     );
   }
@@ -195,6 +210,7 @@ export default function OrderPage() {
       return;
     }
 
+    setResubmitPreviewUrl(URL.createObjectURL(file));
     setResubmitUploading(true);
     const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
@@ -206,6 +222,15 @@ export default function OrderPage() {
     }
     setResubmitPath(path);
     setResubmitFileName(file.name);
+  }
+
+  function handleRemoveResubmitProof() {
+    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
+    setResubmitPath(null);
+    setResubmitFileName(null);
+    setResubmitPreviewUrl(null);
+    setResubmitError(null);
+    if (resubmitInputRef.current) resubmitInputRef.current.value = "";
   }
 
   async function handleResubmit(orderId: string) {
@@ -224,8 +249,10 @@ export default function OrderPage() {
       return;
     }
 
+    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
     setResubmitPath(null);
     setResubmitFileName(null);
+    setResubmitPreviewUrl(null);
     setReloadKey((k) => k + 1);
   }
 
@@ -244,6 +271,7 @@ export default function OrderPage() {
       return;
     }
 
+    setBalancePreviewUrl(URL.createObjectURL(file));
     setBalanceUploading(true);
     const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
@@ -255,6 +283,15 @@ export default function OrderPage() {
     }
     setBalancePath(path);
     setBalanceFileName(file.name);
+  }
+
+  function handleRemoveBalanceProof() {
+    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
+    setBalancePath(null);
+    setBalanceFileName(null);
+    setBalancePreviewUrl(null);
+    setBalanceError(null);
+    if (balanceInputRef.current) balanceInputRef.current.value = "";
   }
 
   async function handleSubmitBalance(orderId: string) {
@@ -273,8 +310,10 @@ export default function OrderPage() {
       return;
     }
 
+    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
     setBalancePath(null);
     setBalanceFileName(null);
+    setBalancePreviewUrl(null);
     setReloadKey((k) => k + 1);
   }
 
@@ -290,15 +329,171 @@ export default function OrderPage() {
     fulfilmentMethod: (order.fulfilment_method as "PICKUP" | "SHIPPING" | null) ?? null,
   });
 
+  const latestPayment = payments[0] ?? null;
+  const isRejectedPending = latestPayment?.status === "REJECTED" && order.status === "PAYMENT_PENDING";
+  const isBalanceDue = order.status === "BALANCE_DUE";
+  const isPaymentPending = order.status === "PAYMENT_PENDING" && !isRejectedPending;
+  const isDone = order.status === "PICKED_UP" || order.status === "COMPLETED";
+  const isReadyForPickup =
+    order.fulfilment_method === "PICKUP" &&
+    !!pickupToken &&
+    !isDone &&
+    !isRejectedPending &&
+    !isBalanceDue &&
+    !isPaymentPending;
+  const isShippedInfo =
+    order.fulfilment_method === "SHIPPING" &&
+    !!shipment?.tracking_number &&
+    !isDone &&
+    !isRejectedPending &&
+    !isBalanceDue &&
+    !isPaymentPending;
+
+  let banner: { tone: BannerTone; Icon: typeof AlertCircle; title: string; body: string; extra?: React.ReactNode } | null = null;
+
+  if (isRejectedPending) {
+    banner = {
+      tone: "destructive",
+      Icon: AlertCircle,
+      title: "Payment needs your attention",
+      body: latestPayment?.rejection_reason
+        ? `Rejected: ${latestPayment.rejection_reason}`
+        : "Your payment was rejected. Please upload a new proof.",
+      extra: (
+        <div className="space-y-2 pt-1">
+          <input
+            ref={resubmitInputRef}
+            type="file"
+            accept={ACCEPTED_PROOF_TYPES.join(",")}
+            onChange={handleResubmitFileChange}
+            disabled={resubmitUploading}
+            className="text-sm"
+          />
+          {resubmitUploading && <p className="text-sm">Uploading…</p>}
+          {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
+            <FileUploadPreview
+              previewUrl={resubmitPreviewUrl}
+              label={resubmitFileName ?? "Uploaded"}
+              onRemove={handleRemoveResubmitProof}
+            />
+          )}
+          {resubmitError && <p className="text-sm font-medium">{resubmitError}</p>}
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={!resubmitPath || resubmitting}
+            onClick={() => handleResubmit(order.id)}
+          >
+            {resubmitting ? "Resubmitting…" : "Resubmit payment"}
+          </Button>
+        </div>
+      ),
+    };
+  } else if (isBalanceDue && latestPayment?.status === "PENDING") {
+    banner = {
+      tone: "amber",
+      Icon: Clock,
+      title: "Balance payment submitted",
+      body: "Your balance payment is awaiting review.",
+    };
+  } else if (isBalanceDue) {
+    banner = {
+      tone: "amber",
+      Icon: Clock,
+      title: "Remaining balance due",
+      body:
+        `Your item is ready — upload proof for the remaining balance of ${formatIDR(balanceDue.toFixed(2))}.` +
+        (latestPayment?.status === "REJECTED" && latestPayment.rejection_reason
+          ? ` Previous attempt rejected: ${latestPayment.rejection_reason}`
+          : ""),
+      extra: (
+        <div className="space-y-2 pt-1">
+          <input
+            ref={balanceInputRef}
+            type="file"
+            accept={ACCEPTED_PROOF_TYPES.join(",")}
+            onChange={handleBalanceFileChange}
+            disabled={balanceUploading}
+            className="text-sm"
+          />
+          {balanceUploading && <p className="text-sm">Uploading…</p>}
+          {balancePath && balancePreviewUrl && !balanceUploading && (
+            <FileUploadPreview
+              previewUrl={balancePreviewUrl}
+              label={balanceFileName ?? "Uploaded"}
+              onRemove={handleRemoveBalanceProof}
+            />
+          )}
+          {balanceError && <p className="text-sm font-medium">{balanceError}</p>}
+          <Button
+            variant="info"
+            size="sm"
+            disabled={!balancePath || balanceSubmitting}
+            onClick={() => handleSubmitBalance(order.id)}
+          >
+            {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
+          </Button>
+        </div>
+      ),
+    };
+  } else if (isPaymentPending) {
+    banner = {
+      tone: "neutral",
+      Icon: Clock,
+      title: "Awaiting payment review",
+      body: "We're reviewing your payment. This page will update once it's verified.",
+    };
+  } else if (isDone) {
+    banner = { tone: "success", Icon: CheckCircle2, title: "Order complete", body: "Thanks for your order!" };
+  } else if (isReadyForPickup) {
+    banner = {
+      tone: "info",
+      Icon: Package,
+      title: "Ready for pickup",
+      body: "Show your pickup code at the booth — see below.",
+    };
+  } else if (isShippedInfo) {
+    banner = {
+      tone: "info",
+      Icon: Truck,
+      title: "On the way",
+      body: `Shipped via ${shipment!.courier}${shipment!.service ? " — " + shipment!.service : ""}.`,
+    };
+  } else {
+    banner = {
+      tone: "neutral",
+      Icon: Clock,
+      title: "We're preparing your order",
+      body: "We'll update this page as your order moves along.",
+    };
+  }
+
   return (
-    <main className="p-8 max-w-2xl mx-auto space-y-6">
+    <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">
+        <h1 className="text-4xl font-bold tracking-tight">
           Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
         </h1>
-        {batchName && <p className="text-sm text-gray-600 mt-1">Pre-order batch: {batchName}</p>}
-        <p className="text-gray-500 mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+        {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}
+        <p className="text-muted-foreground mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
       </div>
+
+      {banner && (
+        <div className={`rounded-2xl border p-4 ${BANNER_TONE_CLASSES[banner.tone]}`}>
+          <div className="flex gap-3 items-start">
+            <span
+              className={`flex size-7 shrink-0 items-center justify-center rounded-full ${BANNER_ICON_CLASSES[banner.tone]}`}
+            >
+              <banner.Icon className="size-4" />
+            </span>
+            <div className="flex-1 min-w-0 space-y-1">
+              <p className="font-semibold text-sm">{banner.title}</p>
+              <p className="text-sm">{banner.body}</p>
+              {banner.extra}
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardContent>
@@ -311,14 +506,22 @@ export default function OrderPage() {
           <CardTitle>Items</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {items.map((item, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span>
-                {item.product_variants?.name ?? "Item"} × {item.quantity}
-              </span>
-              <span>{formatIDR(item.unit_price)}</span>
-            </div>
-          ))}
+          {items.map((item, i) => {
+            const imageUrl = item.product_variants?.products?.image_url ?? null;
+            return (
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-2">
+                  {imageUrl ? (
+                    <img src={imageUrl} alt="" className="h-10 w-10 rounded-lg object-cover border" />
+                  ) : (
+                    <span className="h-10 w-10 rounded-lg border bg-muted" />
+                  )}
+                  {item.product_variants?.name ?? "Item"} × {item.quantity}
+                </span>
+                <span>{formatIDR(item.unit_price)}</span>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 
@@ -348,7 +551,7 @@ export default function OrderPage() {
           {payments.length > 0 && (
             <div className="pt-2 mt-2 border-t space-y-1">
               {payments.map((p, i) => (
-                <div key={i} className="flex justify-between text-gray-500">
+                <div key={i} className="flex justify-between text-muted-foreground">
                   <span>Payment ({p.status.toLowerCase()})</span>
                   <span>{formatIDR(p.amount)}</span>
                 </div>
@@ -358,93 +561,16 @@ export default function OrderPage() {
         </CardContent>
       </Card>
 
-      {payments[0]?.status === "REJECTED" && order.status === "PAYMENT_PENDING" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Payment rejected</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {payments[0].rejection_reason && (
-              <p className="text-gray-600">Reason: {payments[0].rejection_reason}</p>
-            )}
-            <p className="text-gray-500">Upload a new payment proof to try again.</p>
-            <input
-              type="file"
-              accept={ACCEPTED_PROOF_TYPES.join(",")}
-              onChange={handleResubmitFileChange}
-              disabled={resubmitUploading}
-              className="text-sm"
-            />
-            {resubmitUploading && <p className="text-gray-500">Uploading…</p>}
-            {resubmitPath && !resubmitUploading && (
-              <p className="text-green-700">Uploaded: {resubmitFileName}</p>
-            )}
-            {resubmitError && <p className="text-destructive">{resubmitError}</p>}
-            <Button
-              variant="info"
-              disabled={!resubmitPath || resubmitting}
-              onClick={() => handleResubmit(order.id)}
-            >
-              {resubmitting ? "Resubmitting…" : "Resubmit payment"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {order.status === "BALANCE_DUE" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Balance payment</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            {payments[0]?.status === "PENDING" ? (
-              <p className="text-gray-500">Your balance payment is awaiting review.</p>
-            ) : (
-              <>
-                {payments[0]?.status === "REJECTED" && payments[0].rejection_reason && (
-                  <p className="text-gray-600">Previous attempt rejected: {payments[0].rejection_reason}</p>
-                )}
-                <p className="text-gray-500">
-                  Your item is ready — upload proof for the remaining balance of {formatIDR(balanceDue.toFixed(2))}.
-                </p>
-                <input
-                  type="file"
-                  accept={ACCEPTED_PROOF_TYPES.join(",")}
-                  onChange={handleBalanceFileChange}
-                  disabled={balanceUploading}
-                  className="text-sm"
-                />
-                {balanceUploading && <p className="text-gray-500">Uploading…</p>}
-                {balancePath && !balanceUploading && (
-                  <p className="text-green-700">Uploaded: {balanceFileName}</p>
-                )}
-                {balanceError && <p className="text-destructive">{balanceError}</p>}
-                <Button
-                  variant="info"
-                  disabled={!balancePath || balanceSubmitting}
-                  onClick={() => handleSubmitBalance(order.id)}
-                >
-                  {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
-                </Button>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       {order.fulfilment_method === "PICKUP" && pickupToken && order.status !== "PICKED_UP" && (
         <Card>
           <CardHeader>
             <CardTitle>Pickup</CardTitle>
           </CardHeader>
           <CardContent className="text-sm space-y-2">
-            <p className="text-gray-500">
+            <p className="text-muted-foreground">
               Show this code at the booth. Staff will scan it to confirm your pickup.
             </p>
-            {/* Rendering this as an actual scannable QR image (§13.3) is left
-                for a follow-up pass — this page is scoped to reading real
-                order data, not building the QR-rendering component yet. */}
-            <p className="font-mono text-xs break-all bg-gray-100 rounded p-2">{pickupToken}</p>
+            <p className="font-mono text-xs break-all bg-muted rounded p-2">{pickupToken}</p>
           </CardContent>
         </Card>
       )}
@@ -456,7 +582,7 @@ export default function OrderPage() {
           </CardHeader>
           <CardContent className="text-sm space-y-1">
             <div className="flex justify-between">
-              <span className="text-gray-500">Delivering to</span>
+              <span className="text-muted-foreground">Delivering to</span>
               <span className="text-right">
                 {shipment.recipient_name}
                 <br />
@@ -464,7 +590,7 @@ export default function OrderPage() {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">Courier</span>
+              <span className="text-muted-foreground">Courier</span>
               <span>
                 {shipment.courier}
                 {shipment.service ? ` — ${shipment.service}` : ""}
@@ -472,11 +598,11 @@ export default function OrderPage() {
             </div>
             {shipment.tracking_number ? (
               <div className="flex justify-between pt-2 mt-2 border-t">
-                <span className="text-gray-500">Tracking number</span>
+                <span className="text-muted-foreground">Tracking number</span>
                 <span className="font-mono">{shipment.tracking_number}</span>
               </div>
             ) : (
-              <p className="text-gray-500 pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
+              <p className="text-muted-foreground pt-2 mt-2 border-t">Tracking number not recorded yet.</p>
             )}
           </CardContent>
         </Card>

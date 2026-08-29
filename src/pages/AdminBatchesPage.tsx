@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
+import { RotateCw, Plus } from "lucide-react";
+import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,12 +10,11 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-
-// Milestone 4: batches/batch_items now have RLS (db/schema.ts) requiring
-// canManageProductsBatches for writes — same "disabled here is UX, RLS is
-// enforcement" split as AdminProductsPage. record-batch-receipt (an Edge
-// Function, not a direct write) already required canAdjustInventory as of
-// this milestone too.
+import { Input, Select } from "@/components/ui/input";
+import { Label, RequiredMark } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import AdminLayout from "@/components/AdminLayout";
 
 const BATCH_STATUSES = [
   "DRAFT",
@@ -33,7 +34,7 @@ const batchSchema = z
     closeAt: z.string().min(1, "Close date/time is required."),
     allowDp: z.boolean(),
     allowFull: z.boolean(),
-    allowShipping: z.boolean(), // pickup is always on — see note below
+    allowShipping: z.boolean(),
   })
   .refine((v) => v.allowDp || v.allowFull, {
     message: "Allow at least one payment type.",
@@ -46,7 +47,6 @@ interface ItemDraft {
   moq: string;
 }
 
-// Raw PostgREST column names.
 interface RawVariantOption {
   id: string;
   name: string;
@@ -94,11 +94,10 @@ export default function AdminBatchesPage() {
   const [inventoryByVariant, setInventoryByVariant] = useState<Map<string, { onHand: number; reserved: number }>>(
     new Map()
   );
-  // batchId -> variantId -> quantity across every non-cancelled order (§10.3
-  // "informational only" — a live count, not a stored/enforced number).
   const [committedByBatchVariant, setCommittedByBatchVariant] = useState<Map<string, Map<string, number>>>(new Map());
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Record<string, ItemDraft>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -136,10 +135,6 @@ export default function AdminBatchesPage() {
       return;
     }
 
-    // Cast through `unknown` first: without generated Database types, the
-    // untyped supabase-js client can't know these embeds (products,
-    // product_variants) are one-to-one rather than one-to-many, and infers
-    // arrays for them — same reasoning as OrderPage.tsx's raw-row interfaces.
     const rawVariants = ((variantsResult.data as unknown) as RawVariantOption[] | null) ?? [];
     const rawBatches = ((batchesResult.data as unknown) as RawBatch[] | null) ?? [];
     setVariantOptions(rawVariants);
@@ -170,8 +165,6 @@ export default function AdminBatchesPage() {
     );
 
     const orderRows = (ordersResult.data as RawOrderRow[] | null) ?? [];
-    // §10.3 — informational only: every non-cancelled order counts as
-    // "ordered quantity", verified or not.
     const relevantOrderIds = orderRows.filter((o) => o.status !== "CANCELLED").map((o) => o.id);
     const orderIdToBatchId = new Map(orderRows.map((o) => [o.id, o.batch_id]));
 
@@ -218,9 +211,6 @@ export default function AdminBatchesPage() {
     }
 
     const allowedPaymentTypes = [...(values.allowDp ? ["DP"] : []), ...(values.allowFull ? ["FULL"] : [])];
-    // Pickup is always included — shipping isn't functional until Milestone
-    // 3 (no address/cost calc yet), so a shipping-only batch is never
-    // produced from this form regardless of what's checked.
     const allowedFulfilmentMethods = ["PICKUP", ...(values.allowShipping ? ["SHIPPING"] : [])];
 
     setSubmitting(true);
@@ -250,6 +240,8 @@ export default function AdminBatchesPage() {
 
       reset();
       setSelectedItems({});
+      setCreateOpen(false);
+      toast.success(`"${values.name}" created`);
       await loadAll();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Something went wrong creating the batch.");
@@ -259,7 +251,12 @@ export default function AdminBatchesPage() {
   }
 
   async function handleStatusChange(batchId: string, status: string) {
-    await supabase.from("batches").update({ status }).eq("id", batchId);
+    const { error } = await supabase.from("batches").update({ status }).eq("id", batchId);
+    if (error) {
+      toast.error("Couldn't update the batch status. Please try again.");
+      return;
+    }
+    toast.success(`Batch status set to ${status.replaceAll("_", " ")}`);
     await loadAll();
   }
 
@@ -294,96 +291,94 @@ export default function AdminBatchesPage() {
   }
 
   return (
-    <main className="p-8 max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Admin — Batches</h1>
-        <p className="text-muted-foreground mt-1">
-          Create a pre-order batch from existing products (Admin — Products). No login yet (§18.4 lands
-          in Milestone 4) — internal testing only.
-        </p>
-      </div>
+    <AdminLayout>
+      <main className="p-4 sm:p-8 max-w-3xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Batches</h1>
+            <p className="text-muted-foreground mt-1">Create a pre-order batch from existing products.</p>
+          </div>
+          <Button
+            type="button"
+            className="shrink-0"
+            disabled={!canManage}
+            title={canManage ? undefined : "Requires the Manage products & batches permission"}
+            onClick={() => setCreateOpen(true)}
+          >
+            <Plus className="size-3.5" />
+            New batch
+          </Button>
+        </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>New batch</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div>
-              <label htmlFor="name" className="text-sm font-medium">
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New batch</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            <div className="space-y-1.5">
+              <Label htmlFor="name">
                 Batch name
-              </label>
-              <input
-                id="name"
-                {...register("name")}
-                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                placeholder="e.g. Q3 Hoodie Drop"
-              />
-              {errors.name && <p className="text-destructive text-xs mt-1">{errors.name.message}</p>}
+                <RequiredMark />
+              </Label>
+              <Input id="name" aria-invalid={!!errors.name} {...register("name")} placeholder="e.g. Q3 Hoodie Drop" />
+              {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
             </div>
 
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label htmlFor="openAt" className="text-sm font-medium">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="openAt">
                   Opens
-                </label>
-                <input
-                  id="openAt"
-                  type="datetime-local"
-                  {...register("openAt")}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                />
-                {errors.openAt && <p className="text-destructive text-xs mt-1">{errors.openAt.message}</p>}
+                  <RequiredMark />
+                </Label>
+                <Input id="openAt" type="datetime-local" aria-invalid={!!errors.openAt} {...register("openAt")} />
+                {errors.openAt && <p className="text-destructive text-xs">{errors.openAt.message}</p>}
               </div>
-              <div className="flex-1">
-                <label htmlFor="closeAt" className="text-sm font-medium">
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="closeAt">
                   Closes
-                </label>
-                <input
-                  id="closeAt"
-                  type="datetime-local"
-                  {...register("closeAt")}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                />
-                {errors.closeAt && <p className="text-destructive text-xs mt-1">{errors.closeAt.message}</p>}
+                  <RequiredMark />
+                </Label>
+                <Input id="closeAt" type="datetime-local" aria-invalid={!!errors.closeAt} {...register("closeAt")} />
+                {errors.closeAt && <p className="text-destructive text-xs">{errors.closeAt.message}</p>}
               </div>
             </div>
 
-            <div>
-              <p className="text-sm font-medium">Payment types allowed</p>
-              <div className="mt-1 flex gap-4 text-sm">
+            <div className="space-y-1.5">
+              <Label>Payment types allowed</Label>
+              <div className="flex flex-wrap gap-4 text-sm">
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowDp")} /> DP (50% deposit)
+                  <input type="checkbox" {...register("allowDp")} className="accent-primary" /> DP (50% deposit)
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowFull")} /> Full payment
+                  <input type="checkbox" {...register("allowFull")} className="accent-primary" /> Full payment
                 </label>
               </div>
-              {errors.allowFull && <p className="text-destructive text-xs mt-1">{errors.allowFull.message}</p>}
+              {errors.allowFull && <p className="text-destructive text-xs">{errors.allowFull.message}</p>}
             </div>
 
-            <div>
-              <p className="text-sm font-medium">Fulfilment</p>
-              <div className="mt-1 flex gap-4 text-sm">
-                <label className="flex items-center gap-1.5 text-gray-400">
+            <div className="space-y-1.5">
+              <Label>Fulfilment</Label>
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex items-center gap-1.5 text-muted-foreground">
                   <input type="checkbox" checked disabled /> Pickup (always on)
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <input type="checkbox" {...register("allowShipping")} /> Also allow shipping
+                  <input type="checkbox" {...register("allowShipping")} className="accent-primary" /> Also allow shipping
                 </label>
               </div>
-              <p className="text-xs text-amber-700 mt-1">
+              <p className="text-xs text-amber-700">
                 Shipping isn't functional yet (Milestone 3) — checking this only records the intent; checkout
                 will still only offer pickup for now.
               </p>
             </div>
 
             <div className="space-y-2">
-              <p className="text-sm font-medium">Products in this batch</p>
-              {variantOptions === null && <p className="text-gray-500 text-sm">Loading products…</p>}
+              <Label>Products in this batch</Label>
+              {variantOptions === null && <p className="text-muted-foreground text-sm">Loading products…</p>}
               {variantOptions !== null && variantOptions.length === 0 && (
-                <p className="text-gray-500 text-sm">
-                  No products yet — create one on the Admin — Products screen first.
+                <p className="text-muted-foreground text-sm">
+                  No products yet — create one on the Products screen first.
                 </p>
               )}
               <div className="space-y-1.5">
@@ -395,17 +390,18 @@ export default function AdminBatchesPage() {
                         type="checkbox"
                         checked={!!selected}
                         onChange={(e) => toggleItem(variant.id, e.target.checked)}
+                        className="accent-primary"
                       />
                       <span className="flex-1">
                         {variant.products?.name ?? "Product"} — {variant.name} ({formatIDR(variant.price)})
                       </span>
                       {selected && (
-                        <input
+                        <Input
                           value={selected.moq}
                           onChange={(e) => updateItemMoq(variant.id, e.target.value)}
                           placeholder="MOQ"
                           inputMode="numeric"
-                          className="w-20 rounded-md border bg-background px-2 py-1 text-xs"
+                          className="w-20 h-8 text-xs"
                         />
                       )}
                     </div>
@@ -416,47 +412,84 @@ export default function AdminBatchesPage() {
 
             {submitError && <p className="text-destructive text-sm">{submitError}</p>}
 
-            <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
-              {submitting ? "Creating…" : "Create batch"}
-            </Button>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button type="submit" disabled={submitting || !canManage} title={canManage ? undefined : "Requires the Manage products & batches permission"}>
+                {submitting ? "Creating…" : "Create batch"}
+              </Button>
+            </DialogFooter>
           </form>
-        </CardContent>
-      </Card>
+        </DialogContent>
+      </Dialog>
 
-      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+      {loadError && (
+        <div className="flex items-center gap-2 text-destructive text-sm">
+          <p>{loadError}</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => void loadAll()}>
+            <RotateCw className="size-3.5" />
+            Retry
+          </Button>
+        </div>
+      )}
       {receiptError && <p className="text-destructive text-sm">{receiptError}</p>}
       {receiptMessage && <p className="text-green-700 text-sm">{receiptMessage}</p>}
 
-      {batches === null && !loadError && <p className="text-gray-500 text-sm">Loading batches…</p>}
+      {batches === null && !loadError && (
+        <div className="space-y-6">
+          {[0, 1].map((i) => (
+            <Card key={i}>
+              <CardHeader>
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-3 w-56 mt-1" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-14 w-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {batches?.map((batch) => (
         <Card key={batch.id}>
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
-            <div>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div className="space-y-1.5">
               <CardTitle>{batch.name}</CardTitle>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground">
                 {new Date(batch.open_at).toLocaleString("id-ID")} → {new Date(batch.close_at).toLocaleString("id-ID")}
-                {" · "}
-                {batch.allowed_payment_types.join("/")}
-                {" · "}
-                {batch.allowed_fulfilment_methods.join("+")}
               </p>
+              <div className="flex flex-wrap gap-1">
+                {batch.allowed_payment_types.map((t) => (
+                  <Badge key={t} variant="secondary">
+                    {t === "DP" ? "50% deposit" : "Full payment"}
+                  </Badge>
+                ))}
+                {batch.allowed_fulfilment_methods.map((m) => (
+                  <Badge key={m} variant="outline">
+                    {m === "PICKUP" ? "Pickup" : "Shipping"}
+                  </Badge>
+                ))}
+              </div>
             </div>
-            <div className="text-right">
-              <select
+            <div className="text-right shrink-0">
+              <Select
                 value={batch.status}
                 onChange={(e) => handleStatusChange(batch.id, e.target.value)}
                 disabled={!canManage}
                 title={canManage ? undefined : "Requires the Manage products & batches permission"}
-                className="rounded-md border bg-background px-2 py-1 text-xs disabled:opacity-50"
+                className="h-8 text-xs"
               >
                 {BATCH_STATUSES.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
                 ))}
-              </select>
-              <p className="text-[11px] text-gray-500 mt-1 max-w-[160px]">
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1 max-w-[160px]">
                 {batch.status === "OPEN" ? "Visible to customers now." : "Only OPEN batches show at checkout."}
               </p>
             </div>
@@ -468,29 +501,31 @@ export default function AdminBatchesPage() {
               const moqExceeded = item.moq != null && committed > item.moq;
               return (
                 <div key={item.id} className="flex items-center justify-between gap-3 border-t pt-3 first:border-0 first:pt-0 text-sm">
-                  <div>
-                    <p className="font-medium">
+                  <div className="space-y-1">
+                    <p className="font-medium flex items-center gap-1.5">
                       {item.product_variants.products?.name ?? "Product"} — {item.product_variants.name}
+                      {moqExceeded && <Badge variant="warning">over MOQ</Badge>}
                     </p>
-                    <p className="text-gray-500">
-                      Ordered: {committed}
-                      {item.moq != null && ` / MOQ ${item.moq}`}
-                      {moqExceeded && (
-                        <Badge variant="warning" className="ml-1">
-                          over MOQ
-                        </Badge>
-                      )}
-                      {" · "}
-                      On hand: {stock?.onHand ?? 0} · Reserved: {stock?.reserved ?? 0}
-                    </p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                      <span>
+                        Ordered <span className="font-medium text-foreground">{committed}</span>
+                        {item.moq != null && ` / MOQ ${item.moq}`}
+                      </span>
+                      <span>
+                        On hand <span className="font-medium text-foreground">{stock?.onHand ?? 0}</span>
+                      </span>
+                      <span>
+                        Reserved <span className="font-medium text-foreground">{stock?.reserved ?? 0}</span>
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Input
                       value={receiptDrafts[item.id] ?? ""}
                       onChange={(e) => setReceiptDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       placeholder="Qty received"
                       inputMode="numeric"
-                      className="w-24 rounded-md border bg-background px-2 py-1 text-xs"
+                      className="w-24 h-8 text-xs"
                     />
                     <Button
                       size="sm"
@@ -508,6 +543,7 @@ export default function AdminBatchesPage() {
           </CardContent>
         </Card>
       ))}
-    </main>
+      </main>
+    </AdminLayout>
   );
 }

@@ -1,12 +1,3 @@
-/**
- * Order state machine — PRD §9 (Order State Machine), §6 (End-to-End Business Flow),
- * §26 (Edge Cases & Business Rules).
- *
- * All order status changes must go through `transition()`. Nothing else in the
- * codebase should set order.status directly — that's how §3 principle 5
- * ("backend is the source of truth") and §20 (audit everything) stay true.
- */
-
 export type OrderStatus =
   | "PAYMENT_PENDING"
   | "PAYMENT_VERIFIED"
@@ -36,14 +27,8 @@ export type OrderEvent =
   | "MARK_REFUND_REQUIRED"
   | "REFUND_PROCESSED";
 
-/**
- * Facts the state machine needs to decide *which* next state applies.
- * These come from the order record itself — the state machine doesn't
- * look anything up, it's pure decision logic.
- */
 export interface OrderContext {
   paymentType: "DP" | "FULL";
-  /** True once on-hand inventory covers this order's reserved quantity. */
   stockAvailable: boolean;
   fulfilmentMethod: "PICKUP" | "SHIPPING" | null;
 }
@@ -59,8 +44,6 @@ export class OrderTransitionError extends Error {
   }
 }
 
-// §26: customer cancellation is permitted any time before SHIPPED (shipping)
-// or PICKED_UP (pickup). Once in one of those, or beyond, cancellation is closed.
 const CANCELLABLE_STATES = new Set<OrderStatus>([
   "PAYMENT_PENDING",
   "PAYMENT_VERIFIED",
@@ -77,8 +60,6 @@ export function transition(
   event: OrderEvent,
   ctx: OrderContext
 ): OrderStatus {
-  // Cancellation is a cross-cutting rule (§26), not per-state, so it's
-  // checked once here rather than repeated in every branch below.
   if (event === "CANCEL") {
     if (!CANCELLABLE_STATES.has(current)) {
       throw new OrderTransitionError(
@@ -100,8 +81,6 @@ export function transition(
       break;
 
     case "RESERVED":
-      // §11.2: pre-order commitments are tracked even before stock exists.
-      // §9 (v1.2): stock readiness always resolves before balance is requested.
       if (event === "STOCK_STATUS_EVALUATED") {
         if (!ctx.stockAvailable) return "AWAITING_STOCK";
         return ctx.paymentType === "DP" ? "BALANCE_DUE" : "READY_FOR_FULFILMENT";
@@ -109,8 +88,6 @@ export function transition(
       break;
 
     case "AWAITING_STOCK":
-      // §9 (v1.2 resolution): AWAITING_STOCK and BALANCE_DUE are never
-      // simultaneous — stock arriving resolves straight to whichever is next.
       if (event === "STOCK_RECEIVED") {
         return ctx.paymentType === "DP" ? "BALANCE_DUE" : "READY_FOR_FULFILMENT";
       }
@@ -150,14 +127,11 @@ export function transition(
       break;
 
     case "REFUND_REQUIRED":
-      // Assumption — PRD defines entry into REFUND_REQUIRED (§20) but not
-      // exit. Modeled here as resolving to COMPLETED once admin processes
-      // the refund manually. Confirm this is the intended end state.
       if (event === "REFUND_PROCESSED") return "COMPLETED";
       break;
 
     case "COMPLETED":
-      break; // terminal — no events accepted
+      break;
   }
 
   throw new OrderTransitionError(current, event, "not a valid transition from this state");

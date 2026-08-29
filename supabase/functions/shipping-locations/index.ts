@@ -1,25 +1,7 @@
-/**
- * POST /shipping-locations — province/city/district lookups for the
- * shipping address form (§15.2 needs a district code, not a free-text
- * address, as input to a rate lookup).
- *
- * These three api.co.id endpoints are free (no per-call charge, per their
- * pricing page) — but the API key still can't go in the browser bundle, so
- * this is a thin proxy purely to keep SHIPPING_API_KEY server-side. No DB
- * access at all, unlike every other function in this project — there's
- * nothing here that's a business-rule computation, just a secret-holding
- * relay (architecture.md's Edge-Function rule of thumb is about bypassing
- * RLS / trusting business data, not about proxying a third-party API key,
- * but the API key still can't be exposed either way).
- *
- * { level: "provinces" }
- * { level: "cities", provinceCode }
- * { level: "districts", cityCode }
- */
-
 import { z } from "zod";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse, HttpError } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { getProvinces, getCities, getDistricts, ShippingProviderError } from "../_shared/shipping.ts";
 
 const locationsSchema = z.union([
@@ -47,6 +29,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Same paid-API exposure as shipping-rates. Limit is looser because the
+    // province → city → district cascade legitimately fires several times per
+    // checkout, and re-picking an address repeats it.
+    await enforceRateLimit(req, "shipping-locations", 60);
+
     if (input.level === "provinces") {
       return json({ items: await getProvinces() });
     }

@@ -13,7 +13,6 @@ describe("rate limiting (§16.1/§27 — 10 requests per minute per IP)", () => 
   });
 
   it("the 11th attempt in a window is the first one blocked (10 are allowed through)", () => {
-    // Simulates 10 successive requests, checking the gate before each.
     let allowedCount = 0;
     for (let priorAttempts = 0; priorAttempts < 11; priorAttempts++) {
       if (!isRateLimited(priorAttempts)) allowedCount++;

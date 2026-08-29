@@ -30,8 +30,6 @@ describe("allocateReceivedStock — PRD §26 MOQ shortfall rule", () => {
   });
 
   it("shortfall: promotes the earliest-verified orders first, leaves the rest waiting", () => {
-    // 10 arrived. o2 verified first (qty 6), o1 verified second (qty 6) —
-    // only one of them fits. Verification order must win, not array order.
     const stock = new Map<string, VariantStock>([[HOODIE, { onHand: 10, reserved: 0 }]]);
     const waiting = [
       order("o1", "2026-01-02T00:00:00Z", [{ variantId: HOODIE, quantity: 6 }]),
@@ -48,16 +46,13 @@ describe("allocateReceivedStock — PRD §26 MOQ shortfall rule", () => {
   it("a later order can jump ahead of an earlier one still missing a different item (no partial promotion)", () => {
     const stock = new Map<string, VariantStock>([
       [HOODIE, { onHand: 5, reserved: 0 }],
-      [TOTE, { onHand: 0, reserved: 0 }], // tote hasn't arrived yet
+      [TOTE, { onHand: 0, reserved: 0 }],
     ]);
     const waiting = [
-      // Verified first, but needs a tote too — must NOT be partially
-      // promoted just because its hoodie is available.
       order("mixed-order", "2026-01-01T00:00:00Z", [
         { variantId: HOODIE, quantity: 2 },
         { variantId: TOTE, quantity: 1 },
       ]),
-      // Verified later, only needs a hoodie — should still go through.
       order("hoodie-only", "2026-01-02T00:00:00Z", [{ variantId: HOODIE, quantity: 2 }]),
     ];
 
@@ -65,15 +60,13 @@ describe("allocateReceivedStock — PRD §26 MOQ shortfall rule", () => {
 
     expect(result.promoted.map((o) => o.orderId)).toEqual(["hoodie-only"]);
     expect(result.stillWaiting.map((o) => o.orderId)).toEqual(["mixed-order"]);
-    // The stuck order's hoodie stake was never consumed.
     expect(result.reservedDeltaByVariant.get(HOODIE)).toBe(2);
     expect(result.reservedDeltaByVariant.get(TOTE)).toBeUndefined();
   });
 
   it("is repeatable: a later receipt can promote an order stuck on a previous run", () => {
-    // First run: tote hasn't arrived, mixed-order stays waiting (as above).
     const afterFirstReceipt = new Map<string, VariantStock>([
-      [HOODIE, { onHand: 5, reserved: 2 }], // hoodie-only's 2 units already reserved
+      [HOODIE, { onHand: 5, reserved: 2 }],
       [TOTE, { onHand: 0, reserved: 0 }],
     ]);
     const stillWaitingFromBefore = [
@@ -83,7 +76,6 @@ describe("allocateReceivedStock — PRD §26 MOQ shortfall rule", () => {
       ]),
     ];
 
-    // Second run: the tote shipment arrives.
     const afterSecondReceipt = new Map<string, VariantStock>([
       [HOODIE, { onHand: 5, reserved: 2 }],
       [TOTE, { onHand: 1, reserved: 0 }],

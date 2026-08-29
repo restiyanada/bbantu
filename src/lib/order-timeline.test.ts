@@ -36,7 +36,6 @@ describe("order timeline (§16.3)", () => {
       fulfilmentMethod: "PICKUP",
     });
     expect(t.steps.map((s) => s.key)).toEqual(["ORDER_PLACED", "PAYMENT_VERIFIED", "STOCK_RECEIVED", "READY", "FULFILLED"]);
-    // still waiting on stock — payment verified is done, stock received is the current step
     expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "current", "upcoming", "upcoming"]);
   });
 
@@ -55,17 +54,11 @@ describe("order timeline (§16.3)", () => {
       "READY",
       "FULFILLED",
     ]);
-    // stock has arrived (BALANCE_DUE implies it), balance payment is now the current step
     expect(t.steps.map((s) => s.state)).toEqual(["done", "done", "done", "current", "upcoming", "upcoming"]);
     expect(t.steps.find((s) => s.key === "PAYMENT_VERIFIED")?.label).toBe("Deposit verified");
   });
 
   it("pre-order, deposit, resolves stock immediately without waiting: skips straight to balance-paid as current", () => {
-    // The edge case in verify-payment where stock happens to already be on
-    // hand — order never visibly sits in AWAITING_STOCK. Same expected
-    // display as the case above; this just checks READY_FOR_FULFILMENT
-    // (a FULL pre-order landing here directly) doesn't get confused with
-    // a DP one landing on BALANCE_DUE first.
     const t = buildOrderTimeline({
       status: "READY_FOR_FULFILMENT",
       salesMode: "PRE_ORDER",

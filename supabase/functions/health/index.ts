@@ -1,12 +1,3 @@
-// Supabase Edge Function — health check, mirrors the old Next.js /api/health route.
-// Local dev: supabase functions serve health
-// Deploy:    supabase functions deploy health
-//
-// This runs server-side (Deno), using the service role key, so it can bypass
-// RLS. This is the pattern for anything the browser must not be trusted to
-// do directly: payment verification, order status transitions, inventory
-// allocation.
-
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 Deno.serve(async () => {

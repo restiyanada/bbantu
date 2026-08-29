@@ -1,10 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
-import {
-  useReactTable,
-  getCoreRowModel,
-  createColumnHelper,
-  flexRender,
-} from "@tanstack/react-table";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { createColumnHelper } from "@tanstack/react-table";
+import { RotateCw, X, Printer } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR, formatOrderNumber, statusBadgeVariant } from "@/lib/utils";
@@ -13,14 +10,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
 import { TrackingForm } from "@/components/tracking-form";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Link } from "react-router-dom";
+import { DataTable, type DataTableFilter } from "@/components/data-table";
+import { Skeleton } from "@/components/ui/skeleton";
+import AdminLayout from "@/components/AdminLayout";
+import { ShippingLabel, type ShippingLabelSender } from "@/components/shipping-label";
 
-interface PendingPayment {
+interface LatestPayment {
   id: string;
   status: string;
   amount: string;
   proofUrl: string | null;
+  rejectionReason: string | null;
 }
 
 interface ShipmentInfo {
@@ -46,20 +46,85 @@ interface OrderRow {
   createdAt: string;
   customerName: string;
   customerPhone: string;
-  pendingPayment: PendingPayment | null;
+  payment: LatestPayment | null;
   shipment: ShipmentInfo | null;
 }
 
 const columnHelper = createColumnHelper<OrderRow>();
 
+const STAT_TONE_CLASSES = {
+  warning: "text-amber-600",
+  info: "text-blue-600",
+  success: "text-green-600",
+} as const;
+
+function StatTile({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: keyof typeof STAT_TONE_CLASSES;
+}) {
+  return (
+    <Card className="py-4 gap-1">
+      <CardContent className="px-4">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+        <p className={`text-2xl font-bold tracking-tight mt-1 ${tone ? STAT_TONE_CLASSES[tone] : ""}`}>{value}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AdminDashboardPage() {
-  const { admin, signOut } = useAdminAuth();
+  const { admin } = useAdminAuth();
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [trackingEntryId, setTrackingEntryId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [fulfilmentFilter, setFulfilmentFilter] = useState("");
+  const [labelSender, setLabelSender] = useState<ShippingLabelSender | null>(null);
+  const [printQueue, setPrintQueue] = useState<OrderRow[]>([]);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
+  const canManageShipping = admin?.canManageShipping ?? false;
+
+  useEffect(() => {
+    if (printQueue.length === 0) return;
+    const timer = setTimeout(() => window.print(), 50);
+    return () => clearTimeout(timer);
+  }, [printQueue]);
+
+  async function handlePrintLabels(ordersToPrint: OrderRow[]) {
+    setPrintError(null);
+    const shippable = ordersToPrint.filter((o) => o.shipment !== null);
+    if (shippable.length === 0) {
+      setPrintError("None of the selected orders have shipment details recorded yet.");
+      return;
+    }
+
+    let sender = labelSender;
+    if (!sender) {
+      const { data, error } = await supabase.functions.invoke("shipping-label-info");
+      if (error || !data?.settings) {
+        setPrintError("Couldn't load your shipping settings for the label. Ask an admin to set them in shipping_settings.");
+        return;
+      }
+      sender = {
+        name: data.settings.senderName,
+        phone: data.settings.senderPhone,
+        city: data.settings.originDistrictName,
+        address: data.settings.originAddress,
+      };
+      setLabelSender(sender);
+    }
+
+    setPrintQueue(shippable);
+  }
 
   const loadOrders = useCallback(async () => {
     setLoadError(null);
@@ -86,6 +151,7 @@ export default function AdminDashboardPage() {
       setActionError("Couldn't verify that payment. Please try again.");
       return;
     }
+    toast.success("Payment verified");
     await loadOrders();
   }
 
@@ -101,6 +167,7 @@ export default function AdminDashboardPage() {
       return;
     }
     setRejectingId(null);
+    toast.success("Payment rejected");
     await loadOrders();
   }
 
@@ -115,6 +182,7 @@ export default function AdminDashboardPage() {
       setActionError("Couldn't prepare that order. Please try again.");
       return;
     }
+    toast.success("Order marked ready");
     await loadOrders();
   }
 
@@ -137,6 +205,7 @@ export default function AdminDashboardPage() {
       return;
     }
     setTrackingEntryId(null);
+    toast.success("Tracking recorded");
     await loadOrders();
   }
 
@@ -153,6 +222,7 @@ export default function AdminDashboardPage() {
     columnHelper.accessor("salesMode", {
       header: "Mode",
       cell: (info) => <span className="text-xs">{info.getValue() === "PRE_ORDER" ? "Pre-order" : "Ready stock"}</span>,
+      meta: { className: "hidden sm:table-cell" },
     }),
     columnHelper.accessor("status", {
       header: "Status",
@@ -165,255 +235,314 @@ export default function AdminDashboardPage() {
     columnHelper.accessor("fulfilmentMethod", {
       header: "Fulfilment",
       cell: (info) => info.getValue() ?? "—",
+      meta: { className: "hidden md:table-cell" },
     }),
     columnHelper.display({
-      id: "proof",
-      header: "Proof",
-      cell: ({ row }) => {
-        const proofUrl = row.original.pendingPayment?.proofUrl;
-        if (!proofUrl) return <span className="text-gray-400 text-sm">—</span>;
-        return (
-          <Dialog>
-            <DialogTrigger asChild>
-              <button type="button" className="text-xs text-blue-600 underline">
-                View
-              </button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Payment proof</DialogTitle>
-              </DialogHeader>
-              <img src={proofUrl} alt="Payment proof" className="w-full rounded-md" />
-            </DialogContent>
-          </Dialog>
-        );
-      },
-    }),
-    columnHelper.display({
-      id: "shipment",
-      header: "Shipping",
-      cell: ({ row }) => {
-        const shipment = row.original.shipment;
-        if (!shipment) return <span className="text-gray-400 text-sm">—</span>;
-        return (
-          <Dialog>
-            <DialogTrigger asChild>
-              <button type="button" className="text-xs text-blue-600 underline">
-                View
-              </button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Shipment details</DialogTitle>
-              </DialogHeader>
-              <div className="text-sm space-y-1">
-                <p>
-                  <span className="font-medium">{shipment.recipientName}</span> — {shipment.recipientPhone}
-                </p>
-                <p className="text-gray-600">
-                  {shipment.address}, {shipment.destinationDistrictName}
-                </p>
-                <p className="text-gray-600 pt-2 mt-2 border-t">
-                  {shipment.courier}
-                  {shipment.service ? ` — ${shipment.service}` : ""} · {formatIDR(shipment.cost ?? "0")}
-                </p>
-                {shipment.trackingNumber && (
-                  <p className="font-mono text-xs">Tracking: {shipment.trackingNumber}</p>
-                )}
-              </div>
-            </DialogContent>
-          </Dialog>
-        );
-      },
-    }),
-    columnHelper.display({
-      id: "actions",
-      header: "Actions",
-      cell: ({ row }) => {
-        const order = row.original;
-        const isActioning = actioningId === order.id;
-
-        if (rejectingId === order.id) {
-          return (
-            <div className="space-y-2">
-              <PaymentRejectionForm
-                submitting={isActioning}
-                onSubmit={(values) => handleReject(order.id, values.reason)}
-              />
-              <button
-                type="button"
-                className="text-xs text-gray-500 underline"
-                onClick={() => setRejectingId(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          );
-        }
-
-        if (trackingEntryId === order.id) {
-          return (
-            <div className="space-y-2">
-              <TrackingForm
-                currentCost={order.shipment?.cost ?? null}
-                submitting={isActioning}
-                onSubmit={(values) => handleRecordTracking(order.id, values)}
-              />
-              <button
-                type="button"
-                className="text-xs text-gray-500 underline"
-                onClick={() => setTrackingEntryId(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          );
-        }
-
-        if (order.pendingPayment) {
-          const canVerify = admin?.canVerifyPayments ?? false;
-          return (
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="success"
-                disabled={isActioning || !canVerify}
-                title={canVerify ? undefined : "Requires the Verify payments permission"}
-                onClick={() => handleVerify(order.id)}
-              >
-                {isActioning ? "Verifying…" : "Verify"}
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={isActioning || !canVerify}
-                title={canVerify ? undefined : "Requires the Verify payments permission"}
-                onClick={() => setRejectingId(order.id)}
-              >
-                Reject
-              </Button>
-            </div>
-          );
-        }
-
-        if (order.status === "READY_FOR_FULFILMENT") {
-          // Same underlying prepare-pickup Edge Function handles both —
-          // it already branches on fulfilmentMethod internally (Milestone 1
-          // designed READY_FOR_PICKUP/READY_TO_SHIP as siblings under one
-          // PREPARE_FOR_FULFILMENT event). Only the label differs here.
-          // Permission mirrors the Edge Function's own split (§18.4):
-          // shipping orders need canManageShipping, pickup orders need
-          // canScanConfirmPickup.
-          const isShipping = order.fulfilmentMethod === "SHIPPING";
-          const label = isShipping ? "Prepare for shipment" : "Prepare for pickup";
-          const canPrepare = isShipping ? admin?.canManageShipping ?? false : admin?.canScanConfirmPickup ?? false;
-          return (
-            <Button
-              size="sm"
-              variant="info"
-              disabled={isActioning || !canPrepare}
-              title={canPrepare ? undefined : "Requires the Manage shipping / Scan-confirm pickup permission"}
-              onClick={() => handlePreparePickup(order.id)}
-            >
-              {isActioning ? "Preparing…" : label}
-            </Button>
-          );
-        }
-
-        if (order.status === "READY_TO_SHIP") {
-          const canManageShipping = admin?.canManageShipping ?? false;
-          return (
-            <Button
-              size="sm"
-              variant="info"
-              disabled={!canManageShipping}
-              title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
-              onClick={() => setTrackingEntryId(order.id)}
-            >
-              Record tracking
-            </Button>
-          );
-        }
-
-        return <span className="text-gray-400 text-sm">—</span>;
-      },
+      id: "open",
+      header: "",
+      cell: ({ row }) => (
+        <Button type="button" size="sm" variant="outline" onClick={() => setOpenOrderId(row.original.id)}>
+          Open
+        </Button>
+      ),
     }),
   ];
 
-  const table = useReactTable({
-    data: orders ?? [],
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  const statusOptions = useMemo(
+    () =>
+      Array.from(new Set((orders ?? []).map((o) => o.status)))
+        .sort()
+        .map((s) => ({ label: s.replaceAll("_", " "), value: s })),
+    [orders]
+  );
+  const fulfilmentOptions = useMemo(
+    () =>
+      Array.from(new Set((orders ?? []).flatMap((o) => (o.fulfilmentMethod ? [o.fulfilmentMethod] : []))))
+        .sort()
+        .map((v) => ({ label: v, value: v })),
+    [orders]
+  );
+
+  const stats = useMemo(() => {
+    const rows = orders ?? [];
+    return {
+      total: rows.length,
+      needsReview: rows.filter((o) => o.payment?.status === "PENDING").length,
+      readyToFulfil: rows.filter((o) =>
+        ["READY_FOR_FULFILMENT", "READY_FOR_PICKUP", "READY_TO_SHIP"].includes(o.status)
+      ).length,
+      completed: rows.filter((o) => ["PICKED_UP", "SHIPPED", "COMPLETED"].includes(o.status)).length,
+    };
+  }, [orders]);
+
+  const filters: DataTableFilter<OrderRow>[] = [
+    {
+      label: "All statuses",
+      value: statusFilter,
+      onChange: setStatusFilter,
+      options: statusOptions,
+      predicate: (row, value) => row.status === value,
+    },
+    {
+      label: "All fulfilment methods",
+      value: fulfilmentFilter,
+      onChange: setFulfilmentFilter,
+      options: fulfilmentOptions,
+      predicate: (row, value) => row.fulfilmentMethod === value,
+    },
+  ];
+
+  const openOrder = orders?.find((o) => o.id === openOrderId) ?? null;
+  const isActioningOpen = openOrder !== null && actioningId === openOrder.id;
 
   return (
-    <main className="p-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Admin — Orders</h1>
-        <p className="text-muted-foreground mt-1">
-          Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have (§18.4).
-        </p>
-        <div className="flex gap-3 mt-2 text-sm items-center">
-          <Link to="/admin/products" className="text-blue-600 underline">
-            Products
-          </Link>
-          <Link to="/admin/batches" className="text-blue-600 underline">
-            Batches
-          </Link>
-          <Link to="/admin/audit-log" className="text-blue-600 underline">
-            Audit log
-          </Link>
-          <button type="button" className="text-gray-500 underline" onClick={() => void signOut()}>
-            Sign out
-          </button>
+    <AdminLayout>
+      <main className="p-4 sm:p-8 space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
+          <p className="text-muted-foreground mt-1">
+            Logged in as {admin?.name ?? admin?.email} · disabled actions require a permission you don't have.
+          </p>
         </div>
-      </div>
 
-      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
-      {actionError && <p className="text-destructive text-sm">{actionError}</p>}
+        {orders !== null ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatTile label="Total orders" value={stats.total} />
+            <StatTile label="Needs payment review" value={stats.needsReview} tone={stats.needsReview > 0 ? "warning" : undefined} />
+            <StatTile label="Ready to fulfil" value={stats.readyToFulfil} tone="info" />
+            <StatTile label="Completed" value={stats.completed} tone="success" />
+          </div>
+        ) : (
+          !loadError && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-[70px] rounded-2xl" />
+              ))}
+            </div>
+          )
+        )}
 
-      {orders === null && !loadError && <p className="text-gray-500 text-sm">Loading orders…</p>}
+        {loadError && (
+          <div className="flex items-center gap-2 text-destructive text-sm">
+            <p>{loadError}</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void loadOrders()}>
+              <RotateCw className="size-3.5" />
+              Retry
+            </Button>
+          </div>
+        )}
+        {actionError && <p className="text-destructive text-sm">{actionError}</p>}
 
-      {orders !== null && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Orders ({orders.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <table className="w-full text-sm border rounded-md overflow-hidden">
-              <thead className="bg-muted">
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <th key={header.id} className="text-left p-2 font-medium">
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="border-t align-top">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="p-2">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-                {orders.length === 0 && (
-                  <tr>
-                    <td colSpan={columns.length} className="p-4 text-center text-gray-500">
-                      No orders yet.
-                    </td>
-                  </tr>
+        {orders === null && !loadError && (
+          <Card>
+            <CardContent className="pt-6 space-y-3">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
+        {orders !== null && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-2">
+              <CardTitle>Orders ({orders.length})</CardTitle>
+              {fulfilmentFilter === "SHIPPING" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canManageShipping}
+                  title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                  onClick={() => void handlePrintLabels(orders.filter((o) => o.fulfilmentMethod === "SHIPPING"))}
+                >
+                  Bulk print labels
+                </Button>
+              )}
+            </CardHeader>
+            <CardContent>
+              {printError && <p className="text-destructive text-sm mb-2">{printError}</p>}
+              <DataTable
+                columns={columns}
+                data={orders}
+                emptyMessage="No orders yet."
+                searchPlaceholder="Search by customer, phone, or order number…"
+                searchableText={(o) => `${o.customerName} ${o.customerPhone} ${o.orderNumber ?? ""} ${o.id}`}
+                filters={filters}
+              />
+            </CardContent>
+          </Card>
+        )}
+      </main>
+
+      {openOrder && (
+        <>
+          <div className="fixed inset-0 bg-black/45 z-40" onClick={() => setOpenOrderId(null)} />
+          <div className="fixed top-0 right-0 bottom-0 w-full sm:w-[440px] bg-card border-l shadow-lg z-50 overflow-y-auto p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-serif font-semibold text-lg">
+                  {formatOrderNumber(openOrder.fulfilmentMethod, openOrder.orderNumber, openOrder.id)}
+                </p>
+                <Badge variant={statusBadgeVariant(openOrder.status)} className="mt-1.5">
+                  {openOrder.status.replaceAll("_", " ")}
+                </Badge>
+              </div>
+              <Button type="button" size="icon" variant="ghost" onClick={() => setOpenOrderId(null)}>
+                <X className="size-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Customer</p>
+              <p className="text-sm font-medium">{openOrder.customerName}</p>
+              <p className="text-sm text-muted-foreground">{openOrder.customerPhone}</p>
+            </div>
+
+            <div className="pt-4 border-t space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Payment</p>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Merchandise total</span>
+                <span className="font-medium">{formatIDR(openOrder.merchandiseSubtotal)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Amount paid</span>
+                <span className="font-medium">{formatIDR(openOrder.amountPaid)}</span>
+              </div>
+
+              {openOrder.payment ? (
+                <>
+                  {openOrder.payment.proofUrl ? (
+                    <img src={openOrder.payment.proofUrl} alt="Payment proof" className="w-full rounded-lg border mt-1" />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Proof expired.</p>
+                  )}
+                  {openOrder.payment.status === "REJECTED" && openOrder.payment.rejectionReason && (
+                    <p className="text-sm text-destructive">Rejected: {openOrder.payment.rejectionReason}</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">No payment recorded yet.</p>
+              )}
+
+              {rejectingId === openOrder.id ? (
+                <div className="pt-1">
+                  <PaymentRejectionForm
+                    submitting={isActioningOpen}
+                    onSubmit={(values) => handleReject(openOrder.id, values.reason)}
+                    onCancel={() => setRejectingId(null)}
+                  />
+                </div>
+              ) : (
+                openOrder.payment?.status === "PENDING" && (
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => setRejectingId(openOrder.id)}
+                    >
+                      Reject
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="success"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => handleVerify(openOrder.id)}
+                    >
+                      {isActioningOpen ? "Verifying…" : "Verify"}
+                    </Button>
+                  </div>
+                )
+              )}
+            </div>
+
+            {openOrder.shipment && (
+              <div className="pt-4 border-t space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Shipment</p>
+                <p className="text-sm">
+                  <span className="font-medium">{openOrder.shipment.recipientName}</span> — {openOrder.shipment.recipientPhone}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {openOrder.shipment.address}, {openOrder.shipment.destinationDistrictName}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {openOrder.shipment.courier}
+                  {openOrder.shipment.service ? ` — ${openOrder.shipment.service}` : ""} · {formatIDR(openOrder.shipment.cost ?? "0")}
+                </p>
+                {openOrder.shipment.trackingNumber && (
+                  <p className="text-sm font-mono">Tracking: {openOrder.shipment.trackingNumber}</p>
                 )}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
+
+                {trackingEntryId === openOrder.id && (
+                  <div className="pt-1">
+                    <TrackingForm
+                      currentCost={openOrder.shipment.cost}
+                      submitting={isActioningOpen}
+                      onSubmit={(values) => handleRecordTracking(openOrder.id, values)}
+                      onCancel={() => setTrackingEntryId(null)}
+                    />
+                  </div>
+                )}
+
+                {trackingEntryId !== openOrder.id && (
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!canManageShipping}
+                      title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                      onClick={() => void handlePrintLabels([openOrder])}
+                    >
+                      <Printer className="size-3.5" />
+                      Print label
+                    </Button>
+                    {!openOrder.shipment.trackingNumber && openOrder.status === "READY_TO_SHIP" && (
+                      <Button
+                        size="sm"
+                        variant="info"
+                        disabled={!canManageShipping}
+                        title={canManageShipping ? undefined : "Requires the Manage shipping permission"}
+                        onClick={() => setTrackingEntryId(openOrder.id)}
+                      >
+                        Record tracking
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {openOrder.status === "READY_FOR_FULFILMENT" && (
+              <div className="pt-4 border-t flex justify-end">
+                <Button
+                  size="sm"
+                  variant="info"
+                  disabled={
+                    isActioningOpen ||
+                    !(openOrder.fulfilmentMethod === "SHIPPING"
+                      ? admin?.canManageShipping ?? false
+                      : admin?.canScanConfirmPickup ?? false)
+                  }
+                  onClick={() => handlePreparePickup(openOrder.id)}
+                >
+                  {isActioningOpen ? "Preparing…" : openOrder.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup"}
+                </Button>
+              </div>
+            )}
+          </div>
+        </>
       )}
-    </main>
+
+      <div id="print-labels-root">
+        {labelSender &&
+          printQueue.map((order) =>
+            order.shipment ? (
+              <ShippingLabel key={order.id} sender={labelSender} order={{ ...order, shipment: order.shipment }} />
+            ) : null
+          )}
+      </div>
+    </AdminLayout>
   );
 }

@@ -1,28 +1,9 @@
-/**
- * POST /shipping-rates — live JNE rate quote for the checkout shipping form
- * (§15.2, §15.3 "Shipping option/rate calculated").
- *
- * Weight is computed here from product_variants.weightGrams, never trusted
- * from the client — same "never trust a price from the browser" principle
- * architecture.md states for merchandiseSubtotal, extended to weight since
- * weight is what actually drives the price here. This is a quote only: it
- * does not write anything. create-order re-calls getJneRates() itself with
- * the same inputs when the order is actually placed, rather than trusting
- * whatever rate this endpoint returned a few seconds/minutes earlier — see
- * that file's doc comment.
- *
- * Deliberately manual (a "Get shipping rate" button in the UI), not
- * recalculated on every keystroke — api.co.id charges ~Rp5/successful call,
- * and there's a free-tier request budget too, so this is only called once
- * the customer has actually picked a destination district and is ready to
- * see a price.
- */
-
 import { inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { productVariants, shippingSettings } from "../../../db/schema.ts";
 import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
 
@@ -57,6 +38,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Unauthenticated, and every call spends a request against JNE's paid API
+    // — the limit is what stops a scripted loop burning the quota. 30/min is
+    // above what re-quoting a few addresses at checkout needs.
+    await enforceRateLimit(req, "shipping-rates", 30);
+
     const [origin] = await db.select().from(shippingSettings).limit(1);
     if (!origin) {
       throw new HttpError(503, "Shipping isn't configured yet — please contact us or choose pickup instead.");

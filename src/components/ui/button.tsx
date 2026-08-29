@@ -9,23 +9,23 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
+        default: "rounded-full bg-primary text-primary-foreground hover:opacity-85",
         destructive:
-          "bg-destructive text-white shadow-xs hover:bg-destructive/90",
-        success: "bg-green-600 text-white shadow-xs hover:bg-green-600/90",
-        info: "bg-blue-600 text-white shadow-xs hover:bg-blue-600/90",
+          "rounded-full bg-destructive text-white hover:bg-destructive/90",
+        success: "rounded-full bg-green-700 text-white hover:bg-green-700/90",
+        info: "rounded-full bg-brand text-white hover:bg-brand/90",
         outline:
-          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground",
+          "rounded-full border-[1.5px] bg-background hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
+          "rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost: "rounded-md hover:bg-accent hover:text-accent-foreground",
+        link: "text-foreground underline-offset-4 hover:underline font-semibold",
       },
       size: {
         default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        lg: "h-10 rounded-md px-8",
-        icon: "size-9",
+        sm: "h-8 px-3.5 text-xs",
+        lg: "h-11 px-8 text-[15px]",
+        icon: "size-9 rounded-full",
       },
     },
     defaultVariants: {

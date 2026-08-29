@@ -1,10 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
-// Milestone 5: moved to the shared lib/ folder so the email worker (Deno)
-// can use the exact same format — re-exported here so every existing
-// `import { formatOrderNumber } from "@/lib/utils"` in this codebase keeps
-// working unchanged.
 export { formatOrderNumber } from "../../lib/order-number";
 
 export function cn(...inputs: ClassValue[]) {
@@ -17,13 +13,6 @@ export function formatIDR(value: string | number): string {
 
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "warning" | "info" | "success";
 
-/**
- * One mapping shared across every page that shows an order status badge —
- * was duplicated (3-variant version) in OrderPage.tsx and
- * AdminDashboardPage.tsx; consolidated here now that it's grown to cover
- * all 12 statuses with real color meaning (amber = waiting on someone,
- * blue = in progress, green = done, red = problem).
- */
 export function statusBadgeVariant(status: string): BadgeVariant {
   switch (status) {
     case "PAYMENT_PENDING":

@@ -1,19 +1,3 @@
-/**
- * POST /resubmit-payment — customer re-uploads proof after a rejected
- * payment (§26 "Payment can be rejected and resubmitted").
- *
- * Customer-facing, not admin-facing — so unlike verify-payment/scan-pickup,
- * this genuinely needs to verify the caller owns the order. The access
- * token (already used for reading the order page, §16/§27) is the proof of
- * ownership: order id alone isn't secret, the access token is.
- *
- * Only allowed when the most recent payment is REJECTED — can't resubmit
- * onto a PENDING (already under review) or VERIFIED payment. Order status
- * doesn't change here: it was never moved off PAYMENT_PENDING by the
- * rejection in the first place (verify-payment's REJECT branch is a no-op
- * on order status), so there's nothing to transition back.
- */
-
 import { eq, and, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
@@ -22,10 +6,6 @@ import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
-// Milestone 5 — orders.accessToken now stores a hash, not the raw value
-// (see db/schema.ts). The client still sends the raw token it was given;
-// hash it the same way (pgcrypto, matching db/schema.ts's requestAccessToken)
-// before comparing, or every lookup here would simply never match.
 const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
 
 const resubmitSchema = z.object({
@@ -52,7 +32,6 @@ Deno.serve(async (req) => {
     return json({ error: "Invalid JSON body." }, 400);
   }
 
-  // Same existence check as create-order — don't trust a claimed path.
   const proofRows = await db.execute<{ exists: number }>(
     sql`select 1 as exists from storage.objects where bucket_id = 'payment-proofs' and name = ${input.proofFileUrl} limit 1`
   );
@@ -70,9 +49,6 @@ Deno.serve(async (req) => {
         .from(orders)
         .where(and(eq(orders.id, input.orderId), eq(orders.accessToken, hashAccessToken(input.accessToken))));
 
-      // Deliberately generic — doesn't reveal whether the order exists at
-      // all if the token is wrong, same reasoning as scan-pickup's "invalid
-      // code" response (§26).
       if (!order) {
         throw new HttpError(404, "Order not found.");
       }
@@ -95,7 +71,7 @@ Deno.serve(async (req) => {
         .insert(payments)
         .values({
           orderId: order.id,
-          amount: order.merchandiseSubtotal, // M1 scope: FULL payment only
+          amount: order.merchandiseSubtotal,
           proofFileUrl: input.proofFileUrl,
           status: "PENDING",
         })

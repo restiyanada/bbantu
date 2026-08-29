@@ -5,12 +5,6 @@ import type { orders } from "../db/schema";
 
 type OrderRow = typeof orders.$inferSelect;
 
-/**
- * A fake transaction implementing just enough of the drizzle query-builder
- * shape for transitionOrder to run against, with every write recorded so
- * tests can assert on write order and (critically) on writes that must
- * NOT happen when a transition is rejected.
- */
 function makeFakeTx(existingOrder: OrderRow | undefined) {
   const calls: { updates: unknown[]; inserts: unknown[] } = { updates: [], inserts: [] };
 
@@ -108,7 +102,7 @@ describe("transitionOrder", () => {
     await expect(
       transitionOrder(tx, {
         orderId: "order-1",
-        event: "PICKUP_CONFIRMED", // not valid from PAYMENT_PENDING
+        event: "PICKUP_CONFIRMED",
         actorId: "admin-1",
         stockAvailable: true,
       })
@@ -127,7 +121,7 @@ describe("transitionOrder", () => {
       orderId: "order-1",
       event: "STOCK_STATUS_EVALUATED",
       actorId: null,
-      stockAvailable: true, // stock already on hand -> DP order should land on BALANCE_DUE
+      stockAvailable: true,
     });
 
     expect(result.to).toBe("BALANCE_DUE");

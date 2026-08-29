@@ -1,134 +1,188 @@
 # Pre-Order & Ready Stock System
 
-Scaffold only — folder structure, DB schema, and wiring. No business logic yet.
+A guest-first storefront for running pre-order batches and ready-stock sales:
+customers order without an account, upload proof of a bank transfer, and track
+the order through a tokenized link. Staff verify payments, manage batches and
+stock, print shipping labels, and confirm booth pickups by scanning a QR code.
+
+All six milestones are built. See `milestone.md` for what each one covered and
+what's still open, `ARCHITECTURE.md` for why the implementation looks the way
+it does, and `PRD.html` for the business rules (referenced throughout as §n).
 
 ## Stack
 
 - **Frontend:** Vite + React (SPA) + Tailwind, hosted on Cloudflare Pages
-- **Admin UI:** shadcn/ui (Button, Badge, Card hand-authored — see note below),
-  TanStack Table v8 for order/data lists, React Hook Form + Zod for forms
-- **Testing:** Vitest — currently covers `lib/order-state-machine.ts` only
-  (nothing else has real logic yet)
-- **Backend logic:** Supabase Edge Functions (Deno) — anything that must bypass
-  Row Level Security (payment verification, order status changes, inventory
-  allocation) lives here, never as a direct write from the browser
-- **Database:** Supabase Postgres, schema defined and pushed via Drizzle
-- **Auth:** Supabase Auth (magic link) for admin staff; secure tokens for guest
-  order access (§16, §27) — these are separate systems, not the same thing
-- **Email:** Resend, called from an Edge Function
+- **Admin UI:** shadcn/ui, TanStack Table v8, React Hook Form + Zod, sonner
+- **Backend logic:** Supabase Edge Functions (Deno) — anything enforcing a
+  business rule lives here, never as a direct write from the browser
+- **Database:** Supabase Postgres, schema in `db/schema.ts` via Drizzle
+- **Auth:** Supabase Auth (magic link) for staff; high-entropy access tokens
+  for guest order access (§16, §27) — separate systems, not the same thing
+- **File storage:** Supabase Storage — payment proofs (private, 30-day
+  retention) and product images (public)
+- **Email:** Resend, sent by a scheduled Edge Function off a queue table
+- **Testing:** Vitest — 71 unit tests over the pure logic in `lib/`
 
-## About the admin UI components
+## The security boundary
 
-`components.json` is set up for the real shadcn/ui CLI, but `npx shadcn init`
-couldn't run in the sandbox that built this scaffold (network-restricted,
-couldn't reach `ui.shadcn.com` — not a real auth requirement, just a sandbox
-limit). So `Button`, `Badge`, and `Card` in `src/components/ui/` were
-hand-written to match exactly what the CLI would generate. Once you're in
-Codespaces (full internet access), pull any additional components you need
-the normal way:
+**There is no server between the browser and the database.** Two things
+enforce PRD §3 principle 5 ("backend is the source of truth"):
 
-```bash
-npx shadcn@latest add dialog dropdown-menu input label table
+1. **RLS policies** on every table, for the reads the browser does directly
+   with the publishable key.
+2. **Edge Functions** using the service-role key (which bypasses RLS) for
+   anything that must not be trusted to the client.
+
+**Rule of thumb:** if an action changes state based on a business rule — not
+just "save what the user typed" — it's an Edge Function. Order creation
+computes prices server-side from `product_variants.price` and re-fetches
+shipping rates from the courier; neither is ever trusted from the request body.
+
+Staff-facing functions call `requireAdmin(req, permission)`
+(`supabase/functions/_shared/auth.ts`), which verifies the JWT and then checks
+the §18.4 per-action toggle in `admin_users`. The frontend gets those toggles
+from the `whoami` function, so a disabled button is UX only — the same check
+runs again server-side.
+
+⚠️ **Never apply an RLS change with `drizzle-kit push`.** It silently drops
+policy `USING` conditions, which Postgres then treats as deny-all. This has
+broken this project twice — see ARCHITECTURE.md. Run the migration SQL by hand
+in the Supabase SQL editor instead, then verify:
+
+```sql
+SELECT tablename, policyname, qual FROM pg_policies WHERE qual IS NULL;
+-- empty result = safe
 ```
 
-They'll slot in alongside the existing ones with no conflicts.
-
-## Why this shape
-
-There's no server sitting between the browser and the database anymore (no
-Next.js API routes). That means **Row Level Security policies + Edge
-Functions are the enforcement boundary** that PRD §3 principle 5 requires
-("backend is the source of truth"). The browser talks to Supabase directly
-for reads via `src/lib/supabaseClient.ts`, using the low-privilege publishable
-key. Anything that changes state goes through an Edge Function using the
-service role key instead — see `supabase/functions/health/index.ts` for the
-pattern.
+**Why by hand rather than `drizzle-kit migrate`:** this project's live database
+has only ever been schema-managed with `db:push`, which keeps no record of what
+it applied. `migrate` tracks applied migrations in its own
+`drizzle.__drizzle_migrations` table — which therefore doesn't exist here, so
+the first `migrate` run would consider *every* migration unapplied and try to
+replay `0000` onward against a database that already has all of it. Until
+someone deliberately reconciles that bookkeeping (backfilling the table to
+match reality), by-hand SQL is the safe path.
 
 ## Folder structure
 
 ```
 src/
-  pages/               ← route components (HomePage, OrderPage, AdminDashboardPage)
-  components/ui/       ← shadcn/ui primitives (Button, Badge, Card)
-  components/          ← app components (payment-rejection-form.tsx — real
-                          example wiring React Hook Form + Zod to §8.3's
-                          "rejection reason required" rule)
-  lib/supabaseClient.ts ← browser-side Supabase client (publishable key only)
-  lib/utils.ts          ← shadcn's cn() class-merging helper
-  App.tsx              ← route definitions
+  pages/                 ← route components (checkout, order tracker, admin, scanner)
+  components/ui/         ← shadcn/ui primitives
+  components/            ← app components (data table, forms, shipping label)
+  lib/                   ← supabase clients, adminAuth context, formatting helpers
+lib/                     ← pure business logic, shared with Edge Functions, unit-tested
+  order-state-machine.ts   order status transitions
+  orders.ts / audit.ts     transactional transition + audit write
+  batch-allocation.ts      §26 MOQ-shortfall ranking
+  email-cap.ts             Resend free-tier budget allocation
+  proof-retention.ts       30-day payment-proof eligibility
+  rate-limit.ts            §16.1 per-IP thresholds
 db/
-  schema.ts            ← all tables (PRD §21 domain model) — unchanged from before
-lib/
-  order-state-machine.ts      ← pure order status transition logic
-  order-state-machine.test.ts ← Vitest suite: both §32 acceptance scenarios,
-                                 ready-stock fast paths, §26 cancellation rules
+  schema.ts              ← all tables, RLS policies, sequences
+  migrations/            ← see "Migrations" below
 supabase/
-  functions/health/    ← example Edge Function (service role key, bypasses RLS)
-  config.toml
-drizzle.config.ts       ← schema push config, uses PG* env vars
-components.json         ← shadcn/ui CLI config (for adding more components later)
+  functions/             ← 18 Edge Functions + _shared/
+  *_storage_setup.sql    ← Storage buckets (set up via SQL console, not Drizzle)
 ```
+
+## Migrations
+
+Two kinds live in `db/migrations/`, and the difference matters:
+
+- **Journaled** (in `meta/_journal.json`) — generated by `drizzle-kit generate`.
+- **Hand-written, not journaled** — `0004`, `0006`, `0009`. Pure SQL with no
+  `schema.ts` change (pg_cron schedules, one-time data backfills). Nothing
+  replays these automatically. Each file's header says what it does and how to
+  verify it.
+
+**Both kinds are applied the same way against the existing project: paste the
+file into the Supabase SQL editor and run it.** See the `migrate` note above
+for why — the bookkeeping table it relies on was never created here. Journaled
+vs. not is about whether `drizzle-kit generate` can regenerate the file from
+`schema.ts`, not about how it reaches the database.
 
 ## First-time setup
 
-1. **Install the Supabase CLI** (needed to run/deploy Edge Functions):
+1. **Install the Supabase CLI** (for Edge Functions):
    ```bash
-   npm install -g supabase
-   supabase login
+   npm install -g supabase && supabase login
    supabase link --project-ref lhvxjgbjjamwatsmxiyc
    ```
 
-2. Copy `.env.example` to `.env.local` and fill in:
-   - `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` — Supabase → Project
-     Settings → API
-   - `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` — Supabase → Connect →
-     Session pooler (needed for `db:push` only, not shipped to the browser)
+2. Create `.env.local`:
+   - `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` — Project Settings → API
+   - `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` — Connect → Session pooler
+     (for schema pushes only; never shipped to the browser)
 
-3. Install dependencies and push the schema (this part is unchanged from
-   before — same database, same schema, same tables already created if
-   you've done this once):
+3. Install dependencies, then apply the schema:
    ```bash
    npm install
-   npm run db:push
    ```
+   Run every file in `db/migrations/*.sql` in order, plus the two
+   `supabase/*_storage_setup.sql` files, by hand in the SQL editor — not
+   `db:push` and not `drizzle-kit migrate`, for the reasons above. (A genuinely
+   fresh project could use `migrate`; this one can't until the bookkeeping is
+   reconciled.)
 
-4. Run the frontend locally:
+4. Set the Edge Function secrets:
    ```bash
-   npm run dev
+   supabase secrets set DATABASE_URL=... ACCESS_TOKEN_ENC_KEY=... \
+     RESEND_API_KEY=... RESEND_FROM_ADDRESS=... FRONTEND_BASE_URL=... \
+     SHIPPING_API_KEY=... BUSINESS_NAME=...
    ```
+   (`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are
+   injected by the platform.)
 
-5. Run the Edge Function locally and test it:
-   ```bash
-   supabase functions serve health
-   curl http://localhost:54321/functions/v1/health
-   ```
-   Should return `{"status":"ok","db":"connected"}`.
+5. Seed one row each in `payment_settings` and `shipping_settings` — checkout
+   shows the bank details from the first, shipping quotes need the origin from
+   the second.
+
+6. Run it: `npm run dev`
 
 ## Useful commands
 
 | Command | Purpose |
 |---|---|
 | `npm run dev` | Local Vite dev server |
-| `npm run build` | Production build (outputs to `dist/`) |
-| `npm run test` | Run the test suite once |
-| `npm run test:watch` | Run tests in watch mode while developing |
-| `npm run db:push` | Push schema changes to Supabase |
+| `npm run build` | Production build → `dist/` |
+| `npm run lint` | oxlint |
+| `npm test` | Run the test suite once |
+| `npx drizzle-kit generate` | Generate a migration from `schema.ts` |
+| `npx drizzle-kit migrate` | ⚠️ Don't run against this project — see Migrations |
 | `npm run db:studio` | Browse data in Drizzle Studio |
-| `supabase functions serve <name>` | Run an Edge Function locally |
-| `supabase functions deploy <name>` | Deploy an Edge Function |
-| `supabase secrets set KEY=value` | Set a secret for Edge Functions (e.g. `RESEND_API_KEY`) |
+| `supabase functions deploy <name>` | Deploy one Edge Function |
+| `supabase secrets set KEY=value` | Set an Edge Function secret |
 
 ## Deploying
 
-**Frontend:** push this repo to GitHub, connect it in Cloudflare Pages
-(Framework preset: Vite, build command `npm run build`, output directory
-`dist`). No adapter needed — it's a static build.
+**Frontend:** Cloudflare Pages, connected to this repo. Build command
+`npm run build`, output directory `dist`, and set `VITE_SUPABASE_URL` /
+`VITE_SUPABASE_PUBLISHABLE_KEY` as build environment variables (they're baked
+into the bundle at build time).
 
-**Edge Functions:** `supabase functions deploy <name>` from your machine or CI.
-These run on Supabase's infrastructure, not Cloudflare.
+`public/_redirects` handles SPA routing (`/*  /index.html  200`) — without it
+Pages serves static files only, so any deep link (`/orders/:accessToken`,
+`/dashboard`) would 404 on refresh or when opened from an email, breaking the
+customer order tracker. Real assets still take precedence over the fallback, so
+`/assets/*` and `/fonts/*` are unaffected.
 
-## Not built yet
+**Edge Functions:** `supabase functions deploy <name>`. These run on Supabase,
+not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).
 
-This is scaffolding only. Not implemented: order state machine wiring into
-real endpoints, RLS policies, payment verification, email queue, QR pickup
-scanning, shipping label generation, admin auth. See the PRD for scope.
+## Known gaps
+
+- **Web Push (§17a)** — not built. No `push_subscriptions` table, no VAPID
+  keys, no subscribe prompt. Its own self-contained piece of work, not a
+  Milestone 6 addendum.
+- **Products are create-only** — no edit or deactivate UI, so `products.active`
+  (which the storefront filters on) can only be changed via SQL.
+- **No route-level code splitting** — every page is statically imported in
+  `App.tsx`, so a customer downloads the admin dashboard, the QR scanner and
+  TanStack Table on first load (~794 KB). Lazy-loading the routes cuts the
+  storefront's initial payload by roughly 20%.
+- **No component or E2E tests** — `lib/` is well covered; the React layer is
+  not. Deliberate, and still worth doing.
+- **Milestone 6 smoke tests** — a real phone + order-number recovery, an admin
+  loading `/admin/audit-log`, and one manual `cleanup-payment-proofs` invoke
+  have never been confirmed end-to-end.
