@@ -16,6 +16,7 @@ const AdminProductsPage = lazy(() => import("./pages/AdminProductsPage"));
 const AdminBatchesPage = lazy(() => import("./pages/AdminBatchesPage"));
 const AdminAuditLogPage = lazy(() => import("./pages/AdminAuditLogPage"));
 const AdminLoginPage = lazy(() => import("./pages/AdminLoginPage"));
+const AdminAcceptInvitePage = lazy(() => import("./pages/AdminAcceptInvitePage"));
 const ScanPage = lazy(() => import("./pages/ScanPage"));
 
 function RouteFallback() {
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="/orders/find" element={<FindOrderPage />} />
           <Route path="/orders/:accessToken" element={<OrderPage />} />
           <Route path="/admin/login" element={<AdminLoginPage />} />
+          <Route path="/admin/accept-invite" element={<AdminAcceptInvitePage />} />
           <Route
             path="/dashboard"
             element={

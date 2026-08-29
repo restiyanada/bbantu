@@ -16,8 +16,9 @@ it does, and `PRD.html` for the business rules (referenced throughout as §n).
 - **Backend logic:** Supabase Edge Functions (Deno) — anything enforcing a
   business rule lives here, never as a direct write from the browser
 - **Database:** Supabase Postgres, schema in `db/schema.ts` via Drizzle
-- **Auth:** Supabase Auth (magic link) for staff; high-entropy access tokens
-  for guest order access (§16, §27) — separate systems, not the same thing
+- **Auth:** Supabase Auth (email + password, onboarded by invite) for staff;
+  high-entropy access tokens for guest order access (§16, §27) — separate
+  systems, not the same thing
 - **File storage:** Supabase Storage — payment proofs (private, 30-day
   retention) and product images (public, never deleted — see "Product photos")
 - **Email:** Resend, sent by a scheduled Edge Function off a queue table
@@ -123,7 +124,7 @@ db/
   schema.ts              ← all tables, RLS policies, sequences
   migrations/            ← see "Migrations" below
 supabase/
-  functions/             ← 20 Edge Functions + _shared/
+  functions/             ← 21 Edge Functions + _shared/
   *_storage_setup.sql    ← Storage buckets (set up via SQL console, not Drizzle)
 ```
 

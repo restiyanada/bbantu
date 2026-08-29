@@ -17,7 +17,7 @@ framework-neutral terms).
 | Domain | Cloudflare Registrar (when ready) | Cheapest wholesale pricing, no renewal markup; using free `.pages.dev` until launch |
 | Database | Supabase Postgres | Schema in `db/schema.ts`, pushed via Drizzle |
 | Backend logic | Supabase Edge Functions (Deno) | See "Security boundary" below |
-| Auth (staff) | Supabase Auth, magic link | Identity only — see "Auth vs permissions" |
+| Auth (staff) | Supabase Auth, email + password | Identity only — see "Auth vs permissions" |
 | Auth (guests) | High-entropy access tokens (§16, §27) | Not a real auth system — phone+email lookup for recovery, no password |
 | File storage | Supabase Storage | Payment proofs (§8), 30-day retention |
 | Email | Resend, called from an Edge Function | Unchanged since v1.1 of the PRD |
@@ -56,8 +56,8 @@ write. Concretely:
 
 Easy to conflate, so spelled out explicitly:
 
-- **Supabase Auth** answers *"who is this person"* — magic link login for the
-  3 staff members. That's all it does.
+- **Supabase Auth** answers *"who is this person"* — email + password login
+  for staff, onboarded via a one-time invite email. That's all it does.
 - **The `admin_users` table** (`db/schema.ts`) answers *"what can they do"* —
   per-action boolean toggles (`canVerifyPayments`, `canScanConfirmPickup`,
   etc.) matching PRD §18.4 exactly. This is looked up *after* login, keyed by
