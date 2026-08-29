@@ -49,7 +49,12 @@ export async function requireAdmin(req: Request, permission: AdminPermission | n
     throw new HttpError(401, "Your session has expired. Please log in again.");
   }
 
-  const [admin] = await db.select().from(adminUsers).where(eq(adminUsers.email, data.user.email));
+  // Supabase Auth always lowercases auth.users.email; admin_users.email is
+  // hand-inserted and is only lowercase because migration 0012's trigger
+  // enforces it. Lowering the incoming side too costs nothing and removes the
+  // single remaining place a case mismatch could deny someone who is, by every
+  // other measure, an admin.
+  const [admin] = await db.select().from(adminUsers).where(eq(adminUsers.email, data.user.email.toLowerCase()));
   if (!admin) {
     throw new HttpError(403, "This account is not set up as an admin.");
   }
