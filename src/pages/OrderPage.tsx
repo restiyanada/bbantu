@@ -179,6 +179,12 @@ export default function OrderPage() {
       if (cancelled) return;
 
       if (orderError || !order) {
+        // "Not found" and "the request never actually reached the RLS check"
+        // look identical to the customer either way, but they are not the
+        // same bug: a genuine zero-row RLS result and a network/CORS failure
+        // both land here. Logging the real error is the only way to tell
+        // them apart from outside the browser that hit it.
+        if (orderError) console.error("Order lookup failed:", orderError);
         setState({
           kind: "error",
           message:
