@@ -142,16 +142,18 @@ Deno.serve(async (req) => {
     if (stoppedForRateLimit) break;
 
     if (!row.orderId) {
+      const reason = "No order_id on this email row.";
       console.error(`send-queued-emails: email ${row.id} has no orderId, marking failed`);
-      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
+      await db.update(emails).set({ status: "FAILED", failureReason: reason }).where(eq(emails.id, row.id));
       failedCount++;
       continue;
     }
 
     const ctx = orderContextById.get(row.orderId);
     if (!ctx || !ctx.rawToken) {
+      const reason = "Could not decrypt the order's access token — check ACCESS_TOKEN_ENC_KEY.";
       console.error(`send-queued-emails: no usable link for order ${row.orderId} (email ${row.id}), marking failed`);
-      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
+      await db.update(emails).set({ status: "FAILED", failureReason: reason }).where(eq(emails.id, row.id));
       failedCount++;
       continue;
     }
@@ -171,7 +173,7 @@ Deno.serve(async (req) => {
       stoppedForRateLimit = true;
     } else {
       console.error(`send-queued-emails: failed to send email ${row.id}: ${result.error}`);
-      await db.update(emails).set({ status: "FAILED" }).where(eq(emails.id, row.id));
+      await db.update(emails).set({ status: "FAILED", failureReason: result.error }).where(eq(emails.id, row.id));
       failedCount++;
     }
   }

@@ -468,6 +468,12 @@ export const emails = pgTable("emails", {
   status: emailStatusEnum("status").notNull().default("QUEUED"),
   queuedAt: timestamp("queued_at").notNull().defaultNow(),
   sentAt: timestamp("sent_at"),
+  // Until now a FAILED row said nothing about why — the actual reason (a bad
+  // Resend API key, an unverified sending domain, a malformed address) only
+  // ever existed in the Edge Function's console.error, which nobody could see
+  // without digging through Supabase's function logs. Persisting it means the
+  // same `SELECT ... FROM emails` that shows FAILED also shows the fix.
+  failureReason: text("failure_reason"),
 }).enableRLS();
 
 export const auditLogs = pgTable("audit_logs", {
