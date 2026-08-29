@@ -235,6 +235,19 @@ the behaviour by committing a `wrangler.jsonc` with the `assets` block above —
 note it also needs a `name` matching the Cloudflare project, so it has to be
 updated if the project is ever recreated under a different name.
 
+⚠️ **A file removed from `public/` can keep being served anyway.** Cloudflare's
+Workers Assets upload step has a known bug
+([workers-sdk#12586](https://github.com/cloudflare/workers-sdk/issues/12586))
+where it sometimes misreports a changed asset as unchanged, so the old file
+never gets dropped from what's live — independent of caching, and it survives
+a cache purge because there's nothing wrong with the cache. Symptom: a static
+file (this repo hit it with `public/favicon.svg`) keeps loading at 200 from
+the live URL after being deleted and merged, even though the deployed
+`index.html` itself has clearly updated. Workaround: force a genuine content
+change in the next deploy — editing something unrelated (like this README)
+is enough to make Cloudflare's upload API reprocess the manifest instead of
+taking the shortcut that trips the bug.
+
 **Edge Functions:** `supabase functions deploy <name>`. These run on Supabase,
 not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).
 
