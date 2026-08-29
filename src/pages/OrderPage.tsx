@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 import { FileInput } from "@/components/ui/file-input";
 import { ProductDetailSheet } from "@/components/product-detail-sheet";
+import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface OrderRow {
@@ -639,11 +640,14 @@ export default function OrderPage() {
           <CardHeader>
             <CardTitle>Pickup</CardTitle>
           </CardHeader>
-          <CardContent className="text-sm space-y-2">
+          <CardContent className="text-sm space-y-3">
             <p className="text-muted-foreground">
               Show this code at the booth. Staff will scan it to confirm your pickup.
             </p>
-            <p className="font-mono text-xs break-all bg-muted rounded p-2">{pickupToken}</p>
+            <div className="flex justify-center rounded-lg bg-muted p-4">
+              <QrCode value={pickupToken} size={180} className="rounded bg-background p-2" />
+            </div>
+            <p className="text-center font-mono text-xs tracking-widest text-muted-foreground">{pickupToken}</p>
           </CardContent>
         </Card>
       )}
