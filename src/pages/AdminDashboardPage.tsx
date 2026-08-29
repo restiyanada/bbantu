@@ -141,7 +141,14 @@ export default function AdminDashboardPage() {
       setLoadError("Couldn't load orders. Please try refreshing.");
       return;
     }
-    setOrders(data.orders as OrderRow[]);
+    // Defensive: `items` (and `payment`/`shipment`) exist on list-orders'
+    // response only from the version deployed alongside this frontend build.
+    // Edge Functions don't redeploy on their own when the frontend does — a
+    // stale function still omits `items` entirely, and `openOrder.items.length`
+    // below would otherwise crash the whole page instead of just showing an
+    // empty list.
+    const rows = (data.orders as OrderRow[]).map((row) => ({ ...row, items: row.items ?? [] }));
+    setOrders(rows);
   }, []);
 
   useEffect(() => {
