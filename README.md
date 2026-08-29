@@ -123,7 +123,7 @@ db/
   schema.ts              ← all tables, RLS policies, sequences
   migrations/            ← see "Migrations" below
 supabase/
-  functions/             ← 18 Edge Functions + _shared/
+  functions/             ← 20 Edge Functions + _shared/
   *_storage_setup.sql    ← Storage buckets (set up via SQL console, not Drizzle)
 ```
 
@@ -161,6 +161,8 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
 
 2. Create `.env.local`:
    - `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` — Project Settings → API
+   - `VITE_VAPID_PUBLIC_KEY` — Web Push (§17a); same value as the `VAPID_PUBLIC_KEY`
+     Edge Function secret below. Safe to expose — that's what "public" means here.
    - `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` — Connect → Session pooler
      (for schema pushes only; never shipped to the browser)
 
@@ -178,8 +180,14 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
    ```bash
    supabase secrets set DATABASE_URL=... ACCESS_TOKEN_ENC_KEY=... \
      RESEND_API_KEY=... RESEND_FROM_ADDRESS=... FRONTEND_BASE_URL=... \
-     SHIPPING_API_KEY=... BUSINESS_NAME=...
+     SHIPPING_API_KEY=... BUSINESS_NAME=... \
+     VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com
    ```
+   Generate the VAPID keypair once with
+   `npx -y web-push generate-vapid-keys` (or `webpush.generateVAPIDKeys()` from
+   the `web-push` package) — it's an identity keypair for this app's push
+   sender, not a per-user secret, so it only needs to exist once and never
+   rotates unless you want every existing subscription to stop working.
    (`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are
    injected by the platform.)
 
@@ -253,18 +261,10 @@ not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).
 
 ## Known gaps
 
-- **Web Push (§17a)** — not built. No `push_subscriptions` table, no VAPID
-  keys, no subscribe prompt. Its own self-contained piece of work, not a
-  Milestone 6 addendum.
-- **No route-level code splitting** — every page is statically imported in
-  `App.tsx`, so a customer downloads the admin dashboard, the QR scanner and
-  TanStack Table on first load (~794 KB). Lazy-loading the routes cuts the
-  storefront's initial payload by roughly 20%.
-- **No component or E2E tests** — `lib/` is well covered; the React layer is
-  not. Deliberate, and still worth doing.
+- **Web Push (§17a) has one real platform limitation: iOS Safari.** Standard
+  Web Push only works there for a PWA the customer has added to their home
+  screen — a normal Safari tab can't subscribe. Every other supported browser
+  (Chrome, Firefox, Edge, desktop Safari 16+, Android) works from a plain tab.
 - **Product variants can't be deleted** — only renamed, repriced or added to.
   Orders, batches and stock rows reference them, so deleting one is a
   cascade nobody has designed yet. Deactivate the product instead.
-- **Milestone 6 smoke tests** — a real phone + order-number recovery, an admin
-  loading `/admin/audit-log`, and one manual `cleanup-payment-proofs` invoke
-  have never been confirmed end-to-end.

@@ -5,6 +5,7 @@ import {
   pgPolicy,
   pgSequence,
   index,
+  check,
   uuid,
   text,
   integer,
@@ -55,6 +56,8 @@ export const fulfilmentMethodEnum = pgEnum("fulfilment_method", [
   "PICKUP",
   "SHIPPING",
 ]);
+
+export const pushSubscriberKindEnum = pgEnum("push_subscriber_kind", ["ADMIN", "CUSTOMER"]);
 
 export const emailPriorityEnum = pgEnum("email_priority", ["P0", "P1", "P2"]);
 
@@ -475,6 +478,36 @@ export const emails = pgTable("emails", {
   // same `SELECT ... FROM emails` that shows FAILED also shows the fix.
   failureReason: text("failure_reason"),
 }).enableRLS();
+
+// Web Push subscriptions. One row per browser subscription (a customer or
+// admin can have several — one per device/browser). ADMIN rows notify staff
+// of new orders/payment submissions; CUSTOMER rows notify the person who
+// placed one specific order about its status. Written only by the
+// push-subscribe/push-unsubscribe Edge Functions over the service-role
+// connection, same as every other guest-write path in this schema — no RLS
+// policies, deny-all for anon/authenticated.
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: pushSubscriberKindEnum("kind").notNull(),
+    adminId: uuid("admin_id").references(() => adminUsers.id),
+    orderId: uuid("order_id").references(() => orders.id),
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    authKey: text("auth_key").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("push_subscriptions_admin_idx").on(table.adminId),
+    index("push_subscriptions_order_idx").on(table.orderId),
+    check(
+      "push_subscriptions_kind_matches_owner",
+      sql`(${table.kind} = 'ADMIN' and ${table.adminId} is not null and ${table.orderId} is null)
+        or (${table.kind} = 'CUSTOMER' and ${table.orderId} is not null and ${table.adminId} is null)`
+    ),
+  ]
+).enableRLS();
 
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").primaryKey().defaultRandom(),

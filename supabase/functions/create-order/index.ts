@@ -8,6 +8,8 @@ import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
 import { generateAccessToken } from "../_shared/tokens.ts";
+import { notifyAdmins } from "../_shared/push.ts";
+import { formatOrderNumber } from "../../../lib/order-number.ts";
 
 const accessTokenEncKey = Deno.env.get("ACCESS_TOKEN_ENC_KEY");
 if (!accessTokenEncKey) {
@@ -310,6 +312,11 @@ Deno.serve(async (req) => {
       });
 
       return { order: insertedOrder, rawAccessToken };
+    });
+
+    await notifyAdmins({
+      title: "New order placed",
+      body: `Order ${formatOrderNumber(order.order.fulfilmentMethod, order.order.orderNumber, order.order.id)} — Rp ${order.order.merchandiseSubtotal}`,
     });
 
     return json(
