@@ -59,6 +59,34 @@ function DialogContent({
   );
 }
 
+/**
+ * A dialog that sits against the bottom edge on a phone and becomes a centred
+ * card from `sm` up. Unlike DialogContent it adds no padding and no built-in
+ * close button, because its first child is usually a full-bleed image.
+ */
+function DialogSheetContent({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Content>) {
+  return (
+    <DialogPortal data-slot="dialog-portal">
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        data-slot="dialog-sheet-content"
+        className={cn(
+          "bg-background fixed inset-x-0 bottom-0 z-50 flex max-h-[92vh] flex-col overflow-hidden rounded-t-2xl border-t",
+          "sm:inset-x-auto sm:bottom-auto sm:top-1/2 sm:left-1/2 sm:w-full sm:max-w-md sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-lg",
+          className
+        )}
+        {...props}
+      >
+        {children}
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  );
+}
+
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -101,6 +129,7 @@ function DialogDescription({ className, ...props }: React.ComponentProps<typeof 
 
 export {
   Dialog,
+  DialogSheetContent,
   DialogClose,
   DialogContent,
   DialogDescription,

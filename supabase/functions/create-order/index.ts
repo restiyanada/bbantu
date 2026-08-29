@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation, decimalStringToCents, centsToDecimalString } from "../_shared/http.ts";
-import { customers, orders, orderItems, payments, productVariants, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
+import { customers, orders, orderItems, payments, productVariants, products, productImages, inventory, batches, batchItems, shippingSettings, shipments } from "../../../db/schema.ts";
 import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { getJneRates, computeWeightKg, ShippingProviderError } from "../_shared/shipping.ts";
@@ -145,11 +145,40 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Capture what the customer is buying, so a later product edit can't
+      // rewrite the record of this order. The price is already captured the
+      // same way; the name and photos join it.
+      const productIds = [...new Set(variants.map((v) => v.productId))];
+      const productRows = await tx.select().from(products).where(inArray(products.id, productIds));
+      const productById = new Map(productRows.map((row) => [row.id, row]));
+
+      const imageRows = await tx
+        .select()
+        .from(productImages)
+        .where(inArray(productImages.productId, productIds))
+        .orderBy(productImages.sortOrder);
+      const imagesByProduct = new Map<string, string[]>();
+      for (const image of imageRows) {
+        const list = imagesByProduct.get(image.productId) ?? [];
+        list.push(image.url);
+        imagesByProduct.set(image.productId, list);
+      }
+
       let subtotalCents = 0;
       const itemRows = variants.map((variant) => {
         const quantity = quantityByVariant.get(variant.id)!;
         subtotalCents += decimalStringToCents(variant.price) * quantity;
-        return { variantId: variant.id, quantity, unitPrice: variant.price };
+        const product = productById.get(variant.productId);
+        // Fall back to the cover column for a product with no product_images rows.
+        const coverOnly = product?.imageUrl ? [product.imageUrl] : [];
+        return {
+          variantId: variant.id,
+          quantity,
+          unitPrice: variant.price,
+          productName: product?.name ?? null,
+          variantName: variant.name,
+          imageUrls: imagesByProduct.get(variant.productId) ?? coverOnly,
+        };
       });
       const merchandiseSubtotal = centsToDecimalString(subtotalCents);
 
@@ -249,6 +278,9 @@ Deno.serve(async (req) => {
           variantId: item.variantId,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          productName: item.productName,
+          variantName: item.variantName,
+          imageUrls: item.imageUrls,
         }))
       );
 

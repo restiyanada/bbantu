@@ -19,7 +19,7 @@ it does, and `PRD.html` for the business rules (referenced throughout as §n).
 - **Auth:** Supabase Auth (magic link) for staff; high-entropy access tokens
   for guest order access (§16, §27) — separate systems, not the same thing
 - **File storage:** Supabase Storage — payment proofs (private, 30-day
-  retention) and product images (public)
+  retention) and product images (public, never deleted — see "Product photos")
 - **Email:** Resend, sent by a scheduled Edge Function off a queue table
 - **Testing:** Vitest — 71 unit tests over the pure logic in `lib/`
 
@@ -62,6 +62,31 @@ the first `migrate` run would consider *every* migration unapplied and try to
 replay `0000` onward against a database that already has all of it. Until
 someone deliberately reconciles that bookkeeping (backfilling the table to
 match reality), by-hand SQL is the safe path.
+
+## Product photos and what an order remembers
+
+A product has an ordered list of photos in `product_images`. `sort_order` 0 is
+the cover, and the app mirrors that URL into `products.image_url`, so the
+storefront grid, order-tracker thumbnails and shipping labels keep reading one
+column. Customers open a photo sheet from a product card or an order item and
+swipe the gallery.
+
+**An order item stores what it was sold as.** `order_items` already captured
+`unit_price` rather than joining live to `product_variants.price`; it now
+captures `product_name`, `variant_name` and `image_urls` the same way. Without
+that, editing a product would rewrite what every past order appears to contain
+— rename a product and last month's tracking links quietly rename too.
+
+Two consequences worth knowing:
+
+- **Removing a photo from a product deletes the row, never the Storage
+  object.** Old orders' `image_urls` point at those files. Nothing prunes the
+  `product-images` bucket, deliberately — unlike payment proofs, which a
+  scheduled function deletes at 30 days.
+- **Descriptions are still joined live**, on purpose: an edit there is usually
+  a correction that helps the buyer, and it isn't what identifies the item.
+- Items on orders placed before the snapshot columns existed have NULL there
+  and fall back to the live join, which is the behaviour they already had.
 
 ## Folder structure
 
@@ -194,14 +219,15 @@ not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).
 - **Web Push (§17a)** — not built. No `push_subscriptions` table, no VAPID
   keys, no subscribe prompt. Its own self-contained piece of work, not a
   Milestone 6 addendum.
-- **Products are create-only** — no edit or deactivate UI, so `products.active`
-  (which the storefront filters on) can only be changed via SQL.
 - **No route-level code splitting** — every page is statically imported in
   `App.tsx`, so a customer downloads the admin dashboard, the QR scanner and
   TanStack Table on first load (~794 KB). Lazy-loading the routes cuts the
   storefront's initial payload by roughly 20%.
 - **No component or E2E tests** — `lib/` is well covered; the React layer is
   not. Deliberate, and still worth doing.
+- **Product variants can't be deleted** — only renamed, repriced or added to.
+  Orders, batches and stock rows reference them, so deleting one is a
+  cascade nobody has designed yet. Deactivate the product instead.
 - **Milestone 6 smoke tests** — a real phone + order-number recovery, an admin
   loading `/admin/audit-log`, and one manual `cleanup-payment-proofs` invoke
   have never been confirmed end-to-end.

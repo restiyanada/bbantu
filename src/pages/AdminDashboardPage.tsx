@@ -209,7 +209,7 @@ export default function AdminDashboardPage() {
     await loadOrders();
   }
 
-  const columns = [
+  const columns = useMemo(() => [
     columnHelper.accessor("id", {
       header: "Order",
       cell: ({ row }) => (
@@ -246,7 +246,7 @@ export default function AdminDashboardPage() {
         </Button>
       ),
     }),
-  ];
+  ], []);
 
   const statusOptions = useMemo(
     () =>
