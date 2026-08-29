@@ -1,0 +1,38 @@
+-- Fixes every admin write from the browser. Apply this BEFORE trying to create
+-- or edit a product.
+--
+-- Symptom: uploading a product photo returns
+--   {"statusCode":"403","error":"Unauthorized",
+--    "message":"new row violates row-level security policy","code":"AccessDenied"}
+-- and creating a product, a variant or a batch item fails the same way.
+--
+-- Cause: `admin_users` has RLS enabled and, until now, NO policies. Every
+-- staff-gated policy in the schema is of the form
+--
+--     exists (select 1 from admin_users
+--              where admin_users.email = (auth.jwt() ->> 'email')
+--                and admin_users.can_manage_products_batches = true)
+--
+-- and that subquery runs as the CALLER, so it is itself subject to admin_users'
+-- RLS. With no policy there, `authenticated` saw zero rows, so every one of
+-- those gates evaluated to false — silently, since a policy that returns false
+-- is a denial, not an error. The same expression is duplicated in the
+-- storage.objects policy for the product-images bucket, which is why the photo
+-- upload was the first thing to fail.
+--
+-- It was invisible because the admin screens that work — orders, payments,
+-- pickup — all go through Edge Functions on the service-role connection, which
+-- bypasses RLS entirely. Only the screens that write straight from the browser
+-- (products, batches) were affected, and neither had been exercised against the
+-- live project until now.
+--
+-- Fix: let a signed-in admin read their OWN row. That is exactly what the
+-- `whoami` Edge Function already returns to the frontend, so it exposes nothing
+-- new, and it is scoped to the caller — one admin still cannot list the others.
+--
+-- Verify, signed in as staff in the browser (not the SQL editor, which runs as
+-- `postgres` and bypasses RLS):
+--   const { data } = await supabase.from("admin_users").select("email");
+--   // exactly one row: your own
+
+CREATE POLICY "admin_can_read_own_row" ON "admin_users" AS PERMISSIVE FOR SELECT TO "authenticated" USING ("admin_users"."email" = (auth.jwt() ->> 'email'));

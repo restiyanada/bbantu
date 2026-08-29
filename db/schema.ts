@@ -64,22 +64,40 @@ export const emailStatusEnum = pgEnum("email_status", [
   "FAILED",
 ]);
 
-export const adminUsers = pgTable("admin_users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  canVerifyPayments: boolean("can_verify_payments").notNull().default(false),
-  canScanConfirmPickup: boolean("can_scan_confirm_pickup")
-    .notNull()
-    .default(false),
-  canManageProductsBatches: boolean("can_manage_products_batches").notNull().default(false),
-  canAdjustInventory: boolean("can_adjust_inventory").notNull().default(false),
-  canManageShipping: boolean("can_manage_shipping").notNull().default(false),
-  canViewAuditLog: boolean("can_view_audit_log").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-}).enableRLS();
-
 const requestAdminEmail = sql`(auth.jwt() ->> 'email')`;
+
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+    canVerifyPayments: boolean("can_verify_payments").notNull().default(false),
+    canScanConfirmPickup: boolean("can_scan_confirm_pickup").notNull().default(false),
+    canManageProductsBatches: boolean("can_manage_products_batches").notNull().default(false),
+    canAdjustInventory: boolean("can_adjust_inventory").notNull().default(false),
+    canManageShipping: boolean("can_manage_shipping").notNull().default(false),
+    canViewAuditLog: boolean("can_view_audit_log").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // Every other policy in this file gates on `exists (select 1 from admin_users
+    // …)`. That subquery runs as the CALLER, so it is itself subject to this
+    // table's RLS — with RLS on and no policy here, it saw zero rows and every
+    // one of those gates silently evaluated to false. Staff could read through
+    // the Edge Functions (service role bypasses RLS) but every direct write from
+    // the browser was denied.
+    //
+    // Reading your own permission row is exactly what `whoami` already hands the
+    // frontend, so this exposes nothing new. It is scoped to the caller's own
+    // row: one admin still cannot list the others.
+    pgPolicy("admin_can_read_own_row", {
+      for: "select",
+      to: "authenticated",
+      using: sql`${table.email} = ${requestAdminEmail}`,
+    }),
+  ]
+).enableRLS();
 
 const isAnyAdmin = sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail})`;
 
