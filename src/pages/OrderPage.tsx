@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AlertCircle, Clock, Package, Truck, CheckCircle2, ChevronRight } from "lucide-react";
-import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
@@ -167,24 +167,24 @@ export default function OrderPage() {
     setState({ kind: "loading" });
 
     async function load(token: string) {
-      const client = createGuestOrderClient(token);
-
-      const { data: order, error: orderError } = await client
-        .from("orders")
-        .select(
-          "id, order_number, status, sales_mode, payment_type, merchandise_subtotal, shipping_cost, amount_paid, fulfilment_method, created_at, batch_id"
-        )
-        .maybeSingle();
+      // Goes through an Edge Function rather than a direct-from-browser
+      // PostgREST query gated on a custom header, because that mechanism
+      // proved unreliable on Supabase's hosted REST API — a token could hash-
+      // match the stored value exactly (verified directly in Postgres) and
+      // still return zero rows over the real HTTP path. Every other guest
+      // action here (create-order, recover-order-access, resubmit-payment,
+      // submit-balance-payment) already takes the token in the request body
+      // and compares it on the service-role connection; this brings order
+      // lookup in line with that instead of being the one path still relying
+      // on the header trick.
+      const { data, error: invokeError } = await supabase.functions.invoke("get-order", {
+        body: { accessToken: token },
+      });
 
       if (cancelled) return;
 
-      if (orderError || !order) {
-        // "Not found" and "the request never actually reached the RLS check"
-        // look identical to the customer either way, but they are not the
-        // same bug: a genuine zero-row RLS result and a network/CORS failure
-        // both land here. Logging the real error is the only way to tell
-        // them apart from outside the browser that hit it.
-        if (orderError) console.error("Order lookup failed:", orderError);
+      if (invokeError || !data?.found) {
+        if (invokeError) console.error("Order lookup failed:", invokeError);
         setState({
           kind: "error",
           message:
@@ -193,40 +193,14 @@ export default function OrderPage() {
         return;
       }
 
-      const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
-        client
-          .from("order_items")
-          .select(
-            "quantity, unit_price, product_name, variant_name, image_urls, " +
-              "product_variants(name, products(name, description, image_url, product_images(url, sort_order)))"
-          )
-          .eq("order_id", order.id),
-        client
-          .from("payments")
-          .select("status, amount, submitted_at, rejection_reason")
-          .eq("order_id", order.id)
-          .order("submitted_at", { ascending: false }),
-        client.from("pickup_tokens").select("token").eq("order_id", order.id).maybeSingle(),
-        client
-          .from("shipments")
-          .select("courier, service, recipient_name, address, destination_district_name, tracking_number")
-          .eq("order_id", order.id)
-          .maybeSingle(),
-        order.batch_id
-          ? supabase.from("batches").select("name").eq("id", order.batch_id).maybeSingle()
-          : Promise.resolve({ data: null }),
-      ]);
-
-      if (cancelled) return;
-
       setState({
         kind: "ready",
-        order,
-        items: (itemsResult.data as OrderItemRow[] | null) ?? [],
-        payments: paymentsResult.data ?? [],
-        pickupToken: pickupResult.data?.token ?? null,
-        shipment: (shipmentResult.data as ShipmentRow | null) ?? null,
-        batchName: (batchResult.data as { name: string } | null)?.name ?? null,
+        order: data.order as OrderRow,
+        items: (data.items as OrderItemRow[] | null) ?? [],
+        payments: (data.payments as PaymentRow[] | null) ?? [],
+        pickupToken: data.pickupToken ?? null,
+        shipment: (data.shipment as ShipmentRow | null) ?? null,
+        batchName: data.batchName ?? null,
       });
     }
 
