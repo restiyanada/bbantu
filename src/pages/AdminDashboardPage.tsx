@@ -14,6 +14,7 @@ import { DataTable, type DataTableFilter } from "@/components/data-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import AdminLayout from "@/components/AdminLayout";
 import { ShippingLabel, type ShippingLabelSender } from "@/components/shipping-label";
+import { ImageZoom } from "@/components/ui/image-zoom";
 
 interface LatestPayment {
   id: string;
@@ -448,7 +449,11 @@ export default function AdminDashboardPage() {
               {openOrder.payment ? (
                 <>
                   {openOrder.payment.proofUrl ? (
-                    <img src={openOrder.payment.proofUrl} alt="Payment proof" className="w-full rounded-lg border mt-1" />
+                    <ImageZoom
+                      src={openOrder.payment.proofUrl}
+                      alt="Payment proof"
+                      className="block w-full overflow-hidden rounded-lg border mt-1"
+                    />
                   ) : openOrder.payment.proofDeletedAt ? (
                     <p className="text-sm text-muted-foreground">Proof deleted (30-day retention).</p>
                   ) : (
