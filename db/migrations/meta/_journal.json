@@ -50,6 +50,13 @@
       "when": 1787963178639,
       "tag": "0008_rls_and_rate_limiting",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787983872957,
+      "tag": "0010_product_images_and_order_item_snapshot",
+      "breakpoints": true
     }
   ]
 }

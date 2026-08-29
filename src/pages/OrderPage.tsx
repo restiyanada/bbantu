@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { AlertCircle, Clock, Package, Truck, CheckCircle2 } from "lucide-react";
+import { AlertCircle, Clock, Package, Truck, CheckCircle2, ChevronRight } from "lucide-react";
 import { createGuestOrderClient, supabase } from "../lib/supabaseClient";
 import { formatIDR, formatOrderNumber } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 import { FileInput } from "@/components/ui/file-input";
+import { ProductDetailSheet } from "@/components/product-detail-sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface OrderRow {
@@ -28,7 +29,59 @@ interface OrderRow {
 interface OrderItemRow {
   quantity: number;
   unit_price: string;
-  product_variants: { name: string; products: { image_url: string | null } | null } | null;
+  // Captured at checkout. Null on orders placed before the columns existed —
+  // those fall back to the live join below, which is the behaviour they had.
+  product_name: string | null;
+  variant_name: string | null;
+  image_urls: string[] | null;
+  product_variants: {
+    name: string;
+    products: {
+      name: string;
+      description: string | null;
+      image_url: string | null;
+      product_images: { url: string; sort_order: number }[];
+    } | null;
+  } | null;
+}
+
+interface ResolvedItem {
+  productName: string;
+  variantName: string;
+  description: string | null;
+  photoUrls: string[];
+  quantity: number;
+  unitPrice: string;
+}
+
+/**
+ * Prefer what was captured at checkout; fall back to the product as it is now.
+ * The snapshot is what stops a later product edit from rewriting the record of
+ * an order someone already placed.
+ */
+function resolveItem(item: OrderItemRow): ResolvedItem {
+  const product = item.product_variants?.products ?? null;
+  const live = [...(product?.product_images ?? [])]
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map((i) => i.url);
+
+  return {
+    productName: item.product_name ?? product?.name ?? "Item",
+    variantName: item.variant_name ?? item.product_variants?.name ?? "",
+    // Descriptions stay live: an edit there is usually a correction that helps
+    // the buyer, and it is not what identifies what they bought.
+    description: product?.description ?? null,
+    photoUrls:
+      item.image_urls && item.image_urls.length > 0
+        ? item.image_urls
+        : live.length > 0
+          ? live
+          : product?.image_url
+            ? [product.image_url]
+            : [],
+    quantity: item.quantity,
+    unitPrice: item.unit_price,
+  };
 }
 
 interface PaymentRow {
@@ -93,6 +146,7 @@ export default function OrderPage() {
   const [resubmitUploading, setResubmitUploading] = useState(false);
   const [resubmitting, setResubmitting] = useState(false);
   const [resubmitError, setResubmitError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ResolvedItem | null>(null);
   const resubmitInputRef = useRef<HTMLInputElement>(null);
 
   const [balancePath, setBalancePath] = useState<string | null>(null);
@@ -136,7 +190,10 @@ export default function OrderPage() {
       const [itemsResult, paymentsResult, pickupResult, shipmentResult, batchResult] = await Promise.all([
         client
           .from("order_items")
-          .select("quantity, unit_price, product_variants(name, products(image_url))")
+          .select(
+            "quantity, unit_price, product_name, variant_name, image_urls, " +
+              "product_variants(name, products(name, description, image_url, product_images(url, sort_order)))"
+          )
           .eq("order_id", order.id),
         client
           .from("payments")
@@ -504,25 +561,62 @@ export default function OrderPage() {
         <CardHeader>
           <CardTitle>Items</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {items.map((item, i) => {
-            const imageUrl = item.product_variants?.products?.image_url ?? null;
+        <CardContent className="space-y-0.5">
+          {items.map((raw, i) => {
+            const item = resolveItem(raw);
+            const label = item.variantName ? `${item.productName} — ${item.variantName}` : item.productName;
             return (
-              <div key={i} className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2">
-                  {imageUrl ? (
-                    <img src={imageUrl} alt="" className="h-10 w-10 rounded-lg object-cover border" />
+              <button
+                key={i}
+                type="button"
+                onClick={() => setDetail(item)}
+                className="flex w-full items-center gap-3 rounded-lg p-2 text-left text-sm transition-colors hover:bg-muted/60 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <span className="relative shrink-0">
+                  {item.photoUrls.length > 0 ? (
+                    <img src={item.photoUrls[0]} alt="" className="size-12 rounded-lg border object-cover" />
                   ) : (
-                    <span className="h-10 w-10 rounded-lg border bg-muted" />
+                    <span className="block size-12 rounded-lg border bg-muted" />
                   )}
-                  {item.product_variants?.name ?? "Item"} × {item.quantity}
+                  {item.photoUrls.length > 1 && (
+                    <span className="absolute -bottom-1 -right-1 min-w-[18px] rounded-full border-[1.5px] border-background bg-primary px-1 text-center text-[10px] font-bold leading-[15px] text-primary-foreground">
+                      {item.photoUrls.length}
+                    </span>
+                  )}
                 </span>
-                <span>{formatIDR(item.unit_price)}</span>
-              </div>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{label}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Qty {item.quantity}
+                    {item.photoUrls.length > 1 && ` · ${item.photoUrls.length} photos`}
+                  </span>
+                </span>
+                <span className="whitespace-nowrap">{formatIDR(item.unitPrice)}</span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+              </button>
             );
           })}
         </CardContent>
       </Card>
+
+      <ProductDetailSheet
+        open={detail !== null}
+        onOpenChange={(open) => !open && setDetail(null)}
+        name={detail?.productName ?? ""}
+        description={detail?.description}
+        photoUrls={detail?.photoUrls ?? []}
+        aside={
+          detail && (
+            <div className="text-right">
+              <p className="text-base font-semibold leading-6 whitespace-nowrap">{formatIDR(detail.unitPrice)}</p>
+              <p className="text-xs text-muted-foreground">Qty {detail.quantity}</p>
+            </div>
+          )
+        }
+      >
+        {detail?.variantName && <p className="text-sm">{detail.variantName}</p>}
+      </ProductDetailSheet>
+
 
       <Card>
         <CardHeader>

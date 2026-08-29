@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Search, Plus, Minus, Check } from "lucide-react";
+import { Search, Plus, Minus, Check, ChevronRight, Image as ImageIcon } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -9,6 +9,7 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
+import { ProductDetailSheet } from "@/components/product-detail-sheet";
 import { FileInput } from "@/components/ui/file-input";
 import { Input, Textarea, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
@@ -21,12 +22,24 @@ interface VariantRow {
   price: string;
 }
 
+interface ProductImageRow {
+  url: string;
+  sort_order: number;
+}
 interface ProductRow {
   id: string;
   name: string;
   description: string | null;
   image_url: string | null;
+  product_images: ProductImageRow[];
   product_variants: VariantRow[];
+}
+
+/** sort_order is the admin's arrangement; image_url is the cover fallback. */
+function photoUrlsOf(product: { image_url: string | null; product_images?: ProductImageRow[] }): string[] {
+  const ordered = [...(product.product_images ?? [])].sort((a, b) => a.sort_order - b.sort_order);
+  if (ordered.length > 0) return ordered.map((i) => i.url);
+  return product.image_url ? [product.image_url] : [];
 }
 
 interface PaymentSettingsRow {
@@ -38,7 +51,16 @@ interface PaymentSettingsRow {
 interface RawBatchItem {
   id: string;
   variant_id: string;
-  product_variants: { name: string; price: string; products: { name: string; image_url: string | null } | null };
+  product_variants: {
+    name: string;
+    price: string;
+    products: {
+      name: string;
+      description: string | null;
+      image_url: string | null;
+      product_images: ProductImageRow[];
+    } | null;
+  };
 }
 interface RawBatch {
   id: string;
@@ -49,9 +71,12 @@ interface RawBatch {
 
 interface SelectableItem {
   variantId: string;
+  productName: string;
+  variantName: string;
   label: string;
   price: string;
-  imageUrl: string | null;
+  description: string | null;
+  photoUrls: string[];
 }
 
 interface BatchOption {
@@ -101,6 +126,7 @@ export default function HomePage() {
   const [activeSource, setActiveSource] = useState<string>("READY_STOCK");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemsError, setItemsError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [paymentType, setPaymentType] = useState<"DP" | "FULL">("FULL");
@@ -146,12 +172,14 @@ export default function HomePage() {
       const [productsResult, batchesResult, settingsResult] = await Promise.all([
         supabase
           .from("products")
-          .select("id, name, description, image_url, product_variants(id, name, price)")
+          .select(
+            "id, name, description, image_url, product_images(url, sort_order), product_variants(id, name, price)"
+          )
           .eq("active", true),
         supabase
           .from("batches")
           .select(
-            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name, image_url)))"
+            "id, name, allowed_payment_types, allowed_fulfilment_methods, batch_items(id, variant_id, product_variants(name, price, products(name, description, image_url, product_images(url, sort_order))))"
           )
           .eq("status", "OPEN"),
         supabase.from("payment_settings").select("bank_name, account_number, account_holder_name").limit(1).maybeSingle(),
@@ -174,12 +202,18 @@ export default function HomePage() {
           name: b.name,
           allowedPaymentTypes: b.allowed_payment_types,
           allowedFulfilmentMethods: b.allowed_fulfilment_methods,
-          items: b.batch_items.map((item) => ({
-            variantId: item.variant_id,
-            label: `${item.product_variants.products?.name ?? "Product"} — ${item.product_variants.name}`,
-            price: item.product_variants.price,
-            imageUrl: item.product_variants.products?.image_url ?? null,
-          })),
+          items: b.batch_items.map((item) => {
+            const product = item.product_variants.products;
+            return {
+              variantId: item.variant_id,
+              productName: product?.name ?? "Product",
+              variantName: item.product_variants.name,
+              label: `${product?.name ?? "Product"} — ${item.product_variants.name}`,
+              price: item.product_variants.price,
+              description: product?.description ?? null,
+              photoUrls: product ? photoUrlsOf(product) : [],
+            };
+          }),
         }))
       );
 
@@ -303,9 +337,12 @@ export default function HomePage() {
       ? (products ?? []).flatMap((p) =>
           p.product_variants.map((v) => ({
             variantId: v.id,
+            productName: p.name,
+            variantName: v.name,
             label: `${p.name} — ${v.name}`,
             price: v.price,
-            imageUrl: p.image_url,
+            description: p.description,
+            photoUrls: photoUrlsOf(p),
           }))
         )
       : activeBatch?.items ?? [];
@@ -589,19 +626,27 @@ export default function HomePage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {products.map((product) => (
                       <div key={product.id} className="rounded-lg border bg-card overflow-hidden">
-                        <div className="aspect-[4/3] bg-muted">
-                          {product.image_url ? (
-                            <img src={product.image_url} alt="" className="h-full w-full object-cover" />
-                          ) : (
-                            <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
-                              No photo
-                            </div>
-                          )}
-                        </div>
+                        <ProductPhotoButton
+                          photoUrls={photoUrlsOf(product)}
+                          name={product.name}
+                          onOpen={() =>
+                            setDetail({
+                              name: product.name,
+                              description: product.description,
+                              photoUrls: photoUrlsOf(product),
+                              rows: product.product_variants.map((v) => ({
+                                variantId: v.id,
+                                label: `${v.name} — ${formatIDR(v.price)}`,
+                              })),
+                            })
+                          }
+                        />
                         <div className="p-3 space-y-2">
                           <div>
                             <p className="font-medium">{product.name}</p>
-                            {product.description && <p className="text-sm text-muted-foreground">{product.description}</p>}
+                            {product.description && (
+                              <p className="text-sm text-muted-foreground line-clamp-1">{product.description}</p>
+                            )}
                           </div>
                           <div className="space-y-1.5">
                             {product.product_variants.map((variant) => (
@@ -628,15 +673,20 @@ export default function HomePage() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {activeBatch.items.map((item) => (
                           <div key={item.variantId} className="rounded-lg border bg-card overflow-hidden">
-                            <div className="aspect-[4/3] bg-muted">
-                              {item.imageUrl ? (
-                                <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
-                              ) : (
-                                <div className="h-full w-full flex items-center justify-center text-xs text-muted-foreground">
-                                  No photo
-                                </div>
-                              )}
-                            </div>
+                            <ProductPhotoButton
+                              photoUrls={item.photoUrls}
+                              name={item.productName}
+                              onOpen={() =>
+                                setDetail({
+                                  name: item.productName,
+                                  description: item.description,
+                                  photoUrls: item.photoUrls,
+                                  rows: [
+                                    { variantId: item.variantId, label: `${item.variantName} — ${formatIDR(item.price)}` },
+                                  ],
+                                })
+                              }
+                            />
                             <div className="p-3 space-y-2">
                               <p className="text-sm">
                                 {item.label} — {formatIDR(item.price)}
@@ -982,6 +1032,25 @@ export default function HomePage() {
           </>
         )}
 
+        <ProductDetailSheet
+          open={detail !== null}
+          onOpenChange={(open) => !open && setDetail(null)}
+          name={detail?.name ?? ""}
+          description={detail?.description}
+          photoUrls={detail?.photoUrls ?? []}
+        >
+          <div className="space-y-2.5">
+            {(detail?.rows ?? []).map((row) => (
+              <QuantityRow
+                key={row.variantId}
+                label={row.label}
+                qty={quantities[row.variantId] ?? 0}
+                onChange={(qty) => setQuantity(row.variantId, qty)}
+              />
+            ))}
+          </div>
+        </ProductDetailSheet>
+
         {/* Sticky step navigation / cart bar */}
         <div className="fixed bottom-0 inset-x-0 bg-card border-t z-20">
           <div className="max-w-3xl mx-auto px-4 sm:px-8 py-3 flex items-center justify-between gap-3">
@@ -1020,6 +1089,52 @@ export default function HomePage() {
         </div>
       </form>
     </main>
+  );
+}
+
+interface DetailTarget {
+  name: string;
+  description: string | null;
+  photoUrls: string[];
+  rows: Array<{ variantId: string; label: string }>;
+}
+
+/** The 4:3 photo at the top of an item card. Tapping it opens the detail sheet. */
+function ProductPhotoButton({
+  photoUrls,
+  name,
+  onOpen,
+}: {
+  photoUrls: string[];
+  name: string;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group relative block aspect-[4/3] w-full overflow-hidden bg-muted text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      {photoUrls.length > 0 ? (
+        <img src={photoUrls[0]} alt={name} className="h-full w-full object-cover" />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
+          No photo
+        </span>
+      )}
+
+      {photoUrls.length > 1 && (
+        <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-foreground/60 px-2 py-0.5 text-[11px] font-semibold leading-4 text-background">
+          <ImageIcon className="size-3" />
+          {photoUrls.length}
+        </span>
+      )}
+
+      <span className="absolute bottom-2 left-2 flex items-center gap-0.5 rounded-full bg-background/90 px-2.5 py-1 text-[11px] font-semibold leading-4 transition-colors group-hover:bg-background">
+        Tap for details
+        <ChevronRight className="size-3" />
+      </span>
+    </button>
   );
 }
 

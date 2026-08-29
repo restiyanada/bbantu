@@ -134,6 +134,32 @@ export const productVariants = pgTable(
   ]
 ).enableRLS();
 
+// Photos for one product, ordered. sort_order 0 is the cover — it is mirrored
+// into products.image_url so the storefront grid, order tracker thumbnails and
+// shipping labels keep working off a single column.
+export const productImages = pgTable(
+  "product_images",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    url: text("url").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("product_images_product_idx").on(table.productId, table.sortOrder),
+    pgPolicy("anyone_can_read_product_images", { for: "select", to: ["anon", "authenticated"], using: sql`true` }),
+    pgPolicy("staff_can_manage_product_images", {
+      for: "all",
+      to: "authenticated",
+      using: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+      withCheck: sql`exists (select 1 from ${adminUsers} where ${adminUsers.email} = ${requestAdminEmail} and ${adminUsers.canManageProductsBatches} = true)`,
+    }),
+  ]
+).enableRLS();
+
 // Read straight from the browser at checkout (HomePage) so the customer knows
 // which account to transfer to — hence the public select policy. There is
 // deliberately no insert/update/delete policy: with RLS on, that makes the row
@@ -277,6 +303,12 @@ export const orderItems = pgTable(
       .references(() => productVariants.id),
     quantity: integer("quantity").notNull(),
     unitPrice: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    // What the customer actually bought, captured at checkout beside the price.
+    // Editing a product later must not rewrite the record of a past order, so
+    // the tracker reads these rather than joining live through variant_id.
+    productName: text("product_name"),
+    variantName: text("variant_name"),
+    imageUrls: jsonb("image_urls").$type<string[]>(),
   },
   (table) => [
     pgPolicy("guest_can_read_own_order_items", {
