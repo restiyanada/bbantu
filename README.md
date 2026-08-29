@@ -156,16 +156,35 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
 
 ## Deploying
 
-**Frontend:** Cloudflare Pages, connected to this repo. Build command
+**Frontend:** Cloudflare, connected to this repo. Build command
 `npm run build`, output directory `dist`, and set `VITE_SUPABASE_URL` /
 `VITE_SUPABASE_PUBLISHABLE_KEY` as build environment variables (they're baked
 into the bundle at build time).
 
-`public/_redirects` handles SPA routing (`/*  /index.html  200`) — without it
-Pages serves static files only, so any deep link (`/orders/:accessToken`,
-`/dashboard`) would 404 on refresh or when opened from an email, breaking the
-customer order tracker. Real assets still take precedence over the fallback, so
-`/assets/*` and `/fonts/*` are unaffected.
+**SPA routing is handled by the platform, not by a `_redirects` file.** Deep
+links (`/orders/:accessToken`, `/dashboard`) must serve `index.html` rather than
+404, or the customer order tracker breaks — it's reached by emailed link and
+nothing else. Cloudflare's current Workers Assets platform does this via
+
+```jsonc
+"assets": { "not_found_handling": "single-page-application" }
+```
+
+which `wrangler` auto-detects for a Vite project and writes into a generated
+`wrangler.jsonc` at build time. Real files still win, so `/assets/*` and
+`/fonts/*` are unaffected.
+
+⚠️ **Do not add a `public/_redirects` with `/*  /index.html  200`.** That was
+the correct pattern on classic Cloudflare Pages, but the Workers Assets
+validator now rejects it — `/index.html` itself matches `/*`, which it flags as
+an infinite loop (`code: 100324`), and the whole deploy fails. This repo had one
+briefly; it broke the first deploy and was removed.
+
+Since the config is auto-detected rather than committed, **verify SPA routing
+after any deploy** by hard-refreshing an `/orders/:token` URL. If it 404s, pin
+the behaviour by committing a `wrangler.jsonc` with the `assets` block above —
+note it also needs a `name` matching the Cloudflare project, so it has to be
+updated if the project is ever recreated under a different name.
 
 **Edge Functions:** `supabase functions deploy <name>`. These run on Supabase,
 not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).
