@@ -8,6 +8,7 @@ import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
+import { FileInput } from "@/components/ui/file-input";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface OrderRow {
@@ -361,13 +362,12 @@ export default function OrderPage() {
         : "Your payment was rejected. Please upload a new proof.",
       extra: (
         <div className="space-y-2 pt-1">
-          <input
+          <FileInput
             ref={resubmitInputRef}
-            type="file"
             accept={ACCEPTED_PROOF_TYPES.join(",")}
             onChange={handleResubmitFileChange}
             disabled={resubmitUploading}
-            className="text-sm"
+            hint="JPG, PNG or WebP"
           />
           {resubmitUploading && <p className="text-sm">Uploading…</p>}
           {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
@@ -408,13 +408,12 @@ export default function OrderPage() {
           : ""),
       extra: (
         <div className="space-y-2 pt-1">
-          <input
+          <FileInput
             ref={balanceInputRef}
-            type="file"
             accept={ACCEPTED_PROOF_TYPES.join(",")}
             onChange={handleBalanceFileChange}
             disabled={balanceUploading}
-            className="text-sm"
+            hint="JPG, PNG or WebP"
           />
           {balanceUploading && <p className="text-sm">Uploading…</p>}
           {balancePath && balancePreviewUrl && !balanceUploading && (

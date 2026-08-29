@@ -10,6 +10,7 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { FileInput } from "@/components/ui/file-input";
 import { Label, RequiredMark, OptionalMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -278,12 +279,11 @@ export default function AdminProductsPage() {
                   Photo
                   <OptionalMark />
                 </Label>
-                <input
+                <FileInput
                   ref={imageInputRef}
-                  type="file"
                   accept={ACCEPTED_IMAGE_TYPES.join(",")}
                   onChange={handleImageChange}
-                  className="block text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+                  hint="JPG, PNG or WebP"
                 />
                 {imagePreviewUrl && (
                   <div className="flex items-center gap-3 pt-1">

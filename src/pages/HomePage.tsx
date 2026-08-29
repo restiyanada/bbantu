@@ -9,6 +9,7 @@ import { formatIDR } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
+import { FileInput } from "@/components/ui/file-input";
 import { Input, Textarea, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -962,13 +963,12 @@ export default function HomePage() {
                 <p className="text-sm text-muted-foreground">
                   Upload a screenshot of your transfer receipt for the amount shown above.
                 </p>
-                <input
+                <FileInput
                   ref={proofInputRef}
-                  type="file"
                   accept={ACCEPTED_PROOF_TYPES.join(",")}
                   onChange={handleProofFileChange}
                   disabled={proofUploading}
-                  className="text-sm"
+                  hint="JPG, PNG or WebP"
                 />
                 {proofUploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
                 {proofPath && proofPreviewUrl && !proofUploading && (

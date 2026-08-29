@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from "@tanstack/react-table";
 import { X } from "lucide-react";
 import { Input, Select } from "@/components/ui/input";
@@ -36,18 +36,34 @@ export function DataTable<TData>({
 }: DataTableProps<TData>) {
   const [search, setSearch] = useState("");
 
-  const filteredData = data.filter((row) => {
-    if (filters?.some((f) => f.value && !f.predicate(row, f.value))) return false;
-    if (searchableText && search.trim()) {
-      return searchableText(row).toLowerCase().includes(search.trim().toLowerCase());
-    }
-    return true;
-  });
+  // `filteredData` MUST keep a stable identity between renders. TanStack memoizes
+  // the row model on the identity of `data`, and a fresh array makes it rebuild —
+  // which queues a page-index auto-reset, which sets state, which renders again,
+  // which builds another fresh array. That loop runs in microtasks, so it never
+  // yields and the whole tab locks up on the second render of any table.
+  // The filters/searchableText props are also rebuilt by callers every render, so
+  // they're read through a ref and the memo is keyed on the filter *values*.
+  const latest = useRef({ filters, searchableText });
+  latest.current = { filters, searchableText };
+
+  const filterKey = filters?.map((f) => f.value).join("\u0000") ?? "";
+  const filteredData = useMemo(() => {
+    const { filters: activeFilters, searchableText: toText } = latest.current;
+    const query = search.trim().toLowerCase();
+    return data.filter((row) => {
+      if (activeFilters?.some((f) => f.value && !f.predicate(row, f.value))) return false;
+      if (toText && query) return toText(row).toLowerCase().includes(query);
+      return true;
+    });
+  }, [data, search, filterKey]);
 
   const table = useReactTable({
     data: filteredData,
     columns,
     getCoreRowModel: getCoreRowModel(),
+    // Every row is rendered — there is no pagination row model to reset, and the
+    // reset is what turns an unstable `data` reference into an infinite loop.
+    autoResetPageIndex: false,
   });
 
   const hasControls = Boolean(searchableText) || Boolean(filters?.length);
