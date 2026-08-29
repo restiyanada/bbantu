@@ -4,7 +4,7 @@ import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse } from "../_shared/http.ts";
 import { requireAdmin } from "../_shared/auth.ts";
 import { getSignedProofUrl } from "../_shared/storage.ts";
-import { orders, customers, payments, shipments } from "../../../db/schema.ts";
+import { orders, customers, payments, shipments, orderItems } from "../../../db/schema.ts";
 
 Deno.serve(async (req) => {
   const preflight = handleCors(req);
@@ -38,6 +38,26 @@ Deno.serve(async (req) => {
 
     const orderIds = rows.map((r) => r.id);
 
+    const itemRows =
+      orderIds.length > 0
+        ? await db
+            .select({
+              orderId: orderItems.orderId,
+              quantity: orderItems.quantity,
+              unitPrice: orderItems.unitPrice,
+              productName: orderItems.productName,
+              variantName: orderItems.variantName,
+            })
+            .from(orderItems)
+            .where(inArray(orderItems.orderId, orderIds))
+        : [];
+    const itemsByOrder = new Map<string, typeof itemRows>();
+    for (const item of itemRows) {
+      const list = itemsByOrder.get(item.orderId) ?? [];
+      list.push(item);
+      itemsByOrder.set(item.orderId, list);
+    }
+
     const shipmentRows =
       orderIds.length > 0 ? await db.select().from(shipments).where(inArray(shipments.orderId, orderIds)) : [];
     const shipmentByOrder = new Map(shipmentRows.map((s) => [s.orderId, s]));
@@ -69,11 +89,13 @@ Deno.serve(async (req) => {
       rows.map(async (row) => {
         const shipment = shipmentByOrder.get(row.id) ?? null;
 
+        const items = itemsByOrder.get(row.id) ?? [];
+
         const latest = latestByOrder.get(row.id);
-        if (!latest) return { ...row, payment: null, shipment };
+        if (!latest) return { ...row, payment: null, shipment, items };
 
         const proofUrl = latest.proofDeletedAt ? null : await getSignedProofUrl(latest.proofFileUrl);
-        return { ...row, payment: { ...latest, proofUrl }, shipment };
+        return { ...row, payment: { ...latest, proofUrl }, shipment, items };
       })
     );
 

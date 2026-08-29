@@ -64,7 +64,11 @@ export const emailStatusEnum = pgEnum("email_status", [
   "FAILED",
 ]);
 
-const requestAdminEmail = sql`(auth.jwt() ->> 'email')`;
+// lower() guards against a mismatched-case row in admin_users (email itself is
+// hand-inserted, unlike auth.users' email which Supabase Auth always lowercases).
+// Migration 0012's trigger keeps admin_users.email lowercase on write, so this
+// only needs to normalize the JWT side.
+const requestAdminEmail = sql`lower(auth.jwt() ->> 'email')`;
 
 export const adminUsers = pgTable(
   "admin_users",

@@ -34,6 +34,12 @@ interface ShipmentInfo {
   trackingNumber: string | null;
 }
 
+interface OrderItemInfo {
+  quantity: number;
+  unitPrice: string;
+  productName: string | null;
+  variantName: string | null;
+}
 interface OrderRow {
   id: string;
   orderNumber: number | null;
@@ -48,6 +54,7 @@ interface OrderRow {
   customerPhone: string;
   payment: LatestPayment | null;
   shipment: ShipmentInfo | null;
+  items: OrderItemInfo[];
 }
 
 const columnHelper = createColumnHelper<OrderRow>();
@@ -397,6 +404,27 @@ export default function AdminDashboardPage() {
               <p className="text-sm font-medium">{openOrder.customerName}</p>
               <p className="text-sm text-muted-foreground">{openOrder.customerPhone}</p>
             </div>
+
+            {openOrder.items.length > 0 && (
+              <div className="pt-4 border-t space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Items</p>
+                {openOrder.items.map((item, i) => {
+                  const label = item.variantName
+                    ? `${item.productName ?? "Item"} — ${item.variantName}`
+                    : (item.productName ?? "Item");
+                  return (
+                    <div key={i} className="flex justify-between text-sm gap-2">
+                      <span className="truncate">
+                        {label} × {item.quantity}
+                      </span>
+                      <span className="font-medium whitespace-nowrap">
+                        {formatIDR((Number(item.unitPrice) * item.quantity).toFixed(2))}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             <div className="pt-4 border-t space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Payment</p>
