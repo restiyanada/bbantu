@@ -71,6 +71,13 @@
       "when": 1787999075597,
       "tag": "0013_email_failure_reason_and_admin_email_lower",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788006280677,
+      "tag": "0014_push_subscriptions",
+      "breakpoints": true
     }
   ]
 }

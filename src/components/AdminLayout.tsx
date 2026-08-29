@@ -4,6 +4,7 @@ import { ClipboardList, Package, Layers, History, QrCode, LogOut } from "lucide-
 import { useAdminAuth } from "@/lib/adminAuth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { PushNotificationToggle } from "@/components/push-notification-toggle";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Orders", icon: ClipboardList },
@@ -69,6 +70,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
               <span className="truncate">{displayName}</span>
             </div>
           )}
+          <PushNotificationToggle kind="ADMIN" showLabel />
           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => void signOut()}>
             <LogOut className="size-4" />
             Sign out
@@ -79,9 +81,12 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       <header className="md:hidden border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 sticky top-0 z-10 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
         <div className="px-4 h-14 flex items-center justify-between gap-3">
           <span className="font-semibold tracking-tight shrink-0">Admin</span>
-          <Button size="sm" variant="ghost" onClick={() => void signOut()}>
-            <LogOut className="size-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <PushNotificationToggle kind="ADMIN" />
+            <Button size="sm" variant="ghost" onClick={() => void signOut()}>
+              <LogOut className="size-4" />
+            </Button>
+          </div>
         </div>
         <nav className="flex gap-1 px-3 pb-2 overflow-x-auto">
           <NavLinks />

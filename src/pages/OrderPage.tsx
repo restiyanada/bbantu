@@ -12,6 +12,7 @@ import { FileInput } from "@/components/ui/file-input";
 import { ProductDetailSheet } from "@/components/product-detail-sheet";
 import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PushNotificationToggle } from "@/components/push-notification-toggle";
 
 interface OrderRow {
   id: string;
@@ -507,12 +508,15 @@ export default function OrderPage() {
 
   return (
     <main className="p-4 sm:p-8 max-w-2xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-4xl font-bold tracking-tight">
-          Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
-        </h1>
-        {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}
-        <p className="text-muted-foreground mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight">
+            Order {formatOrderNumber(order.fulfilment_method, order.order_number, order.id)}
+          </h1>
+          {batchName && <p className="text-sm text-muted-foreground mt-1">Pre-order batch: {batchName}</p>}
+          <p className="text-muted-foreground mt-1">Placed {new Date(order.created_at).toLocaleString("id-ID")}</p>
+        </div>
+        <PushNotificationToggle kind="CUSTOMER" accessToken={accessToken} showLabel />
       </div>
 
       {banner && (

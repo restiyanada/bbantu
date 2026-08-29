@@ -5,6 +5,8 @@ import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { notifyAdmins } from "../_shared/push.ts";
+import { formatOrderNumber } from "../../../lib/order-number.ts";
 
 const hashAccessToken = (raw: string) => sql`encode(digest(${raw}, 'sha256'), 'hex')`;
 
@@ -94,10 +96,15 @@ Deno.serve(async (req) => {
         after: { status: "PENDING", amount: balanceAmount },
       });
 
-      return { paymentId: newPayment.id };
+      return { paymentId: newPayment.id, order };
     });
 
-    return json(result, 201);
+    await notifyAdmins({
+      title: "Balance payment submitted",
+      body: `Order ${formatOrderNumber(result.order.fulfilmentMethod, result.order.orderNumber, result.order.id)} has a balance payment awaiting review`,
+    });
+
+    return json({ paymentId: result.paymentId }, 201);
   } catch (err) {
     return errorResponse(err, "Unexpected error submitting balance payment.");
   }

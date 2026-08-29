@@ -5,6 +5,7 @@
     "drizzle-orm/postgres-js": "npm:drizzle-orm@0.45.2/postgres-js",
     "postgres": "npm:postgres@3.4.9",
     "@supabase/supabase-js": "npm:@supabase/supabase-js@2.112.3",
-    "zod": "npm:zod@4.4.3"
+    "zod": "npm:zod@4.4.3",
+    "web-push": "npm:web-push@3.6.7"
   }
 }

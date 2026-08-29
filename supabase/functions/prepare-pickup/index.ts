@@ -7,6 +7,7 @@ import { requireAdmin } from "../_shared/auth.ts";
 import { orders, pickupTokens, customers } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { queueEmail } from "../../../lib/email-queue.ts";
+import { notifyOrder } from "../_shared/push.ts";
 
 const prepareSchema = z.object({ orderId: z.string().uuid() });
 
@@ -84,6 +85,14 @@ Deno.serve(async (req) => {
       }
 
       return { status: to, pickupToken: token };
+    });
+
+    await notifyOrder(input.orderId, {
+      title: orderRow.fulfilmentMethod === "SHIPPING" ? "Ready to ship" : "Ready for pickup",
+      body:
+        orderRow.fulfilmentMethod === "SHIPPING"
+          ? "Your order is being prepared for shipment."
+          : "Your order is ready for pickup at the booth.",
     });
 
     return json({ orderId: input.orderId, ...result });

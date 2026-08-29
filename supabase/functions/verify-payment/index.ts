@@ -8,6 +8,7 @@ import { payments, orders, orderItems, inventory, inventoryTransactions, custome
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { queueEmail } from "../../../lib/email-queue.ts";
+import { notifyOrder } from "../_shared/push.ts";
 
 const verifyPaymentSchema = z.discriminatedUnion("decision", [
   z.object({ orderId: z.string().uuid(), decision: z.literal("VERIFY") }),
@@ -219,6 +220,13 @@ Deno.serve(async (req) => {
 
       return { orderStatus: to as string | null };
     });
+
+    await notifyOrder(
+      input.orderId,
+      input.decision === "REJECT"
+        ? { title: "Payment rejected", body: input.rejectionReason }
+        : { title: "Payment verified", body: "Your payment has been verified." }
+    );
 
     return json({ orderId: input.orderId, decision: input.decision, orderStatus: result.orderStatus });
   } catch (err) {

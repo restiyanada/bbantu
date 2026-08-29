@@ -7,6 +7,7 @@ import { requireAdmin } from "../_shared/auth.ts";
 import { orders, shipments } from "../../../db/schema.ts";
 import { transitionOrder } from "../../../lib/orders.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { notifyOrder } from "../_shared/push.ts";
 
 const recordTrackingSchema = z
   .object({
@@ -103,6 +104,11 @@ Deno.serve(async (req) => {
       await tx.update(orders).set({ fulfilledAt: new Date() }).where(eq(orders.id, order.id));
 
       return { status: to };
+    });
+
+    await notifyOrder(input.orderId, {
+      title: "Order shipped",
+      body: `Your order is on its way — tracking number ${input.trackingNumber}.`,
     });
 
     return json({ orderId: input.orderId, ...result });
