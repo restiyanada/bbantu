@@ -5,7 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { supabase } from "@/lib/supabaseClient";
-import { formatIDR } from "@/lib/utils";
+import { formatIDR, sanitizeFileName } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
@@ -397,7 +397,7 @@ export default function HomePage() {
 
     setProofPreviewUrl(URL.createObjectURL(file));
     setProofUploading(true);
-    const path = `${submissionToken}/${crypto.randomUUID()}-${file.name}`;
+    const path = `${submissionToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
     setProofUploading(false);
 

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 const BASE_URL = "https://use.api.co.id";
 
 function apiKey(): string {
@@ -18,7 +20,13 @@ export class ShippingProviderError extends Error {
   }
 }
 
-async function apiCoIdGet<T>(path: string, params: Record<string, string>): Promise<T> {
+// The response body is cast with `as Promise<T>` nowhere in this file — every
+// caller passes a zod schema and gets back parsed, validated data. This
+// matters most for getJneRates: `price` flows directly into
+// create-order's payment-amount math, so a malformed or unexpected shape
+// from this third-party API should fail loudly here rather than silently
+// becoming a wrong charge.
+async function apiCoIdGet<T>(path: string, params: Record<string, string>, schema: z.ZodType<T>): Promise<T> {
   const url = new URL(path, BASE_URL);
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
@@ -41,7 +49,18 @@ async function apiCoIdGet<T>(path: string, params: Record<string, string>): Prom
     throw new ShippingProviderError(message, res.status);
   }
 
-  return res.json() as Promise<T>;
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new ShippingProviderError("Shipping provider returned an invalid response.", 502);
+  }
+
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) {
+    throw new ShippingProviderError("Shipping provider returned an unexpected response shape.", 502);
+  }
+  return parsed.data;
 }
 
 export interface Province {
@@ -57,18 +76,23 @@ export interface District {
   name: string;
 }
 
+const locationSchema = z.object({ code: z.string(), name: z.string() });
+const provincesResponseSchema = z.object({ data: z.array(locationSchema) });
+const citiesResponseSchema = z.object({ data: z.array(locationSchema) });
+const districtsResponseSchema = z.object({ data: z.array(locationSchema) });
+
 export async function getProvinces(): Promise<Province[]> {
-  const body = await apiCoIdGet<{ data: Province[] }>("/courier/v1/locations/provinces", {});
+  const body = await apiCoIdGet("/courier/v1/locations/provinces", {}, provincesResponseSchema);
   return body.data;
 }
 
 export async function getCities(provinceCode: string): Promise<City[]> {
-  const body = await apiCoIdGet<{ data: City[] }>("/courier/v1/locations/cities", { province: provinceCode });
+  const body = await apiCoIdGet("/courier/v1/locations/cities", { province: provinceCode }, citiesResponseSchema);
   return body.data;
 }
 
 export async function getDistricts(cityCode: string): Promise<District[]> {
-  const body = await apiCoIdGet<{ data: District[] }>("/courier/v1/locations/districts", { city: cityCode });
+  const body = await apiCoIdGet("/courier/v1/locations/districts", { city: cityCode }, districtsResponseSchema);
   return body.data;
 }
 
@@ -100,23 +124,26 @@ export interface RateQuoteParams {
   weightKg: number;
 }
 
+const jneRateSchema = z.object({
+  courier_code: z.string(),
+  service_code: z.string(),
+  service_name: z.string(),
+  etd: z.string().nullable(),
+  price: z.number().nonnegative(),
+  handling_fee: z.number().nonnegative().optional(),
+});
+const ratesResponseSchema = z.object({ data: z.object({ rates: z.array(jneRateSchema) }) });
+
 export async function getJneRates(params: RateQuoteParams): Promise<JneRate[]> {
-  const body = await apiCoIdGet<{
-    data: {
-      rates: Array<{
-        courier_code: string;
-        service_code: string;
-        service_name: string;
-        etd: string | null;
-        price: number;
-        handling_fee?: number;
-      }>;
-    };
-  }>("/courier/v2/rates", {
-    origin_district_code: params.originDistrictCode,
-    destination_district_code: params.destinationDistrictCode,
-    weight: String(params.weightKg),
-  });
+  const body = await apiCoIdGet(
+    "/courier/v2/rates",
+    {
+      origin_district_code: params.originDistrictCode,
+      destination_district_code: params.destinationDistrictCode,
+      weight: String(params.weightKg),
+    },
+    ratesResponseSchema
+  );
 
   return body.data.rates
     .filter((r) => r.courier_code === "jne")
