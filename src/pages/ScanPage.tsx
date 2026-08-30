@@ -166,10 +166,10 @@ export default function ScanPage() {
               <div className="flex gap-2">
                 <Input
                   value={manualToken}
-                  onChange={(e) => setManualToken(e.target.value)}
+                  onChange={(e) => setManualToken(e.target.value.toUpperCase())}
                   placeholder="Paste pickup code"
                   disabled={!canScan}
-                  className="flex-1"
+                  className="flex-1 uppercase placeholder:normal-case"
                 />
                 <Button disabled={!canScan} onClick={handleManualLookup}>
                   Look up
