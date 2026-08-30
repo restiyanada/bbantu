@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ function isNetworkError(err: { name?: string } | null | undefined): boolean {
 }
 
 export default function AdminLoginPage() {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("password");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -42,8 +44,13 @@ export default function AdminLoginPage() {
       );
       return;
     }
-    // onAuthStateChange (AdminAuthProvider) picks up the new session and
-    // RequireAdmin will redirect once the profile loads — nothing else to do.
+    // signInWithPassword succeeding only establishes the session — nothing
+    // navigates the router on its own, so without this the sign-in "worked"
+    // (a real session exists) but the page just sits on /admin/login
+    // forever, stuck on "Signing in…". RequireAdmin (wrapping /dashboard)
+    // takes it from here: it shows its own loading state while the admin
+    // profile loads, then either the dashboard or an unauthorized screen.
+    navigate("/dashboard", { replace: true });
   }
 
   async function handleResetRequest(e: React.FormEvent) {
