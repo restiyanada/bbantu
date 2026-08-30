@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
       return { status: to };
     });
 
-    await notifyOrder(input.orderId, {
+    notifyOrder(input.orderId, {
       title: "Order shipped",
       body: `Your order is on its way — tracking number ${input.trackingNumber}.`,
     });

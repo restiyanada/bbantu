@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { eq } from "drizzle-orm";
 import { db } from "./db.ts";
 import { HttpError } from "./http.ts";
+import { fetchWithTimeout } from "./fetch-with-timeout.ts";
 import { adminUsers } from "../../../db/schema.ts";
 
 export type AdminPermission =
@@ -29,7 +30,10 @@ const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
 if (!supabaseUrl || !anonKey) {
   throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY must be available.");
 }
-const authClient = createClient(supabaseUrl, anonKey);
+// requireAdmin() below runs on every single admin-gated action in this app —
+// a hang here would block all of them the same way the untimed-out push send
+// blocked prepare-pickup.
+const authClient = createClient(supabaseUrl, anonKey, { global: { fetch: fetchWithTimeout(8000) } });
 
 function bearerToken(req: Request): string | null {
   const header = req.headers.get("Authorization") ?? req.headers.get("authorization");

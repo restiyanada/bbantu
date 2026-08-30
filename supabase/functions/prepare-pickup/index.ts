@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
       return { status: to, pickupToken: token };
     });
 
-    await notifyOrder(input.orderId, {
+    notifyOrder(input.orderId, {
       title: orderRow.fulfilmentMethod === "SHIPPING" ? "Ready to ship" : "Ready for pickup",
       body:
         orderRow.fulfilmentMethod === "SHIPPING"

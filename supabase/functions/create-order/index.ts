@@ -314,7 +314,7 @@ Deno.serve(async (req) => {
       return { order: insertedOrder, rawAccessToken };
     });
 
-    await notifyAdmins({
+    notifyAdmins({
       title: "New order placed",
       body: `Order ${formatOrderNumber(order.order.fulfilmentMethod, order.order.orderNumber, order.order.id)} — Rp ${order.order.merchandiseSubtotal}`,
     });

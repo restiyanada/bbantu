@@ -8,6 +8,24 @@ import { Label, RequiredMark } from "@/components/ui/label";
 type Mode = "password" | "reset";
 type Status = "idle" | "loading" | "resetSent" | "error";
 
+// supabase-js gives no way to cancel signInWithPassword/resetPasswordForEmail,
+// and a stalled connection (seen on mobile — a slow or dropped mobile-data
+// handoff mid-request) can otherwise leave "Signing in…" spinning forever
+// with no way for the visitor to know something's wrong or to retry. This
+// doesn't cancel the underlying request — it just stops waiting on it and
+// lets the visitor try again; if the original call does complete later,
+// AdminAuthProvider's onAuthStateChange still picks it up normally.
+const AUTH_TIMEOUT_MS = 15000;
+
+class TimeoutError extends Error {}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new TimeoutError()), ms)),
+  ]);
+}
+
 export default function AdminLoginPage() {
   const [mode, setMode] = useState<Mode>("password");
   const [email, setEmail] = useState("");
@@ -20,18 +38,27 @@ export default function AdminLoginPage() {
     setStatus("loading");
     setError(null);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const { error: signInError } = await withTimeout(
+        supabase.auth.signInWithPassword({ email: email.trim(), password }),
+        AUTH_TIMEOUT_MS
+      );
 
-    if (signInError) {
+      if (signInError) {
+        setStatus("error");
+        setError("Incorrect email or password.");
+        return;
+      }
+      // onAuthStateChange (AdminAuthProvider) picks up the new session and
+      // RequireAdmin will redirect once the profile loads — nothing else to do.
+    } catch (err) {
       setStatus("error");
-      setError("Incorrect email or password.");
-      return;
+      setError(
+        err instanceof TimeoutError
+          ? "This is taking too long — check your connection and try again."
+          : "Something went wrong. Please try again."
+      );
     }
-    // onAuthStateChange (AdminAuthProvider) picks up the new session and
-    // RequireAdmin will redirect once the profile loads — nothing else to do.
   }
 
   async function handleResetRequest(e: React.FormEvent) {
@@ -39,16 +66,28 @@ export default function AdminLoginPage() {
     setStatus("loading");
     setError(null);
 
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: window.location.origin + "/admin/accept-invite",
-    });
+    try {
+      const { error: resetError } = await withTimeout(
+        supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: window.location.origin + "/admin/accept-invite",
+        }),
+        AUTH_TIMEOUT_MS
+      );
 
-    if (resetError) {
+      if (resetError) {
+        setStatus("error");
+        setError("Couldn't send the reset link. Please try again.");
+        return;
+      }
+      setStatus("resetSent");
+    } catch (err) {
       setStatus("error");
-      setError("Couldn't send the reset link. Please try again.");
-      return;
+      setError(
+        err instanceof TimeoutError
+          ? "This is taking too long — check your connection and try again."
+          : "Something went wrong. Please try again."
+      );
     }
-    setStatus("resetSent");
   }
 
   return (
