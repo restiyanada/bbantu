@@ -221,7 +221,7 @@ Deno.serve(async (req) => {
       return { orderStatus: to as string | null };
     });
 
-    await notifyOrder(
+    notifyOrder(
       input.orderId,
       input.decision === "REJECT"
         ? { title: "Payment rejected", body: input.rejectionReason }
