@@ -4,6 +4,7 @@ import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse, isUniqueViolation } from "../_shared/http.ts";
 import { requireAdmin } from "../_shared/auth.ts";
+import { fetchWithTimeout } from "../_shared/fetch-with-timeout.ts";
 import { adminUsers } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 
@@ -18,7 +19,7 @@ if (!frontendBaseUrl) throw new Error("FRONTEND_BASE_URL must be set as a Supaba
 // Service-role client, used only for auth.admin.inviteUserByEmail — the one
 // thing here that isn't a plain table write and has to go through Supabase
 // Auth itself (password hashing, the invite token, its own email send).
-const authAdminClient = createClient(supabaseUrl, serviceRoleKey);
+const authAdminClient = createClient(supabaseUrl, serviceRoleKey, { global: { fetch: fetchWithTimeout(8000) } });
 
 const inviteSchema = z.object({
   name: z.string().trim().min(1, "Name is required."),

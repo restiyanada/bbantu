@@ -26,6 +26,18 @@ export async function functionErrorMessage(error: unknown, fallback: string): Pr
   }
 }
 
+/**
+ * Storage object keys embed the original filename (`{token}/{uuid}-{name}`).
+ * Supabase Storage keys aren't a filesystem path — `../` in a key is just an
+ * odd-looking key, not traversal — but there's no reason to depend on that
+ * rather than just not passing through separators and control characters.
+ */
+export function sanitizeFileName(name: string): string {
+  const base = name.split(/[/\\]/).pop() ?? name;
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return cleaned.length > 0 ? cleaned : "file";
+}
+
 export function formatIDR(value: string | number): string {
   return `Rp ${Number(value).toLocaleString("id-ID")}`;
 }

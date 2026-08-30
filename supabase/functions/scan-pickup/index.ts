@@ -9,7 +9,15 @@ import { transitionOrder } from "../../../lib/orders.ts";
 
 const scanSchema = z.union([
   z.object({
-    token: z.string().min(1),
+    // Pickup codes are always generated uppercase (prepare-pickup's
+    // CODE_ALPHABET); normalizing here means a manually-typed lowercase
+    // code still matches the case-sensitive column comparison below,
+    // regardless of what the frontend already did to the input.
+    token: z
+      .string()
+      .trim()
+      .min(1)
+      .transform((v) => v.toUpperCase()),
     confirm: z.boolean().optional().default(false),
   }),
   z.object({

@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
       return { paymentId: newPayment.id, order };
     });
 
-    await notifyAdmins({
+    notifyAdmins({
       title: "Balance payment submitted",
       body: `Order ${formatOrderNumber(result.order.fulfilmentMethod, result.order.orderNumber, result.order.id)} has a balance payment awaiting review`,
     });

@@ -2,6 +2,7 @@ import { eq, and, isNull, isNotNull, lte } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json } from "../_shared/http.ts";
+import { isAuthorizedCronCaller } from "../_shared/cron-auth.ts";
 import { deleteProofObject } from "../_shared/storage.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { isEligibleForDeletion, RETENTION_DAYS } from "../../../lib/proof-retention.ts";
@@ -12,6 +13,10 @@ Deno.serve(async (req) => {
 
   if (req.method !== "POST") {
     return json({ error: "Method not allowed." }, 405);
+  }
+
+  if (!isAuthorizedCronCaller(req)) {
+    return json({ error: "Not authorized." }, 401);
   }
 
   const now = new Date();

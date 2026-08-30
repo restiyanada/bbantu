@@ -55,6 +55,7 @@ Deno.serve(async (req) => {
       return { variant_id: item.variant_id, quantity: item.quantity, price_at_time: variant.price };
     });
 
+<<<<<<< HEAD
     const shippingCost = 0; // Compute or fetch from shipping API
     const rawToken = crypto.randomUUID();
     const tokenHash = await hashToken(rawToken);
@@ -92,6 +93,11 @@ Deno.serve(async (req) => {
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
+=======
+    notifyAdmins({
+      title: "New order placed",
+      body: `Order ${formatOrderNumber(order.order.fulfilmentMethod, order.order.orderNumber, order.order.id)} — Rp ${order.order.merchandiseSubtotal}`,
+>>>>>>> 589d41ee6b1d6a8f9cce4a47d79fa8ced0982b74
     });
 
   } catch (error) {

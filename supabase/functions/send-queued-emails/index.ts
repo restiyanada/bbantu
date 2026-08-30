@@ -2,6 +2,7 @@ import { eq, and, asc, inArray, gte, sql } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json } from "../_shared/http.ts";
+import { isAuthorizedCronCaller } from "../_shared/cron-auth.ts";
 import { emails, orders } from "../../../db/schema.ts";
 import { computeEmailSendBudget } from "../../../lib/email-cap.ts";
 import type { EmailTemplate } from "../../../lib/email-queue.ts";
@@ -37,6 +38,7 @@ async function sendViaResend(params: { to: string; subject: string; text: string
       Authorization: `Bearer ${resendApiKey}`,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(8000),
     body: JSON.stringify({
       from: resendFromAddress,
       to: params.to,
@@ -57,6 +59,10 @@ Deno.serve(async (req) => {
 
   if (req.method !== "POST") {
     return json({ error: "Method not allowed." }, 405);
+  }
+
+  if (!isAuthorizedCronCaller(req)) {
+    return json({ error: "Not authorized." }, 401);
   }
 
   const todayStart = new Date();
@@ -164,7 +170,20 @@ Deno.serve(async (req) => {
       businessName,
     });
 
-    const result = await sendViaResend({ to: row.toAddress, subject: rendered.subject, text: rendered.text });
+    let result: ResendResult;
+    try {
+      result = await sendViaResend({ to: row.toAddress, subject: rendered.subject, text: rendered.text });
+    } catch (err) {
+      // A network failure or the timeout above rejects rather than returning
+      // a ResendResult — without this, one bad Resend call used to abort the
+      // whole batch (every row after it in `toSend` silently never ran)
+      // instead of just failing this one email and moving on.
+      const reason = err instanceof Error ? err.message : "Unknown error contacting Resend.";
+      console.error(`send-queued-emails: failed to send email ${row.id}: ${reason}`);
+      await db.update(emails).set({ status: "FAILED", failureReason: reason }).where(eq(emails.id, row.id));
+      failedCount++;
+      continue;
+    }
 
     if (result.ok) {
       await db.update(emails).set({ status: "SENT", sentAt: new Date() }).where(eq(emails.id, row.id));

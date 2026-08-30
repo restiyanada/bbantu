@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,7 +9,19 @@ import { Label, RequiredMark } from "@/components/ui/label";
 type Mode = "password" | "reset";
 type Status = "idle" | "loading" | "resetSent" | "error";
 
+// The Supabase client (src/lib/supabaseClient.ts) aborts its own underlying
+// fetch after 15s, so signInWithPassword/resetPasswordForEmail resolve with
+// an AuthRetryableFetchError rather than hanging — no client-side race
+// needed here anymore. That's a deliberate switch from an earlier version
+// of this file that raced against a plain setTimeout: mobile browsers can
+// throttle or pause JS timers in a backgrounded/locked tab, so a page-level
+// timer isn't reliable there, but aborting the actual request is.
+function isNetworkError(err: { name?: string } | null | undefined): boolean {
+  return err?.name === "AuthRetryableFetchError";
+}
+
 export default function AdminLoginPage() {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("password");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -20,18 +33,24 @@ export default function AdminLoginPage() {
     setStatus("loading");
     setError(null);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
 
     if (signInError) {
       setStatus("error");
-      setError("Incorrect email or password.");
+      setError(
+        isNetworkError(signInError)
+          ? "This is taking too long — check your connection and try again."
+          : "Incorrect email or password."
+      );
       return;
     }
-    // onAuthStateChange (AdminAuthProvider) picks up the new session and
-    // RequireAdmin will redirect once the profile loads — nothing else to do.
+    // signInWithPassword succeeding only establishes the session — nothing
+    // navigates the router on its own, so without this the sign-in "worked"
+    // (a real session exists) but the page just sits on /admin/login
+    // forever, stuck on "Signing in…". RequireAdmin (wrapping /dashboard)
+    // takes it from here: it shows its own loading state while the admin
+    // profile loads, then either the dashboard or an unauthorized screen.
+    navigate("/dashboard", { replace: true });
   }
 
   async function handleResetRequest(e: React.FormEvent) {
@@ -45,7 +64,11 @@ export default function AdminLoginPage() {
 
     if (resetError) {
       setStatus("error");
-      setError("Couldn't send the reset link. Please try again.");
+      setError(
+        isNetworkError(resetError)
+          ? "This is taking too long — check your connection and try again."
+          : "Couldn't send the reset link. Please try again."
+      );
       return;
     }
     setStatus("resetSent");

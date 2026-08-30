@@ -19,6 +19,28 @@ if (!accessTokenEncKey) throw new Error("ACCESS_TOKEN_ENC_KEY must be set as a S
 const frontendBaseUrl = Deno.env.get("FRONTEND_BASE_URL");
 if (!frontendBaseUrl) throw new Error("FRONTEND_BASE_URL must be set as a Supabase Edge Function secret.");
 
+// A push send that hangs or is merely slow must never make the caller (order
+// placement, payment verification, prepare-for-pickup, ...) wait on it —
+// nobody who clicked "confirm payment" is asking to also wait on a stranger's
+// push service to answer. Two independent guards against that:
+//   1. A hard timeout on each individual send (below), since web-push's
+//      underlying https.request has no default one and can hang indefinitely
+//      against a slow/dead endpoint.
+//   2. EdgeRuntime.waitUntil (see runInBackground) so the send happens after
+//      the HTTP response is already on its way back, not before it.
+const SEND_TIMEOUT_MS = 5000;
+
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
+
+function runInBackground(work: Promise<unknown>): void {
+  if (typeof EdgeRuntime !== "undefined") {
+    EdgeRuntime.waitUntil(work);
+  }
+  // Without EdgeRuntime (e.g. a plain `deno run`, outside Supabase's Edge
+  // Functions platform) the promise still executes on its own — there's just
+  // no platform guarantee the process stays alive to let it finish.
+}
+
 interface PushPayload {
   title: string;
   body: string;
@@ -35,7 +57,8 @@ async function deliver(sub: SubscriptionRow, payload: PushPayload): Promise<void
   try {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.authKey } },
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      { timeout: SEND_TIMEOUT_MS }
     );
   } catch (err) {
     const statusCode = (err as { statusCode?: number }).statusCode;
@@ -68,23 +91,26 @@ async function buildOrderUrl(orderId: string): Promise<string | null> {
   }
 }
 
-export async function notifyAdmins(payload: { title: string; body: string }): Promise<void> {
-  try {
-    const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.kind, "ADMIN"));
-    if (subs.length === 0) return;
-    await Promise.all(subs.map((sub) => deliver(sub, { ...payload, url: `${frontendBaseUrl}/dashboard` })));
-  } catch (err) {
-    console.error("push: failed to notify admins:", err);
-  }
+// Fire-and-forget: neither of these returns a Promise, so a caller can't
+// accidentally `await` its way back into blocking the response on push
+// delivery (the exact bug this file just fixed).
+export function notifyAdmins(payload: { title: string; body: string }): void {
+  runInBackground(
+    (async () => {
+      const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.kind, "ADMIN"));
+      if (subs.length === 0) return;
+      await Promise.all(subs.map((sub) => deliver(sub, { ...payload, url: `${frontendBaseUrl}/dashboard` })));
+    })().catch((err) => console.error("push: failed to notify admins:", err))
+  );
 }
 
-export async function notifyOrder(orderId: string, payload: { title: string; body: string }): Promise<void> {
-  try {
-    const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.orderId, orderId));
-    if (subs.length === 0) return;
-    const url = (await buildOrderUrl(orderId)) ?? `${frontendBaseUrl}/orders/find`;
-    await Promise.all(subs.map((sub) => deliver(sub, { ...payload, url })));
-  } catch (err) {
-    console.error(`push: failed to notify order ${orderId}:`, err);
-  }
+export function notifyOrder(orderId: string, payload: { title: string; body: string }): void {
+  runInBackground(
+    (async () => {
+      const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.orderId, orderId));
+      if (subs.length === 0) return;
+      const url = (await buildOrderUrl(orderId)) ?? `${frontendBaseUrl}/orders/find`;
+      await Promise.all(subs.map((sub) => deliver(sub, { ...payload, url })));
+    })().catch((err) => console.error(`push: failed to notify order ${orderId}:`, err))
+  );
 }
