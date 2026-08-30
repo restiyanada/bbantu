@@ -16,4 +16,14 @@ if (!url || !publishableKey) {
 // supabase/functions/_shared/fetch-with-timeout.ts bounds the server side.
 export const supabase = createClient(url, publishableKey, {
   global: { fetch: fetchWithTimeout(15000) },
+  // Explicit, not just relying on these already being the defaults: this is
+  // exactly what keeps a staff member logged in across visits instead of
+  // re-authenticating every time — persist the session to storage, and
+  // refresh the access token in the background before it expires rather
+  // than waiting for a request to fail first.
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
 });
