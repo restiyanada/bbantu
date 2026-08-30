@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const BASE_URL = "https://use.api.co.id";
+const REQUEST_TIMEOUT_MS = 8000;
 
 function apiKey(): string {
   const key = Deno.env.get("SHIPPING_API_KEY");
@@ -34,8 +35,10 @@ async function apiCoIdGet<T>(path: string, params: Record<string, string>, schem
 
   let res: Response;
   try {
-    res = await fetch(url, { headers: { "x-api-co-id": apiKey() } });
+    res = await fetch(url, { headers: { "x-api-co-id": apiKey() }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch {
+    // Covers both a network failure and a timeout — the customer waiting on
+    // a shipping quote at checkout shouldn't wait indefinitely for either.
     throw new ShippingProviderError("Couldn't reach the shipping rate provider.", 503);
   }
 

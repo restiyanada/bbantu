@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { fetchWithTimeout } from "./fetch-with-timeout.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL");
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -7,7 +8,7 @@ if (!supabaseUrl || !serviceRoleKey) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be available.");
 }
 
-const storageClient = createClient(supabaseUrl, serviceRoleKey);
+const storageClient = createClient(supabaseUrl, serviceRoleKey, { global: { fetch: fetchWithTimeout(8000) } });
 
 export async function getSignedProofUrl(path: string, expiresInSeconds = 300): Promise<string | null> {
   const { data, error } = await storageClient.storage.from("payment-proofs").createSignedUrl(path, expiresInSeconds);
