@@ -8,22 +8,15 @@ import { Label, RequiredMark } from "@/components/ui/label";
 type Mode = "password" | "reset";
 type Status = "idle" | "loading" | "resetSent" | "error";
 
-// supabase-js gives no way to cancel signInWithPassword/resetPasswordForEmail,
-// and a stalled connection (seen on mobile — a slow or dropped mobile-data
-// handoff mid-request) can otherwise leave "Signing in…" spinning forever
-// with no way for the visitor to know something's wrong or to retry. This
-// doesn't cancel the underlying request — it just stops waiting on it and
-// lets the visitor try again; if the original call does complete later,
-// AdminAuthProvider's onAuthStateChange still picks it up normally.
-const AUTH_TIMEOUT_MS = 15000;
-
-class TimeoutError extends Error {}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new TimeoutError()), ms)),
-  ]);
+// The Supabase client (src/lib/supabaseClient.ts) aborts its own underlying
+// fetch after 15s, so signInWithPassword/resetPasswordForEmail resolve with
+// an AuthRetryableFetchError rather than hanging — no client-side race
+// needed here anymore. That's a deliberate switch from an earlier version
+// of this file that raced against a plain setTimeout: mobile browsers can
+// throttle or pause JS timers in a backgrounded/locked tab, so a page-level
+// timer isn't reliable there, but aborting the actual request is.
+function isNetworkError(err: { name?: string } | null | undefined): boolean {
+  return err?.name === "AuthRetryableFetchError";
 }
 
 export default function AdminLoginPage() {
@@ -38,27 +31,19 @@ export default function AdminLoginPage() {
     setStatus("loading");
     setError(null);
 
-    try {
-      const { error: signInError } = await withTimeout(
-        supabase.auth.signInWithPassword({ email: email.trim(), password }),
-        AUTH_TIMEOUT_MS
-      );
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
 
-      if (signInError) {
-        setStatus("error");
-        setError("Incorrect email or password.");
-        return;
-      }
-      // onAuthStateChange (AdminAuthProvider) picks up the new session and
-      // RequireAdmin will redirect once the profile loads — nothing else to do.
-    } catch (err) {
+    if (signInError) {
       setStatus("error");
       setError(
-        err instanceof TimeoutError
+        isNetworkError(signInError)
           ? "This is taking too long — check your connection and try again."
-          : "Something went wrong. Please try again."
+          : "Incorrect email or password."
       );
+      return;
     }
+    // onAuthStateChange (AdminAuthProvider) picks up the new session and
+    // RequireAdmin will redirect once the profile loads — nothing else to do.
   }
 
   async function handleResetRequest(e: React.FormEvent) {
@@ -66,28 +51,20 @@ export default function AdminLoginPage() {
     setStatus("loading");
     setError(null);
 
-    try {
-      const { error: resetError } = await withTimeout(
-        supabase.auth.resetPasswordForEmail(email.trim(), {
-          redirectTo: window.location.origin + "/admin/accept-invite",
-        }),
-        AUTH_TIMEOUT_MS
-      );
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin + "/admin/accept-invite",
+    });
 
-      if (resetError) {
-        setStatus("error");
-        setError("Couldn't send the reset link. Please try again.");
-        return;
-      }
-      setStatus("resetSent");
-    } catch (err) {
+    if (resetError) {
       setStatus("error");
       setError(
-        err instanceof TimeoutError
+        isNetworkError(resetError)
           ? "This is taking too long — check your connection and try again."
-          : "Something went wrong. Please try again."
+          : "Couldn't send the reset link. Please try again."
       );
+      return;
     }
+    setStatus("resetSent");
   }
 
   return (
