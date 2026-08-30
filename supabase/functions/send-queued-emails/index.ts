@@ -2,6 +2,7 @@ import { eq, and, asc, inArray, gte, sql } from "drizzle-orm";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json } from "../_shared/http.ts";
+import { isAuthorizedCronCaller } from "../_shared/cron-auth.ts";
 import { emails, orders } from "../../../db/schema.ts";
 import { computeEmailSendBudget } from "../../../lib/email-cap.ts";
 import type { EmailTemplate } from "../../../lib/email-queue.ts";
@@ -57,6 +58,10 @@ Deno.serve(async (req) => {
 
   if (req.method !== "POST") {
     return json({ error: "Method not allowed." }, 405);
+  }
+
+  if (!isAuthorizedCronCaller(req)) {
+    return json({ error: "Not authorized." }, 401);
   }
 
   const todayStart = new Date();

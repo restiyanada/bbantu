@@ -182,7 +182,8 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
    supabase secrets set DATABASE_URL=... ACCESS_TOKEN_ENC_KEY=... \
      RESEND_API_KEY=... RESEND_FROM_ADDRESS=... FRONTEND_BASE_URL=... \
      SHIPPING_API_KEY=... BUSINESS_NAME=... \
-     VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com
+     VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com \
+     CRON_SECRET=...
    ```
    Generate the VAPID keypair once with
    `npx -y web-push generate-vapid-keys` (or `webpush.generateVAPIDKeys()` from
@@ -191,6 +192,15 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
    rotates unless you want every existing subscription to stop working.
    (`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are
    injected by the platform.)
+
+   `CRON_SECRET` gates `send-queued-emails` and `cleanup-payment-proofs` —
+   both are cron-only (nothing in the frontend ever calls them), but the
+   platform's `verify_jwt` check isn't a real boundary here: it only proves
+   the caller holds *some* validly-signed project JWT, and the public anon
+   key qualifies. Generate any random value
+   (`openssl rand -hex 32`), set it as this secret, **and** as the
+   `cron_invoke_secret` Vault entry migration `0015` expects — see that
+   file's header comment for the exact one-time SQL editor step.
 
 5. Seed one row each in `payment_settings` and `shipping_settings` — checkout
    shows the bank details from the first, shipping quotes need the origin from
@@ -256,6 +266,18 @@ the live URL after being deleted and merged, even though the deployed
 change in the next deploy — editing something unrelated (like this README)
 is enough to make Cloudflare's upload API reprocess the manifest instead of
 taking the shortcut that trips the bug.
+
+**Security headers (CSP, etc.) live in `public/_headers`**, which Workers
+Assets does support (unlike `_redirects`, above — a different mechanism, not
+affected by that bug). It was written against everything this app is known
+to load: no external fonts/scripts, Supabase REST/Storage/Functions calls to
+the one project domain, `data:` images (the client-generated QR codes),
+inline `style` attributes (the payment-proof zoom viewer sets `transform`
+directly), and camera access scoped to same-origin (QR scanning). None of
+that was verified against a real deploy from this sandbox — **check the
+browser console for CSP violations after the next deploy**, particularly on
+the pages that do the most: checkout, the order tracker's photo zoom, and
+`/scan`.
 
 **Edge Functions:** `supabase functions deploy <name>`. These run on Supabase,
 not Cloudflare — two deploy pipelines, deliberately (see ARCHITECTURE.md).

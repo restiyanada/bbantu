@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AlertCircle, Clock, Package, Truck, CheckCircle2, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { formatIDR, formatOrderNumber } from "@/lib/utils";
+import { formatIDR, formatOrderNumber, sanitizeFileName } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -252,7 +252,7 @@ export default function OrderPage() {
 
     setResubmitPreviewUrl(URL.createObjectURL(file));
     setResubmitUploading(true);
-    const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
+    const path = `${accessToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
     setResubmitUploading(false);
 
@@ -313,7 +313,7 @@ export default function OrderPage() {
 
     setBalancePreviewUrl(URL.createObjectURL(file));
     setBalanceUploading(true);
-    const path = `${accessToken}/${crypto.randomUUID()}-${file.name}`;
+    const path = `${accessToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
     const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
     setBalanceUploading(false);
 
