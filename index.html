@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>[Your shop name]</title>
+    <!-- Without a manifest, "Add to Home Screen" on iOS creates a plain
+         bookmark rather than an installed app — Safari treats its storage
+         (including the login session) as disposable and can purge it after
+         a period of inactivity, independent of anything server-side. A
+         standalone-display manifest + apple-touch-icon is what gets it
+         treated as a real installed app instead. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="[Your shop name]" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#1c1917" />
   </head>
   <body>
     <div id="root"></div>
