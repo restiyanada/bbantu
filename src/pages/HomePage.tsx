@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { formatIDR } from "@/lib/utils";
 import { ACCEPTED_IMAGE_TYPES } from "@/lib/fileUpload";
 import { useProofUpload } from "@/lib/useProofUpload";
+import { useShippingSelection } from "@/lib/useShippingSelection";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
@@ -89,17 +90,6 @@ interface BatchOption {
   items: SelectableItem[];
 }
 
-interface LocationOption {
-  code: string;
-  name: string;
-}
-interface JneRateOption {
-  serviceCode: string;
-  serviceName: string;
-  etd: string | null;
-  price: number;
-}
-
 const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
 const PHONE_PATTERN = /^[0-9]{8,15}$/;
 
@@ -132,19 +122,7 @@ export default function HomePage() {
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettingsRow | null>(null);
 
   const [fulfilmentMethod, setFulfilmentMethod] = useState<"PICKUP" | "SHIPPING">("PICKUP");
-  const [provinces, setProvinces] = useState<LocationOption[] | null>(null);
-  const [cities, setCities] = useState<LocationOption[] | null>(null);
-  const [districts, setDistricts] = useState<LocationOption[] | null>(null);
-  const [selectedProvinceCode, setSelectedProvinceCode] = useState("");
-  const [selectedCityCode, setSelectedCityCode] = useState("");
-  const [selectedDistrict, setSelectedDistrict] = useState<LocationOption | null>(null);
-  const [addressDetail, setAddressDetail] = useState("");
-  const [locationError, setLocationError] = useState<string | null>(null);
-
-  const [rates, setRates] = useState<JneRateOption[] | null>(null);
-  const [selectedServiceCode, setSelectedServiceCode] = useState<string | null>(null);
-  const [rateLoading, setRateLoading] = useState(false);
-  const [rateError, setRateError] = useState<string | null>(null);
+  const shipping = useShippingSelection();
 
   const [submissionToken, setSubmissionToken] = useState(() => crypto.randomUUID());
   const proof = useProofUpload(submissionToken);
@@ -218,108 +196,6 @@ export default function HomePage() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadProvinces() {
-      const { data, error } = await supabase.functions.invoke("shipping-locations", { body: { level: "provinces" } });
-      if (cancelled) return;
-      if (error || !data) {
-        setLocationError("Couldn't load shipping locations. Shipping may be unavailable right now.");
-        return;
-      }
-      setProvinces(data.items as LocationOption[]);
-    }
-    void loadProvinces();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleProvinceChange(code: string) {
-    setSelectedProvinceCode(code);
-    setSelectedCityCode("");
-    setSelectedDistrict(null);
-    setCities(null);
-    setDistricts(null);
-    setRates(null);
-    setSelectedServiceCode(null);
-    if (!code) return;
-
-    const { data, error } = await supabase.functions.invoke("shipping-locations", {
-      body: { level: "cities", provinceCode: code },
-    });
-    if (error || !data) {
-      setLocationError("Couldn't load cities for that province.");
-      return;
-    }
-    setLocationError(null);
-    setCities(data.items as LocationOption[]);
-  }
-
-  async function handleCityChange(code: string) {
-    setSelectedCityCode(code);
-    setSelectedDistrict(null);
-    setDistricts(null);
-    setRates(null);
-    setSelectedServiceCode(null);
-    if (!code) return;
-
-    const { data, error } = await supabase.functions.invoke("shipping-locations", {
-      body: { level: "districts", cityCode: code },
-    });
-    if (error || !data) {
-      setLocationError("Couldn't load districts for that city.");
-      return;
-    }
-    setLocationError(null);
-    setDistricts(data.items as LocationOption[]);
-  }
-
-  function handleDistrictChange(code: string) {
-    const district = districts?.find((d) => d.code === code) ?? null;
-    setSelectedDistrict(district);
-    setRates(null);
-    setSelectedServiceCode(null);
-  }
-
-  async function handleGetRate() {
-    if (!selectedDistrict) return;
-    const items = Object.entries(quantities)
-      .filter(([, qty]) => qty > 0)
-      .map(([variantId, quantity]) => ({ variantId, quantity }));
-    if (items.length === 0) {
-      setRateError("Add at least one item before getting a shipping rate.");
-      return;
-    }
-
-    setRateLoading(true);
-    setRateError(null);
-    setRates(null);
-    setSelectedServiceCode(null);
-
-    const { data, error } = await supabase.functions.invoke("shipping-rates", {
-      body: { destinationDistrictCode: selectedDistrict.code, items },
-    });
-
-    setRateLoading(false);
-
-    if (error || !data) {
-      setRateError(
-        (data as { error?: string } | null)?.error ?? "Couldn't get a shipping rate right now. Please try again."
-      );
-      return;
-    }
-
-    const fetchedRates = data.rates as JneRateOption[];
-    if (fetchedRates.length === 0) {
-      setRateError("JNE doesn't appear to deliver to that address — please double-check the district, or choose pickup instead.");
-      return;
-    }
-
-    setRates(fetchedRates);
-    setSelectedServiceCode(fetchedRates[0].serviceCode);
-  }
-
   const activeBatch = activeSource === "READY_STOCK" ? null : batches?.find((b) => b.id === activeSource) ?? null;
 
   const shippingAllowed = activeBatch ? activeBatch.allowedFulfilmentMethods.includes("SHIPPING") : true;
@@ -345,9 +221,7 @@ export default function HomePage() {
     setItemsError(null);
     setPaymentType("FULL");
     setFulfilmentMethod("PICKUP");
-    setRates(null);
-    setSelectedServiceCode(null);
-    setRateError(null);
+    shipping.setSelectedServiceCode(null);
   }
 
   function setQuantity(variantId: string, qty: number) {
@@ -366,7 +240,7 @@ export default function HomePage() {
   const effectivePaymentType = isPreOrder ? paymentType : "FULL";
   const depositCents = Math.round(subtotalCents * 0.5);
 
-  const selectedRate = rates?.find((r) => r.serviceCode === selectedServiceCode) ?? null;
+  const selectedRate = shipping.rates?.find((r) => r.serviceCode === shipping.selectedServiceCode) ?? null;
   const shippingCostCents = fulfilmentMethod === "SHIPPING" && selectedRate ? Math.round(selectedRate.price * 100) : 0;
 
   const amountDueNowCents = (effectivePaymentType === "DP" ? depositCents : subtotalCents) + shippingCostCents;
@@ -387,11 +261,11 @@ export default function HomePage() {
     if (!valid) return;
 
     if (fulfilmentMethod === "SHIPPING") {
-      if (!selectedDistrict || !addressDetail.trim()) {
+      if (!shipping.selectedDistrict || !shipping.addressDetail.trim()) {
         setDetailsError("Please complete the delivery address.");
         return;
       }
-      if (!selectedServiceCode) {
+      if (!shipping.selectedServiceCode) {
         setDetailsError("Please get a shipping rate and pick an option before continuing.");
         return;
       }
@@ -417,7 +291,7 @@ export default function HomePage() {
     }
 
     if (fulfilmentMethod === "SHIPPING") {
-      if (!selectedDistrict || !addressDetail.trim() || !selectedServiceCode) {
+      if (!shipping.selectedDistrict || !shipping.addressDetail.trim() || !shipping.selectedServiceCode) {
         setSubmitError("Please complete the delivery address and shipping option.");
         setStep(2);
         return;
@@ -437,10 +311,10 @@ export default function HomePage() {
               shipping: {
                 recipientName: customer.name,
                 recipientPhone: customer.phone,
-                address: addressDetail.trim(),
-                destinationDistrictCode: selectedDistrict!.code,
-                destinationDistrictName: selectedDistrict!.name,
-                serviceCode: selectedServiceCode,
+                address: shipping.addressDetail.trim(),
+                destinationDistrictCode: shipping.selectedDistrict!.code,
+                destinationDistrictName: shipping.selectedDistrict!.name,
+                serviceCode: shipping.selectedServiceCode,
               },
             }
           : {}),
@@ -752,7 +626,7 @@ export default function HomePage() {
 
                   {fulfilmentMethod === "SHIPPING" && (
                     <div className="space-y-3 pt-3 border-t">
-                      {locationError && <p className="text-destructive text-xs">{locationError}</p>}
+                      {shipping.locationError && <p className="text-destructive text-xs">{shipping.locationError}</p>}
 
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                         <div className="space-y-1">
@@ -761,14 +635,14 @@ export default function HomePage() {
                             <RequiredMark />
                           </Label>
                           <Select
-                            value={selectedProvinceCode}
-                            onChange={(e) => void handleProvinceChange(e.target.value)}
+                            value={shipping.selectedProvinceCode}
+                            onChange={(e) => void shipping.handleProvinceChange(e.target.value)}
                             className="h-8 text-sm"
                           >
                             <option value="">
-                              {provinces === null ? "Loading…" : "Select province"}
+                              {shipping.provinces === null ? "Loading…" : "Select province"}
                             </option>
-                            {provinces?.map((p) => (
+                            {shipping.provinces?.map((p) => (
                               <option key={p.code} value={p.code}>
                                 {p.name}
                               </option>
@@ -781,13 +655,13 @@ export default function HomePage() {
                             <RequiredMark />
                           </Label>
                           <Select
-                            value={selectedCityCode}
-                            onChange={(e) => void handleCityChange(e.target.value)}
-                            disabled={!selectedProvinceCode}
+                            value={shipping.selectedCityCode}
+                            onChange={(e) => void shipping.handleCityChange(e.target.value)}
+                            disabled={!shipping.selectedProvinceCode}
                             className="h-8 text-sm"
                           >
-                            <option value="">{cities === null ? "—" : "Select city"}</option>
-                            {cities?.map((c) => (
+                            <option value="">{shipping.cities === null ? "—" : "Select city"}</option>
+                            {shipping.cities?.map((c) => (
                               <option key={c.code} value={c.code}>
                                 {c.name}
                               </option>
@@ -800,13 +674,13 @@ export default function HomePage() {
                             <RequiredMark />
                           </Label>
                           <Select
-                            value={selectedDistrict?.code ?? ""}
-                            onChange={(e) => handleDistrictChange(e.target.value)}
-                            disabled={!selectedCityCode}
+                            value={shipping.selectedDistrict?.code ?? ""}
+                            onChange={(e) => shipping.handleDistrictChange(e.target.value)}
+                            disabled={!shipping.selectedCityCode}
                             className="h-8 text-sm"
                           >
-                            <option value="">{districts === null ? "—" : "Select district"}</option>
-                            {districts?.map((d) => (
+                            <option value="">{shipping.districts === null ? "—" : "Select district"}</option>
+                            {shipping.districts?.map((d) => (
                               <option key={d.code} value={d.code}>
                                 {d.name}
                               </option>
@@ -821,8 +695,8 @@ export default function HomePage() {
                           <RequiredMark />
                         </Label>
                         <Textarea
-                          value={addressDetail}
-                          onChange={(e) => setAddressDetail(e.target.value)}
+                          value={shipping.addressDetail}
+                          onChange={(e) => shipping.setAddressDetail(e.target.value)}
                           rows={2}
                           className="text-sm"
                         />
@@ -837,21 +711,27 @@ export default function HomePage() {
                         type="button"
                         variant="info"
                         size="sm"
-                        disabled={!selectedDistrict || rateLoading}
-                        onClick={() => void handleGetRate()}
+                        disabled={!shipping.selectedDistrict || shipping.rateLoading}
+                        onClick={() =>
+                          void shipping.handleGetRate(
+                            Object.entries(quantities)
+                              .filter(([, qty]) => qty > 0)
+                              .map(([variantId, quantity]) => ({ variantId, quantity }))
+                          )
+                        }
                       >
-                        {rateLoading ? "Getting rate…" : "Get shipping rate"}
+                        {shipping.rateLoading ? "Getting rate…" : "Get shipping rate"}
                       </Button>
-                      {rateError && <p className="text-destructive text-xs">{rateError}</p>}
+                      {shipping.rateError && <p className="text-destructive text-xs">{shipping.rateError}</p>}
 
-                      {rates && rates.length > 0 && (
+                      {shipping.rates && shipping.rates.length > 0 && (
                         <div className="space-y-1.5 pt-1">
-                          {rates.map((rate) => (
+                          {shipping.rates.map((rate) => (
                             <label
                               key={rate.serviceCode}
                               className={cn(
                                 "flex items-center justify-between rounded-lg border px-3 py-2 cursor-pointer transition-colors",
-                                selectedServiceCode === rate.serviceCode
+                                shipping.selectedServiceCode === rate.serviceCode
                                   ? "border-primary bg-accent"
                                   : "hover:bg-muted"
                               )}
@@ -859,8 +739,8 @@ export default function HomePage() {
                               <span className="flex items-center gap-2">
                                 <input
                                   type="radio"
-                                  checked={selectedServiceCode === rate.serviceCode}
-                                  onChange={() => setSelectedServiceCode(rate.serviceCode)}
+                                  checked={shipping.selectedServiceCode === rate.serviceCode}
+                                  onChange={() => shipping.setSelectedServiceCode(rate.serviceCode)}
                                   className="accent-primary"
                                 />
                                 JNE {rate.serviceName}
@@ -1047,7 +927,7 @@ export default function HomePage() {
                   isSubmitting ||
                   !proof.path ||
                   proof.uploading ||
-                  (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
+                  (fulfilmentMethod === "SHIPPING" && !shipping.selectedServiceCode)
                 }
               >
                 {isSubmitting ? "Placing order…" : "Place order"}
