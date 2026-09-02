@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
 export { formatOrderNumber } from "../../lib/order-number";
+export { orderTotal, orderBalanceDue } from "../../lib/order-money";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

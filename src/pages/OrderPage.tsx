@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AlertCircle, Clock, Package, Truck, CheckCircle2, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { formatIDR, formatOrderNumber } from "@/lib/utils";
+import { formatIDR, formatOrderNumber, orderBalanceDue } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -264,9 +264,14 @@ export default function OrderPage() {
   }
 
   const { order, items, payments, pickupToken, shipment, batchName } = state;
-  const shippingCost = order.shipping_cost ? Number(order.shipping_cost) : 0;
-  const total = Number(order.merchandise_subtotal) + shippingCost;
-  const balanceDue = total - Number(order.amount_paid);
+  // Shared with submit-balance-payment so the figure shown here and the amount
+  // recorded on the server cannot drift apart again.
+  const amounts = {
+    merchandiseSubtotal: order.merchandise_subtotal,
+    shippingCost: order.shipping_cost,
+    amountPaid: order.amount_paid,
+  };
+  const balanceDue = orderBalanceDue(amounts);
 
   const timeline = buildOrderTimeline({
     status: order.status as OrderStatus,

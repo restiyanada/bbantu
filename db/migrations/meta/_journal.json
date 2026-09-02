@@ -78,6 +78,13 @@
       "when": 1788006280677,
       "tag": "0014_push_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788384874768,
+      "tag": "0017_payments_amount_positive",
+      "breakpoints": true
     }
   ]
 }

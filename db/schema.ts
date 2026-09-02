@@ -371,6 +371,11 @@ export const payments = pgTable(
       to: "anon",
       using: sql`exists (select 1 from ${orders} where ${orders.id} = ${table.orderId} and ${orders.accessToken} = ${requestAccessToken})`,
     }),
+    // A payment is money changing hands, so it is always positive. Without this
+    // a balance miscalculation could insert a negative row and quietly reduce
+    // amount_paid — which is exactly what the pre-fix balance formula did when
+    // shipping exceeded half the merchandise.
+    check("payments_amount_positive", sql`${table.amount} > 0`),
   ]
 ).enableRLS();
 

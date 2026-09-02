@@ -1,0 +1,38 @@
+-- Journaled (schema.ts change). A payment is money changing hands, so its
+-- amount is always positive.
+--
+-- Without this, a balance miscalculation could insert a NEGATIVE payment row
+-- and quietly reduce the order's amount_paid. That was reachable: before the
+-- fix that ships alongside this migration, submit-balance-payment computed the
+-- balance as merchandise_subtotal - amount_paid, omitting shipping. On a
+-- deposit + shipping order where shipping exceeded half the merchandise
+-- (subtotal 100,000 with 60,000 shipping) it produced -10,000.
+--
+-- ⚠️ RUN THE PRE-CHECK FIRST. Adding a CHECK constraint to a table that already
+-- violates it FAILS — safely, changing nothing, but the migration will not
+-- apply until the offending rows are corrected:
+--
+--   SELECT p.id, p.order_id, p.amount, p.status, p.submitted_at
+--   FROM payments p
+--   WHERE p.amount <= 0
+--   ORDER BY p.submitted_at;
+--   -- empty result = safe to apply
+--
+-- To find orders already under-recorded by the balance bug (amount_paid short
+-- by exactly the shipping cost), regardless of whether any row went negative:
+--
+--   SELECT o.id, o.order_number, o.payment_type, o.fulfilment_method,
+--          o.merchandise_subtotal, o.shipping_cost, o.amount_paid,
+--          (o.merchandise_subtotal + COALESCE(o.shipping_cost, 0)) - o.amount_paid AS shortfall
+--   FROM orders o
+--   WHERE o.payment_type = 'DP'
+--     AND o.shipping_cost IS NOT NULL
+--     AND o.status NOT IN ('PAYMENT_PENDING', 'BALANCE_DUE', 'CANCELLED')
+--     AND o.amount_paid < o.merchandise_subtotal + COALESCE(o.shipping_cost, 0)
+--   ORDER BY o.created_at;
+--
+-- Verify after applying:
+--   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--   WHERE conrelid = 'payments'::regclass AND conname = 'payments_amount_positive';
+
+ALTER TABLE "payments" ADD CONSTRAINT "payments_amount_positive" CHECK ("payments"."amount" > 0);
