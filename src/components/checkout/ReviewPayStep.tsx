@@ -25,9 +25,9 @@ export function ReviewPayStep(props: {
   paymentSettings: PaymentSettingsRow | null;
   proof: ProofUpload;
   submitError: string | null;
-  /** The rate the customer picked, if any — carries the service name and raw
-   *  price the summary displays; not reconstructable from shippingCostCents
-   *  alone. See task-9-10-report.md for why this was added. */
+  /** The rate the customer picked, if any. The summary shows the courier
+   *  service name and the raw price, so the whole rate has to travel — a
+   *  rounded cents total could not reconstruct either. */
   selectedRate: JneRateOption | null;
 }) {
   const {
