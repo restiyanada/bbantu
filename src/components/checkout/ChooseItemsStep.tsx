@@ -2,57 +2,7 @@ import { Plus, Minus, ChevronRight, Image as ImageIcon } from "lucide-react";
 import { formatIDR, cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-
-interface VariantRow {
-  id: string;
-  name: string;
-  price: string;
-}
-
-export interface ProductImageRow {
-  url: string;
-  sort_order: number;
-}
-export interface ProductRow {
-  id: string;
-  name: string;
-  description: string | null;
-  image_url: string | null;
-  product_images: ProductImageRow[];
-  product_variants: VariantRow[];
-}
-
-/** sort_order is the admin's arrangement; image_url is the cover fallback. */
-export function photoUrlsOf(product: { image_url: string | null; product_images?: ProductImageRow[] }): string[] {
-  const ordered = [...(product.product_images ?? [])].sort((a, b) => a.sort_order - b.sort_order);
-  if (ordered.length > 0) return ordered.map((i) => i.url);
-  return product.image_url ? [product.image_url] : [];
-}
-
-export interface SelectableItem {
-  variantId: string;
-  productName: string;
-  variantName: string;
-  label: string;
-  price: string;
-  description: string | null;
-  photoUrls: string[];
-}
-
-export interface BatchOption {
-  id: string;
-  name: string;
-  allowedPaymentTypes: string[];
-  allowedFulfilmentMethods: string[];
-  items: SelectableItem[];
-}
-
-export interface DetailTarget {
-  name: string;
-  description: string | null;
-  photoUrls: string[];
-  rows: Array<{ variantId: string; label: string }>;
-}
+import { photoUrlsOf, type ProductRow, type BatchOption, type DetailTarget } from "@/components/checkout/types";
 
 export function ChooseItemsStep({
   products,
@@ -83,7 +33,7 @@ export function ChooseItemsStep({
 
   return (
     <>
-      {batches !== null && batches.length > 0 && (
+      {batches.length > 0 && (
         <div className="flex gap-2 flex-wrap">
           <button
             type="button"

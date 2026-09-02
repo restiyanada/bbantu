@@ -11,16 +11,15 @@ import { Button } from "@/components/ui/button";
 import { ProductDetailSheet } from "@/components/product-detail-sheet";
 import { CheckoutSteps } from "@/components/checkout/CheckoutSteps";
 import { CheckoutNavBar } from "@/components/checkout/CheckoutNavBar";
+import { ChooseItemsStep, QuantityRow } from "@/components/checkout/ChooseItemsStep";
 import {
-  ChooseItemsStep,
-  QuantityRow,
   photoUrlsOf,
   type ProductImageRow,
   type ProductRow,
   type SelectableItem,
   type BatchOption,
   type DetailTarget,
-} from "@/components/checkout/ChooseItemsStep";
+} from "@/components/checkout/types";
 import { YourDetailsStep, customerSchema, type CustomerValues } from "@/components/checkout/YourDetailsStep";
 import { ReviewPayStep, type PaymentSettingsRow } from "@/components/checkout/ReviewPayStep";
 
@@ -332,7 +331,7 @@ export default function HomePage() {
             activeItems={activeItems}
             quantities={quantities}
             subtotalCents={subtotalCents}
-            shippingCostCents={shippingCostCents}
+            depositCents={depositCents}
             amountDueNowCents={amountDueNowCents}
             grandTotalCents={grandTotalCents}
             effectivePaymentType={effectivePaymentType}

@@ -5,7 +5,7 @@ import { FileUploadPreview } from "@/components/ui/file-upload-preview";
 import { FileInput } from "@/components/ui/file-input";
 import type { ProofUpload } from "@/lib/useProofUpload";
 import type { JneRateOption } from "@/lib/useShippingSelection";
-import type { SelectableItem } from "@/components/checkout/ChooseItemsStep";
+import type { SelectableItem } from "@/components/checkout/types";
 
 export interface PaymentSettingsRow {
   bank_name: string;
@@ -17,7 +17,7 @@ export function ReviewPayStep(props: {
   activeItems: SelectableItem[];
   quantities: Record<string, number>;
   subtotalCents: number;
-  shippingCostCents: number;
+  depositCents: number;
   amountDueNowCents: number;
   grandTotalCents: number;
   effectivePaymentType: "DP" | "FULL";
@@ -34,6 +34,7 @@ export function ReviewPayStep(props: {
     activeItems,
     quantities,
     subtotalCents,
+    depositCents,
     amountDueNowCents,
     grandTotalCents,
     effectivePaymentType,
@@ -45,7 +46,6 @@ export function ReviewPayStep(props: {
   } = props;
 
   const subtotal = (subtotalCents / 100).toFixed(2);
-  const depositCents = Math.round(subtotalCents * 0.5);
 
   return (
     <>
