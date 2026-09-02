@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AlertCircle, Clock, Package, Truck, CheckCircle2, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { formatIDR, formatOrderNumber, sanitizeFileName } from "@/lib/utils";
+import { formatIDR, formatOrderNumber } from "@/lib/utils";
 import { buildOrderTimeline, type OrderStatus } from "@/lib/order-timeline";
 import { OrderTimelineDisplay } from "@/components/order-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -13,6 +13,8 @@ import { ProductDetailSheet } from "@/components/product-detail-sheet";
 import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PushNotificationToggle } from "@/components/push-notification-toggle";
+import { ACCEPTED_IMAGE_TYPES } from "@/lib/fileUpload";
+import { useProofUpload } from "@/lib/useProofUpload";
 
 interface OrderRow {
   id: string;
@@ -102,10 +104,6 @@ interface ShipmentRow {
   tracking_number: string | null;
 }
 
-const PROOF_BUCKET = "payment-proofs";
-const MAX_PROOF_BYTES = 5 * 1024 * 1024;
-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
-
 type LoadState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -142,22 +140,12 @@ export default function OrderPage() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
 
-  const [resubmitPath, setResubmitPath] = useState<string | null>(null);
-  const [resubmitFileName, setResubmitFileName] = useState<string | null>(null);
-  const [resubmitPreviewUrl, setResubmitPreviewUrl] = useState<string | null>(null);
-  const [resubmitUploading, setResubmitUploading] = useState(false);
   const [resubmitting, setResubmitting] = useState(false);
-  const [resubmitError, setResubmitError] = useState<string | null>(null);
   const [detail, setDetail] = useState<ResolvedItem | null>(null);
-  const resubmitInputRef = useRef<HTMLInputElement>(null);
+  const resubmitProof = useProofUpload(accessToken ?? null);
 
-  const [balancePath, setBalancePath] = useState<string | null>(null);
-  const [balanceFileName, setBalanceFileName] = useState<string | null>(null);
-  const [balancePreviewUrl, setBalancePreviewUrl] = useState<string | null>(null);
-  const [balanceUploading, setBalanceUploading] = useState(false);
   const [balanceSubmitting, setBalanceSubmitting] = useState(false);
-  const [balanceError, setBalanceError] = useState<string | null>(null);
-  const balanceInputRef = useRef<HTMLInputElement>(null);
+  const balanceProof = useProofUpload(accessToken ?? null);
 
   useEffect(() => {
     if (!accessToken) {
@@ -235,125 +223,43 @@ export default function OrderPage() {
     );
   }
 
-  async function handleResubmitFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !accessToken) return;
-    setResubmitError(null);
-    setResubmitPath(null);
-
-    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
-      setResubmitError("Please upload a JPEG, PNG, or WebP image.");
-      return;
-    }
-    if (file.size > MAX_PROOF_BYTES) {
-      setResubmitError("File is too large — please keep it under 5MB.");
-      return;
-    }
-
-    setResubmitPreviewUrl(URL.createObjectURL(file));
-    setResubmitUploading(true);
-    const path = `${accessToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
-    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
-    setResubmitUploading(false);
-
-    if (error) {
-      setResubmitError("Couldn't upload your payment proof. Please try again.");
-      return;
-    }
-    setResubmitPath(path);
-    setResubmitFileName(file.name);
-  }
-
-  function handleRemoveResubmitProof() {
-    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
-    setResubmitPath(null);
-    setResubmitFileName(null);
-    setResubmitPreviewUrl(null);
-    setResubmitError(null);
-    if (resubmitInputRef.current) resubmitInputRef.current.value = "";
-  }
-
   async function handleResubmit(orderId: string) {
-    if (!accessToken || !resubmitPath) return;
+    if (!accessToken || !resubmitProof.path) return;
     setResubmitting(true);
-    setResubmitError(null);
+    resubmitProof.setError(null);
 
     const { error, data } = await supabase.functions.invoke("resubmit-payment", {
-      body: { orderId, accessToken, proofFileUrl: resubmitPath },
+      body: { orderId, accessToken, proofFileUrl: resubmitProof.path },
     });
 
     setResubmitting(false);
 
     if (error || !data) {
-      setResubmitError("Couldn't resubmit your payment. Please try again.");
+      resubmitProof.setError("Couldn't resubmit your payment. Please try again.");
       return;
     }
 
-    if (resubmitPreviewUrl) URL.revokeObjectURL(resubmitPreviewUrl);
-    setResubmitPath(null);
-    setResubmitFileName(null);
-    setResubmitPreviewUrl(null);
+    resubmitProof.reset();
     setReloadKey((k) => k + 1);
   }
 
-  async function handleBalanceFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !accessToken) return;
-    setBalanceError(null);
-    setBalancePath(null);
-
-    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
-      setBalanceError("Please upload a JPEG, PNG, or WebP image.");
-      return;
-    }
-    if (file.size > MAX_PROOF_BYTES) {
-      setBalanceError("File is too large — please keep it under 5MB.");
-      return;
-    }
-
-    setBalancePreviewUrl(URL.createObjectURL(file));
-    setBalanceUploading(true);
-    const path = `${accessToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
-    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
-    setBalanceUploading(false);
-
-    if (error) {
-      setBalanceError("Couldn't upload your payment proof. Please try again.");
-      return;
-    }
-    setBalancePath(path);
-    setBalanceFileName(file.name);
-  }
-
-  function handleRemoveBalanceProof() {
-    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
-    setBalancePath(null);
-    setBalanceFileName(null);
-    setBalancePreviewUrl(null);
-    setBalanceError(null);
-    if (balanceInputRef.current) balanceInputRef.current.value = "";
-  }
-
   async function handleSubmitBalance(orderId: string) {
-    if (!accessToken || !balancePath) return;
+    if (!accessToken || !balanceProof.path) return;
     setBalanceSubmitting(true);
-    setBalanceError(null);
+    balanceProof.setError(null);
 
     const { error, data } = await supabase.functions.invoke("submit-balance-payment", {
-      body: { orderId, accessToken, proofFileUrl: balancePath },
+      body: { orderId, accessToken, proofFileUrl: balanceProof.path },
     });
 
     setBalanceSubmitting(false);
 
     if (error || !data) {
-      setBalanceError("Couldn't submit your balance payment. Please try again.");
+      balanceProof.setError("Couldn't submit your balance payment. Please try again.");
       return;
     }
 
-    if (balancePreviewUrl) URL.revokeObjectURL(balancePreviewUrl);
-    setBalancePath(null);
-    setBalanceFileName(null);
-    setBalancePreviewUrl(null);
+    balanceProof.reset();
     setReloadKey((k) => k + 1);
   }
 
@@ -402,25 +308,25 @@ export default function OrderPage() {
       extra: (
         <div className="space-y-2 pt-1">
           <FileInput
-            ref={resubmitInputRef}
-            accept={ACCEPTED_PROOF_TYPES.join(",")}
-            onChange={handleResubmitFileChange}
-            disabled={resubmitUploading}
+            ref={resubmitProof.inputRef}
+            accept={ACCEPTED_IMAGE_TYPES.join(",")}
+            onChange={resubmitProof.handleFileChange}
+            disabled={resubmitProof.uploading}
             hint="JPG, PNG or WebP"
           />
-          {resubmitUploading && <p className="text-sm">Uploading…</p>}
-          {resubmitPath && resubmitPreviewUrl && !resubmitUploading && (
+          {resubmitProof.uploading && <p className="text-sm">Uploading…</p>}
+          {resubmitProof.path && resubmitProof.previewUrl && !resubmitProof.uploading && (
             <FileUploadPreview
-              previewUrl={resubmitPreviewUrl}
-              label={resubmitFileName ?? "Uploaded"}
-              onRemove={handleRemoveResubmitProof}
+              previewUrl={resubmitProof.previewUrl}
+              label={resubmitProof.fileName ?? "Uploaded"}
+              onRemove={resubmitProof.reset}
             />
           )}
-          {resubmitError && <p className="text-sm font-medium">{resubmitError}</p>}
+          {resubmitProof.error && <p className="text-sm font-medium">{resubmitProof.error}</p>}
           <Button
             variant="destructive"
             size="sm"
-            disabled={!resubmitPath || resubmitting}
+            disabled={!resubmitProof.path || resubmitting}
             onClick={() => handleResubmit(order.id)}
           >
             {resubmitting ? "Resubmitting…" : "Resubmit payment"}
@@ -448,25 +354,25 @@ export default function OrderPage() {
       extra: (
         <div className="space-y-2 pt-1">
           <FileInput
-            ref={balanceInputRef}
-            accept={ACCEPTED_PROOF_TYPES.join(",")}
-            onChange={handleBalanceFileChange}
-            disabled={balanceUploading}
+            ref={balanceProof.inputRef}
+            accept={ACCEPTED_IMAGE_TYPES.join(",")}
+            onChange={balanceProof.handleFileChange}
+            disabled={balanceProof.uploading}
             hint="JPG, PNG or WebP"
           />
-          {balanceUploading && <p className="text-sm">Uploading…</p>}
-          {balancePath && balancePreviewUrl && !balanceUploading && (
+          {balanceProof.uploading && <p className="text-sm">Uploading…</p>}
+          {balanceProof.path && balanceProof.previewUrl && !balanceProof.uploading && (
             <FileUploadPreview
-              previewUrl={balancePreviewUrl}
-              label={balanceFileName ?? "Uploaded"}
-              onRemove={handleRemoveBalanceProof}
+              previewUrl={balanceProof.previewUrl}
+              label={balanceProof.fileName ?? "Uploaded"}
+              onRemove={balanceProof.reset}
             />
           )}
-          {balanceError && <p className="text-sm font-medium">{balanceError}</p>}
+          {balanceProof.error && <p className="text-sm font-medium">{balanceProof.error}</p>}
           <Button
             variant="info"
             size="sm"
-            disabled={!balancePath || balanceSubmitting}
+            disabled={!balanceProof.path || balanceSubmitting}
             onClick={() => handleSubmitBalance(order.id)}
           >
             {balanceSubmitting ? "Submitting…" : "Submit balance payment"}
