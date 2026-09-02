@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Search, Plus, Minus, Check, ChevronRight, Image as ImageIcon } from "lucide-react";
+import { Search, Plus, Minus, ChevronRight, Image as ImageIcon } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -18,6 +18,8 @@ import { Input, Textarea, Select } from "@/components/ui/input";
 import { Label, RequiredMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { CheckoutSteps } from "@/components/checkout/CheckoutSteps";
+import { CheckoutNavBar } from "@/components/checkout/CheckoutNavBar";
 
 interface VariantRow {
   id: string;
@@ -100,8 +102,6 @@ const customerSchema = z.object({
 });
 
 type CustomerValues = z.infer<typeof customerSchema>;
-
-const STEPS = ["Choose items", "Your details", "Review & pay"] as const;
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -347,47 +347,7 @@ export default function HomePage() {
       </div>
 
       {/* Progress indicator */}
-      <div className="flex items-center">
-        {STEPS.map((label, i) => {
-          const n = i + 1;
-          const state = n < step ? "done" : n === step ? "active" : "upcoming";
-          return (
-            <div key={label} className="flex items-center flex-1 last:flex-none">
-              <button
-                type="button"
-                disabled={n > step}
-                onClick={() => n < step && setStep(n)}
-                className={cn(
-                  "flex items-center gap-2 shrink-0",
-                  n < step ? "cursor-pointer" : "cursor-default"
-                )}
-              >
-                <span
-                  className={cn(
-                    "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
-                    state === "done" && "border-primary bg-primary text-primary-foreground",
-                    state === "active" && "border-primary text-primary",
-                    state === "upcoming" && "border-border text-muted-foreground"
-                  )}
-                >
-                  {state === "done" ? <Check className="size-3.5" /> : n}
-                </span>
-                <span
-                  className={cn(
-                    "text-sm hidden sm:inline",
-                    state === "active" ? "font-semibold" : "text-muted-foreground"
-                  )}
-                >
-                  {label}
-                </span>
-              </button>
-              {n < STEPS.length && (
-                <span className={cn("h-px flex-1 mx-2", n < step ? "bg-primary" : "bg-border")} />
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <CheckoutSteps step={step} onStepClick={setStep} />
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         {/* STEP 1: choose items */}
@@ -897,44 +857,18 @@ export default function HomePage() {
         </ProductDetailSheet>
 
         {/* Sticky step navigation / cart bar */}
-        <div className="fixed bottom-0 inset-x-0 bg-card border-t z-20">
-          <div className="max-w-3xl mx-auto px-4 sm:px-8 py-3 flex items-center justify-between gap-3">
-            {step === 1 ? (
-              <div>
-                <p className="text-xs text-muted-foreground">{cartCount} item(s)</p>
-                <p className="text-base font-bold">{formatIDR(subtotal)}</p>
-              </div>
-            ) : (
-              <Button type="button" variant="outline" onClick={() => setStep(step - 1)}>
-                Back
-              </Button>
-            )}
-
-            {step === 1 && (
-              <Button type="button" onClick={handleContinueFromItems} disabled={!hasItems}>
-                Continue
-              </Button>
-            )}
-            {step === 2 && (
-              <Button type="button" onClick={() => void handleContinueFromDetails()}>
-                Continue
-              </Button>
-            )}
-            {step === 3 && (
-              <Button
-                type="submit"
-                disabled={
-                  isSubmitting ||
-                  !proof.path ||
-                  proof.uploading ||
-                  (fulfilmentMethod === "SHIPPING" && !shipping.selectedServiceCode)
-                }
-              >
-                {isSubmitting ? "Placing order…" : "Place order"}
-              </Button>
-            )}
-          </div>
-        </div>
+        <CheckoutNavBar
+          step={step}
+          cartCount={cartCount}
+          subtotal={formatIDR(subtotal)}
+          continueDisabled={!hasItems}
+          submitDisabled={
+            !proof.path || proof.uploading || (fulfilmentMethod === "SHIPPING" && !shipping.selectedServiceCode)
+          }
+          isSubmitting={isSubmitting}
+          onBack={() => setStep(step - 1)}
+          onContinue={step === 1 ? handleContinueFromItems : () => void handleContinueFromDetails()}
+        />
       </form>
     </main>
   );
