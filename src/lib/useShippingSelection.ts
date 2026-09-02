@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 export interface LocationOption {
@@ -31,6 +31,9 @@ export interface ShippingSelection {
   handleCityChange: (code: string) => Promise<void>;
   handleDistrictChange: (code: string) => void;
   handleGetRate: (items: { variantId: string; quantity: number }[]) => Promise<void>;
+  /** Clears a fetched rate quote. The page calls this when the cart changes
+   *  underneath it — a rate quoted for a different cart must not survive. */
+  resetRates: () => void;
 }
 
 /**
@@ -153,6 +156,12 @@ export function useShippingSelection(): ShippingSelection {
     setSelectedServiceCode(fetchedRates[0].serviceCode);
   }
 
+  const resetRates = useCallback(() => {
+    setRates(null);
+    setSelectedServiceCode(null);
+    setRateError(null);
+  }, []);
+
   return {
     provinces,
     cities,
@@ -172,5 +181,6 @@ export function useShippingSelection(): ShippingSelection {
     handleCityChange,
     handleDistrictChange,
     handleGetRate,
+    resetRates,
   };
 }

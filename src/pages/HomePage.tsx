@@ -221,7 +221,7 @@ export default function HomePage() {
     setItemsError(null);
     setPaymentType("FULL");
     setFulfilmentMethod("PICKUP");
-    shipping.setSelectedServiceCode(null);
+    shipping.resetRates();
   }
 
   function setQuantity(variantId: string, qty: number) {
