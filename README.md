@@ -22,7 +22,7 @@ it does, and `PRD.html` for the business rules (referenced throughout as §n).
 - **File storage:** Supabase Storage — payment proofs (private, 30-day
   retention) and product images (public, never deleted — see "Product photos")
 - **Email:** Resend, sent by a scheduled Edge Function off a queue table
-- **Testing:** Vitest — 71 unit tests over the pure logic in `lib/`
+- **Testing:** Vitest (77 unit tests over the pure logic in `lib/`) + Playwright (48 end-to-end browser tests), both run on every push by GitHub Actions — see [docs/TEST-SCENARIOS.md](docs/TEST-SCENARIOS.md)
 
 ## The security boundary
 
@@ -215,7 +215,9 @@ vs. not is about whether `drizzle-kit generate` can regenerate the file from
 | `npm run dev` | Local Vite dev server |
 | `npm run build` | Production build → `dist/` |
 | `npm run lint` | oxlint |
-| `npm test` | Run the test suite once |
+| `npm test` | Run the unit tests once |
+| `npm run test:e2e` | Run the end-to-end browser tests |
+| `npx playwright show-report` | Browse the last end-to-end run's report |
 | `npx drizzle-kit generate` | Generate a migration from `schema.ts` |
 | `npx drizzle-kit migrate` | ⚠️ Don't run against this project — see Migrations |
 | `npm run db:studio` | Browse data in Drizzle Studio |
