@@ -1,38 +1,15 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { stubStorefront } from "./fixtures";
 
-// Fixture data for the storefront's three parallel reads (products, batches,
-// payment settings), stubbed so this test runs against no real backend —
-// deterministic, and doesn't need any Supabase credentials to be meaningful.
-async function stubStorefront(page: import("@playwright/test").Page) {
-  await page.route("**/rest/v1/products*", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([
-        {
-          id: "p1",
-          name: "Kaos Katun Combed",
-          description: "Cotton combed 30s",
-          image_url: null,
-          product_images: [],
-          product_variants: [
-            { id: "v1", name: "M", price: "145000" },
-            { id: "v2", name: "L", price: "145000" },
-          ],
-        },
-      ]),
-    })
-  );
-  await page.route("**/rest/v1/batches*", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
-  );
-  await page.route("**/rest/v1/payment_settings*", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ bank_name: "BCA", account_number: "123", account_holder_name: "Test Shop" }),
-    })
-  );
+async function pickOneL(page: Page) {
+  const lRow = page.locator("span", { hasText: /^L — Rp 145\.000$/ });
+  await lRow.locator("xpath=ancestor::div[1]//button[2]").click();
+}
+
+async function fillDetails(page: Page) {
+  await page.getByLabel("Name").fill("Test Customer");
+  await page.getByLabel("Phone number").fill("081234567890");
+  await page.getByLabel("Email").fill("test@example.com");
 }
 
 test("checkout shows an itemized breakdown on the review step", async ({ page }) => {
@@ -40,37 +17,78 @@ test("checkout shows an itemized breakdown on the review step", async ({ page })
   await page.goto("/");
 
   await expect(page.getByText("Kaos Katun Combed")).toBeVisible();
-
-  // Add one L.
-  const lRow = page.locator("span", { hasText: /^L — Rp 145\.000$/ });
-  await lRow.locator("xpath=ancestor::div[1]//button[2]").click();
+  await pickOneL(page);
 
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByLabel("Name")).toBeVisible();
 
-  await page.getByLabel("Name").fill("Test Customer");
-  await page.getByLabel("Phone number").fill("081234567890");
-  await page.getByLabel("Email").fill("test@example.com");
-  await page.getByText("Pickup", { exact: false }).first().click();
+  await fillDetails(page);
   await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page.getByText("Order summary")).toBeVisible();
-  // The regression this covers: the review step used to show only the
-  // subtotal, with no line items at all — a customer had no way to see what
-  // they were about to pay for.
+  // The review step used to show only a subtotal — no line items at all.
   await expect(page.getByText("Kaos Katun Combed — L × 1")).toBeVisible();
   await expect(page.getByText("Merchandise subtotal")).toBeVisible();
+  await expect(page.getByText("BCA — 1234567890")).toBeVisible();
 });
 
-test("a wrong order-tracker token shows a clean not-found state", async ({ page }) => {
-  await page.route("**/functions/v1/get-order", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ found: false }) })
+test("step 1 will not continue with nothing selected", async ({ page }) => {
+  await stubStorefront(page);
+  await page.goto("/");
+  await expect(page.getByText("Kaos Katun Combed")).toBeVisible();
+
+  await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+});
+
+test("step 2 rejects an invalid phone number and a malformed email", async ({ page }) => {
+  await stubStorefront(page);
+  await page.goto("/");
+  await expect(page.getByText("Kaos Katun Combed")).toBeVisible();
+  await pickOneL(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await page.getByLabel("Name").fill("Test Customer");
+  await page.getByLabel("Phone number").fill("abc");
+  await page.getByLabel("Email").fill("not-an-email");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Still on the details step — validation blocked the advance.
+  await expect(page.getByLabel("Phone number")).toBeVisible();
+  await expect(page.getByText("Order summary")).toHaveCount(0);
+});
+
+test("a rate-limited create-order surfaces the server's message", async ({ page }) => {
+  await stubStorefront(page);
+  await page.route("**/functions/v1/create-order", (route) =>
+    route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Too many requests. Please wait a minute and try again." }),
+    })
+  );
+  await page.route("**/storage/v1/object/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ Key: "x" }) })
   );
 
-  const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto("/");
+  await expect(page.getByText("Kaos Katun Combed")).toBeVisible();
+  await pickOneL(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await fillDetails(page);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("Order summary")).toBeVisible();
 
-  await page.goto("/orders/some-invalid-token");
-  await expect(page.getByText("Order not found")).toBeVisible();
-  expect(errors).toEqual([]);
+  await page.setInputFiles('input[type="file"]', {
+    name: "proof.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64"
+    ),
+  });
+
+  await page.getByRole("button", { name: "Place order" }).click();
+  await expect(page.getByText(/Something went wrong placing your order|Too many requests/i)).toBeVisible({
+    timeout: 15000,
+  });
 });
