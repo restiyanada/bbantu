@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Search, Plus, Minus, Check, ChevronRight, Image as ImageIcon } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { supabase } from "@/lib/supabaseClient";
-import { formatIDR, sanitizeFileName } from "@/lib/utils";
+import { formatIDR } from "@/lib/utils";
+import { ACCEPTED_IMAGE_TYPES } from "@/lib/fileUpload";
+import { useProofUpload } from "@/lib/useProofUpload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUploadPreview } from "@/components/ui/file-upload-preview";
@@ -98,10 +100,6 @@ interface JneRateOption {
   price: number;
 }
 
-const PROOF_BUCKET = "payment-proofs";
-const MAX_PROOF_BYTES = 5 * 1024 * 1024;
-const ACCEPTED_PROOF_TYPES = ["image/jpeg", "image/png", "image/webp"];
-
 const NAME_PATTERN = /^[\p{L}\s'-]+$/u;
 const PHONE_PATTERN = /^[0-9]{8,15}$/;
 
@@ -148,14 +146,8 @@ export default function HomePage() {
   const [rateLoading, setRateLoading] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
 
-  const [proofPath, setProofPath] = useState<string | null>(null);
-  const [proofFileName, setProofFileName] = useState<string | null>(null);
-  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
-  const [proofUploading, setProofUploading] = useState(false);
-  const [proofError, setProofError] = useState<string | null>(null);
-  const proofInputRef = useRef<HTMLInputElement>(null);
-
   const [submissionToken, setSubmissionToken] = useState(() => crypto.randomUUID());
+  const proof = useProofUpload(submissionToken);
 
   const {
     register,
@@ -380,44 +372,6 @@ export default function HomePage() {
   const amountDueNowCents = (effectivePaymentType === "DP" ? depositCents : subtotalCents) + shippingCostCents;
   const grandTotalCents = subtotalCents + shippingCostCents;
 
-  async function handleProofFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setProofError(null);
-    setProofPath(null);
-
-    if (!ACCEPTED_PROOF_TYPES.includes(file.type)) {
-      setProofError("Please upload a JPEG, PNG, or WebP image.");
-      return;
-    }
-    if (file.size > MAX_PROOF_BYTES) {
-      setProofError("File is too large — please keep it under 5MB.");
-      return;
-    }
-
-    setProofPreviewUrl(URL.createObjectURL(file));
-    setProofUploading(true);
-    const path = `${submissionToken}/${crypto.randomUUID()}-${sanitizeFileName(file.name)}`;
-    const { error } = await supabase.storage.from(PROOF_BUCKET).upload(path, file, { contentType: file.type });
-    setProofUploading(false);
-
-    if (error) {
-      setProofError("Couldn't upload your payment proof. Please try again.");
-      return;
-    }
-    setProofPath(path);
-    setProofFileName(file.name);
-  }
-
-  function handleRemoveProof() {
-    if (proofPreviewUrl) URL.revokeObjectURL(proofPreviewUrl);
-    setProofPath(null);
-    setProofFileName(null);
-    setProofPreviewUrl(null);
-    setProofError(null);
-    if (proofInputRef.current) proofInputRef.current.value = "";
-  }
-
   function handleContinueFromItems() {
     if (!hasItems) {
       setItemsError("Add at least one item before continuing.");
@@ -457,8 +411,8 @@ export default function HomePage() {
       setStep(1);
       return;
     }
-    if (!proofPath) {
-      setProofError("Please upload your payment proof before submitting.");
+    if (!proof.path) {
+      proof.setError("Please upload your payment proof before submitting.");
       return;
     }
 
@@ -475,7 +429,7 @@ export default function HomePage() {
         customer,
         items,
         submissionToken,
-        proofFileUrl: proofPath,
+        proofFileUrl: proof.path,
         fulfilmentMethod,
         ...(isPreOrder ? { batchId: activeSource, paymentType: effectivePaymentType } : {}),
         ...(fulfilmentMethod === "SHIPPING"
@@ -498,8 +452,7 @@ export default function HomePage() {
         (data as { error?: string } | null)?.error ?? "Something went wrong placing your order. Please try again."
       );
       setSubmissionToken(crypto.randomUUID());
-      setProofPath(null);
-      setProofFileName(null);
+      proof.reset();
       return;
     }
 
@@ -1026,17 +979,17 @@ export default function HomePage() {
                   Upload a screenshot of your transfer receipt for the amount shown above.
                 </p>
                 <FileInput
-                  ref={proofInputRef}
-                  accept={ACCEPTED_PROOF_TYPES.join(",")}
-                  onChange={handleProofFileChange}
-                  disabled={proofUploading}
+                  ref={proof.inputRef}
+                  accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                  onChange={proof.handleFileChange}
+                  disabled={proof.uploading}
                   hint="JPG, PNG or WebP"
                 />
-                {proofUploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
-                {proofPath && proofPreviewUrl && !proofUploading && (
-                  <FileUploadPreview previewUrl={proofPreviewUrl} label={proofFileName ?? "Uploaded"} onRemove={handleRemoveProof} />
+                {proof.uploading && <p className="text-sm text-muted-foreground">Uploading…</p>}
+                {proof.path && proof.previewUrl && !proof.uploading && (
+                  <FileUploadPreview previewUrl={proof.previewUrl} label={proof.fileName ?? "Uploaded"} onRemove={proof.reset} />
                 )}
-                {proofError && <p className="text-destructive text-sm">{proofError}</p>}
+                {proof.error && <p className="text-destructive text-sm">{proof.error}</p>}
               </CardContent>
             </Card>
 
@@ -1091,7 +1044,10 @@ export default function HomePage() {
               <Button
                 type="submit"
                 disabled={
-                  isSubmitting || !proofPath || proofUploading || (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
+                  isSubmitting ||
+                  !proof.path ||
+                  proof.uploading ||
+                  (fulfilmentMethod === "SHIPPING" && !selectedServiceCode)
                 }
               >
                 {isSubmitting ? "Placing order…" : "Place order"}
