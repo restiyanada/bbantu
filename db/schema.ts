@@ -396,7 +396,7 @@ export const inventory = pgTable(
     onHand: integer("on_hand").notNull().default(0),
     reserved: integer("reserved").notNull().default(0),
   },
-  (_table) => [
+  (table) => [
     pgPolicy("staff_can_read_inventory", { for: "select", to: "authenticated", using: isAnyAdmin }),
     pgPolicy("staff_can_create_inventory_rows", {
       for: "insert",
@@ -407,6 +407,12 @@ export const inventory = pgTable(
           and (${adminUsers.canManageProductsBatches} = true or ${adminUsers.canAdjustInventory} = true)
       )`,
     }),
+    // A false-positive reservation release (or any other bug that drives
+    // either counter negative) is otherwise silent and overselling —
+    // nothing at the DB level would stop or surface it. These floors turn
+    // that into a loud, safe-to-apply CHECK failure instead.
+    check("inventory_reserved_non_negative", sql`${table.reserved} >= 0`),
+    check("inventory_on_hand_non_negative", sql`${table.onHand} >= 0`),
   ]
 ).enableRLS();
 

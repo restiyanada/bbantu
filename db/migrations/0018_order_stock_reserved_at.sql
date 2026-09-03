@@ -1,3 +1,17 @@
+-- Journaled (schema.ts change). orders.stock_reserved_at is non-null iff
+-- this order currently holds an inventory.reserved increment — the
+-- invariant the whole cancellation feature is built on.
+--
+-- Why not reuse reserved_at: reserved_at is set even when allocation
+-- FAILED (verify-payment's pre-order path, which sets it and then routes
+-- the order to AWAITING_STOCK with nothing reserved) and is never set for
+-- a ready-stock order that DOES hold a reservation (verify-payment's
+-- ready-stock path only reaches RESERVED/READY_FOR_FULFILMENT after
+-- tryAllocatePhysicalReservation succeeds). Releasing stock off
+-- reserved_at would both miss real reservations and free stock that was
+-- never taken — overselling either way. stock_reserved_at is set only at
+-- the two places that actually increment inventory.reserved, and cleared
+-- only when that increment is released.
 ALTER TABLE "orders" ADD COLUMN "stock_reserved_at" timestamp;
 
 -- Backfill: an order holds a reservation exactly when verify-payment (or

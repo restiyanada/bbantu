@@ -429,8 +429,53 @@ git commit -m "test: cover cancelling an order from the dashboard"
    -- BALANCE_DUE and everything at/after READY_FOR_FULFILMENT: flagged = count
    -- PAYMENT_PENDING / PAYMENT_VERIFIED / AWAITING_STOCK / CANCELLED: flagged = 0
    ```
+   That query only checks that the right orders got *some* flag — it can't tell
+   a correct backfill from one that merely ran on rows that happen to match by
+   status. The stronger check compares reserved quantity against what those
+   orders' line items actually say, per variant, across every flagged,
+   unfulfilled order:
+   ```sql
+   SELECT
+     oi.variant_id,
+     SUM(oi.quantity) AS reserved_per_order_items,
+     i.reserved AS reserved_in_inventory
+   FROM order_items oi
+   JOIN orders o ON o.id = oi.order_id
+   JOIN inventory i ON i.variant_id = oi.variant_id
+   WHERE o.stock_reserved_at IS NOT NULL
+     AND o.status IN ('BALANCE_DUE', 'READY_FOR_FULFILMENT', 'READY_FOR_PICKUP', 'READY_TO_SHIP')
+   GROUP BY oi.variant_id, i.reserved
+   HAVING SUM(oi.quantity) <> i.reserved;
+   -- empty result = the backfill matches reality; any row is a variant where
+   -- flagged orders' line items don't add up to what's actually reserved —
+   -- investigate before deploying (a hand-edited order or manual inventory
+   -- adjustment is the likely cause).
+   ```
 3. `supabase functions deploy cancel-order verify-payment record-batch-receipt`
-4. Deploy the frontend.
+4. **Re-run the exact backfill `UPDATE` from step 1, now that step 3 has returned:**
+   ```sql
+   UPDATE orders
+   SET stock_reserved_at = COALESCE(reserved_at, created_at)
+   WHERE status IN (
+     'BALANCE_DUE', 'READY_FOR_FULFILMENT', 'READY_FOR_PICKUP',
+     'READY_TO_SHIP', 'PICKED_UP', 'SHIPPED', 'COMPLETED'
+   );
+   ```
+   This closes the deployment-window hole: any order that `verify-payment`
+   verified, or `record-batch-receipt` promoted, in the gap between step 1
+   and step 3's redeploy still ran on the *old* code — it took an
+   `inventory.reserved` increment but has `stock_reserved_at` left NULL.
+   Cancelling that order later would release nothing: the exact leak this
+   feature exists to fix, silently reintroduced for that cohort. Re-running
+   the backfill after the redeploy catches every such order.
+
+   Safe to repeat: the `WHERE status IN (...)` list has no `CANCELLED` in it,
+   and an order whose reservation was already released (by a cancellation
+   that happened in between, or by this very statement running twice) is
+   `CANCELLED` — outside that list. A re-run can only flag orders that
+   genuinely still hold a reservation; it cannot manufacture a false
+   positive on one that doesn't.
+5. Deploy the frontend.
 
 **Order matters:** the migration must land before the redeployed `verify-payment`, which writes the new column.
 

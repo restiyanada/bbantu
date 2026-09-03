@@ -37,6 +37,7 @@ export function OrderCancelForm({
           Cancellation reason
           <RequiredMark />
         </Label>
+        <p className="text-xs text-muted-foreground">The customer will see this.</p>
         <Textarea
           id="reason"
           {...register("reason")}

@@ -92,6 +92,13 @@
       "when": 1788398748255,
       "tag": "0018_order_stock_reserved_at",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788400279488,
+      "tag": "0019_inventory_non_negative",
+      "breakpoints": true
     }
   ]
 }
