@@ -44,6 +44,7 @@ function baseOrder(overrides: Partial<OrderRow> = {}): OrderRow {
     fulfilmentMethod: "PICKUP",
     orderNumber: 1,
     reservedAt: null,
+    stockReservedAt: null,
     merchandiseSubtotal: "100.00",
     shippingCost: null,
     amountPaid: "0",

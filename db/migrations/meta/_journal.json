@@ -85,6 +85,13 @@
       "when": 1788384874768,
       "tag": "0017_payments_amount_positive",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788398748255,
+      "tag": "0018_order_stock_reserved_at",
+      "breakpoints": true
     }
   ]
 }

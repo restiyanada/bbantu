@@ -288,6 +288,12 @@ export const orders = pgTable(
     fulfilmentMethod: fulfilmentMethodEnum("fulfilment_method"),
     orderNumber: integer("order_number"),
     reservedAt: timestamp("reserved_at"),
+    // Non-null while this order holds an inventory.reserved increment.
+    // Distinct from reservedAt, which only means "pre-order queued for
+    // allocation" and is set even when allocation FAILED (see
+    // verify-payment's AWAITING_STOCK path). Releasing stock off reservedAt
+    // would free stock that was never taken and cause overselling.
+    stockReservedAt: timestamp("stock_reserved_at"),
     merchandiseSubtotal: numeric("merchandise_subtotal", {
       precision: 12,
       scale: 2,
