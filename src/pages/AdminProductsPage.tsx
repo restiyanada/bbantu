@@ -7,6 +7,12 @@ import { z } from "zod";
 import { supabase } from "@/lib/supabaseClient";
 import { useAdminAuth } from "@/lib/adminAuth";
 import { formatIDR } from "@/lib/utils";
+import {
+  IMAGE_BUCKET,
+  ACCEPTED_IMAGE_TYPES,
+  MAX_PRODUCT_PHOTOS,
+  validateUploadFile,
+} from "@/lib/fileUpload";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -15,13 +21,6 @@ import { Label, RequiredMark, OptionalMark } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AdminLayout from "@/components/AdminLayout";
-
-const IMAGE_BUCKET = "product-images";
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
-// Every photo is a Storage object and a download on a slow connection. Six is
-// enough to show a garment from several angles plus a size chart.
-const MAX_PHOTOS = 6;
 
 const productSchema = z.object({
   name: z.string().trim().min(1, "Product name is required."),
@@ -157,23 +156,24 @@ export default function AdminProductsPage() {
     if (picked.length === 0) return;
     setSubmitError(null);
 
-    if (picked.some((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type))) {
+    if (picked.some((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type as (typeof ACCEPTED_IMAGE_TYPES)[number]))) {
       setSubmitError("Photos must be JPEG, PNG, or WebP.");
       return;
     }
-    if (picked.some((f) => f.size > MAX_IMAGE_BYTES)) {
+    // Type was already checked above, so a problem here is necessarily size.
+    if (picked.some((f) => validateUploadFile(f) !== null)) {
       setSubmitError("Each photo must be under 5MB.");
       return;
     }
 
     setPhotos((prev) => {
-      const room = MAX_PHOTOS - prev.length;
+      const room = MAX_PRODUCT_PHOTOS - prev.length;
       if (room <= 0) {
-        setSubmitError(`You can add up to ${MAX_PHOTOS} photos.`);
+        setSubmitError(`You can add up to ${MAX_PRODUCT_PHOTOS} photos.`);
         return prev;
       }
       if (picked.length > room) {
-        setSubmitError(`Only the first ${room} were added — the limit is ${MAX_PHOTOS} photos.`);
+        setSubmitError(`Only the first ${room} were added — the limit is ${MAX_PRODUCT_PHOTOS} photos.`);
       }
       const added = picked.slice(0, room).map((file) => ({
         key: crypto.randomUUID(),
@@ -472,7 +472,7 @@ export default function AdminProductsPage() {
                   </Label>
                   {photos.length > 0 && (
                     <span className="text-xs text-muted-foreground">
-                      {photos.length} of {MAX_PHOTOS}
+                      {photos.length} of {MAX_PRODUCT_PHOTOS}
                     </span>
                   )}
                 </div>
@@ -530,7 +530,7 @@ export default function AdminProductsPage() {
                   </ul>
                 )}
 
-                {photos.length < MAX_PHOTOS && (
+                {photos.length < MAX_PRODUCT_PHOTOS && (
                   <FileInput
                     ref={imageInputRef}
                     multiple

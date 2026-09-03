@@ -72,11 +72,21 @@ Deno.serve(async (req) => {
         return { status: to, pickupToken: null as string | null };
       }
 
+      // Each attempt runs inside its own SAVEPOINT. In Postgres a failed
+      // statement aborts the whole enclosing transaction block, so retrying a
+      // colliding INSERT directly could never work — every statement after the
+      // first collision fails with "current transaction is aborted", and what
+      // looked like five attempts was really one. A nested drizzle transaction
+      // emits a SAVEPOINT, which rolls back alone and leaves the outer
+      // transaction usable for the next attempt.
       let token = "";
       for (let attempt = 0; attempt < 5; attempt++) {
-        token = generatePickupCode();
+        const candidate = generatePickupCode();
         try {
-          await tx.insert(pickupTokens).values({ orderId: input.orderId, token });
+          await tx.transaction(async (attemptTx) => {
+            await attemptTx.insert(pickupTokens).values({ orderId: input.orderId, token: candidate });
+          });
+          token = candidate;
           break;
         } catch (err) {
           if (isUniqueViolation(err) && attempt < 4) continue;

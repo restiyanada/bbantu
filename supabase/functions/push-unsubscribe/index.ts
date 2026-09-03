@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { pushSubscriptions } from "../../../db/schema.ts";
 
 // No auth check: the endpoint URL itself is an unguessable per-browser secret
@@ -31,6 +32,9 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Guest-reachable write. Cheap to call, so cap it like its siblings.
+    await enforceRateLimit(req, "push-unsubscribe");
+
     await db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, input.endpoint));
     return json({ unsubscribed: true });
   } catch (err) {

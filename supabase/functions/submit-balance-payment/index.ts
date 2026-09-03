@@ -3,8 +3,10 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
+import { orderBalanceDue } from "../../../lib/order-money.ts";
 import { notifyAdmins } from "../_shared/push.ts";
 import { formatOrderNumber } from "../../../lib/order-number.ts";
 
@@ -45,6 +47,10 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Guest-facing and verify_jwt = false — same reasoning as
+    // resubmit-payment: the access token is the only credential.
+    await enforceRateLimit(req, "submit-balance-payment");
+
     const result = await db.transaction(async (tx) => {
       const [order] = await tx
         .select()
@@ -75,7 +81,13 @@ Deno.serve(async (req) => {
         .orderBy(desc(payments.submittedAt))
         .limit(1);
 
-      const balanceAmount = (Number(order.merchandiseSubtotal) - Number(order.amountPaid)).toFixed(2);
+      // Shipping is charged in full with the deposit, so the balance is the
+      // rest of the merchandise. Computing it from merchandiseSubtotal alone
+      // understated it by the shipping cost on every deposit + shipping order.
+      const balanceAmount = orderBalanceDue(order).toFixed(2);
+      if (Number(balanceAmount) <= 0) {
+        throw new HttpError(409, "This order has nothing left to pay.");
+      }
 
       const [newPayment] = await tx
         .insert(payments)

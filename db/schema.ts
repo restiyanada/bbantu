@@ -288,6 +288,12 @@ export const orders = pgTable(
     fulfilmentMethod: fulfilmentMethodEnum("fulfilment_method"),
     orderNumber: integer("order_number"),
     reservedAt: timestamp("reserved_at"),
+    // Non-null while this order holds an inventory.reserved increment.
+    // Distinct from reservedAt, which only means "pre-order queued for
+    // allocation" and is set even when allocation FAILED (see
+    // verify-payment's AWAITING_STOCK path). Releasing stock off reservedAt
+    // would free stock that was never taken and cause overselling.
+    stockReservedAt: timestamp("stock_reserved_at"),
     merchandiseSubtotal: numeric("merchandise_subtotal", {
       precision: 12,
       scale: 2,
@@ -371,6 +377,11 @@ export const payments = pgTable(
       to: "anon",
       using: sql`exists (select 1 from ${orders} where ${orders.id} = ${table.orderId} and ${orders.accessToken} = ${requestAccessToken})`,
     }),
+    // A payment is money changing hands, so it is always positive. Without this
+    // a balance miscalculation could insert a negative row and quietly reduce
+    // amount_paid — which is exactly what the pre-fix balance formula did when
+    // shipping exceeded half the merchandise.
+    check("payments_amount_positive", sql`${table.amount} > 0`),
   ]
 ).enableRLS();
 
@@ -385,7 +396,7 @@ export const inventory = pgTable(
     onHand: integer("on_hand").notNull().default(0),
     reserved: integer("reserved").notNull().default(0),
   },
-  (_table) => [
+  (table) => [
     pgPolicy("staff_can_read_inventory", { for: "select", to: "authenticated", using: isAnyAdmin }),
     pgPolicy("staff_can_create_inventory_rows", {
       for: "insert",
@@ -396,6 +407,12 @@ export const inventory = pgTable(
           and (${adminUsers.canManageProductsBatches} = true or ${adminUsers.canAdjustInventory} = true)
       )`,
     }),
+    // A false-positive reservation release (or any other bug that drives
+    // either counter negative) is otherwise silent and overselling —
+    // nothing at the DB level would stop or surface it. These floors turn
+    // that into a loud, safe-to-apply CHECK failure instead.
+    check("inventory_reserved_non_negative", sql`${table.reserved} >= 0`),
+    check("inventory_on_hand_non_negative", sql`${table.onHand} >= 0`),
   ]
 ).enableRLS();
 

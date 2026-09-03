@@ -69,6 +69,8 @@ Deno.serve(async (req) => {
           });
         }
 
+        await tx.update(orders).set({ stockReservedAt: new Date() }).where(eq(orders.id, orderId));
+
         return true;
       }
 

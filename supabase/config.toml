@@ -23,6 +23,9 @@ project_id = "lhvxjgbjjamwatsmxiyc"
 # deliberately NOT listed, same reasoning as send-queued-emails (Milestone
 # 5): it's cron-only, so the platform's default verify_jwt = true is the
 # actual boundary, not a per-function check.
+[functions.cancel-order]
+verify_jwt = false
+
 [functions.create-order]
 verify_jwt = false
 
