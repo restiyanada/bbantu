@@ -433,7 +433,11 @@ git commit -m "test: cover cancelling an order from the dashboard"
    a correct backfill from one that merely ran on rows that happen to match by
    status. The stronger check compares reserved quantity against what those
    orders' line items actually say, per variant, across every flagged,
-   unfulfilled order:
+   order the backfill flagged. The status list here MUST match the backfill's
+   exactly: `inventory.reserved` reflects every reservation still held, and
+   PICKED_UP/SHIPPED/COMPLETED orders still hold theirs (nothing releases them
+   until Stage 2). Summing over a shorter list than the backfill used would
+   report a shortfall on a perfectly correct backfill.
    ```sql
    SELECT
      oi.variant_id,
@@ -443,7 +447,10 @@ git commit -m "test: cover cancelling an order from the dashboard"
    JOIN orders o ON o.id = oi.order_id
    JOIN inventory i ON i.variant_id = oi.variant_id
    WHERE o.stock_reserved_at IS NOT NULL
-     AND o.status IN ('BALANCE_DUE', 'READY_FOR_FULFILMENT', 'READY_FOR_PICKUP', 'READY_TO_SHIP')
+     AND o.status IN (
+       'BALANCE_DUE', 'READY_FOR_FULFILMENT', 'READY_FOR_PICKUP',
+       'READY_TO_SHIP', 'PICKED_UP', 'SHIPPED', 'COMPLETED'
+     )
    GROUP BY oi.variant_id, i.reserved
    HAVING SUM(oi.quantity) <> i.reserved;
    -- empty result = the backfill matches reality; any row is a variant where
