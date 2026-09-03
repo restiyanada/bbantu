@@ -50,7 +50,7 @@ export default function AdminAuditLogPage() {
   const columns = [
     columnHelper.accessor("createdAt", {
       header: "When",
-      cell: (info) => <span className="whitespace-nowrap">{new Date(info.getValue()).toLocaleString()}</span>,
+      cell: (info) => <span className="whitespace-nowrap">{new Date(info.getValue()).toLocaleString("id-ID")}</span>,
     }),
     columnHelper.accessor("actorName", {
       header: "Actor",

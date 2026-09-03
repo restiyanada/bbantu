@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { orderBalanceDue } from "../../../lib/order-money.ts";
@@ -46,6 +47,10 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Guest-facing and verify_jwt = false — same reasoning as
+    // resubmit-payment: the access token is the only credential.
+    await enforceRateLimit(req, "submit-balance-payment");
+
     const result = await db.transaction(async (tx) => {
       const [order] = await tx
         .select()

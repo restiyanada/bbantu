@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
 import { HttpError, json, errorResponse } from "../_shared/http.ts";
+import { enforceRateLimit } from "../_shared/rate-limit.ts";
 import { orders, payments } from "../../../db/schema.ts";
 import { logAudit } from "../../../lib/audit.ts";
 import { notifyAdmins } from "../_shared/push.ts";
@@ -45,6 +46,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Guest-facing and verify_jwt = false: the access token is the only
+    // credential, so one leaked order link should not buy unlimited proof
+    // uploads. Same budget as the other guest write endpoints.
+    await enforceRateLimit(req, "resubmit-payment");
+
     const result = await db.transaction(async (tx) => {
       const [order] = await tx
         .select()

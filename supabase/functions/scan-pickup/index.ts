@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../_shared/db.ts";
 import { handleCors } from "../_shared/cors.ts";
@@ -95,7 +95,17 @@ Deno.serve(async (req) => {
         .from(orderItems)
         .innerJoin(productVariants, eq(orderItems.variantId, productVariants.id))
         .where(eq(orderItems.orderId, order.id));
-      const [payment] = await tx.select().from(payments).where(eq(payments.orderId, order.id));
+      // Newest first: an order can carry several payments (a rejected attempt,
+      // or a deposit plus its balance), and without an ORDER BY this returned
+      // whichever row Postgres yielded first — so the scan screen could show a
+      // stale REJECTED status for an order that is in fact paid. Every other
+      // call site already orders this way.
+      const [payment] = await tx
+        .select()
+        .from(payments)
+        .where(eq(payments.orderId, order.id))
+        .orderBy(desc(payments.submittedAt))
+        .limit(1);
 
       const status = input.confirm ? "PICKED_UP" : order.status;
 
