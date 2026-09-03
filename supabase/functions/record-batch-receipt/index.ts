@@ -124,6 +124,10 @@ Deno.serve(async (req) => {
         });
       }
 
+      for (const order of promoted) {
+        await tx.update(orders).set({ stockReservedAt: new Date() }).where(eq(orders.id, order.orderId));
+      }
+
       const promotedCustomerEmailByOrder = new Map<string, string>();
       if (promoted.length > 0) {
         const rows = await tx
