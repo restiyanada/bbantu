@@ -9,6 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PaymentRejectionForm } from "@/components/payment-rejection-form";
+import { OrderCancelForm } from "@/components/order-cancel-form";
 import { TrackingForm } from "@/components/tracking-form";
 import { DataTable, type DataTableFilter } from "@/components/data-table";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -61,6 +62,17 @@ interface OrderRow {
 
 const columnHelper = createColumnHelper<OrderRow>();
 
+const CANCELLABLE_STATUSES = new Set([
+  "PAYMENT_PENDING",
+  "PAYMENT_VERIFIED",
+  "RESERVED",
+  "AWAITING_STOCK",
+  "BALANCE_DUE",
+  "READY_FOR_FULFILMENT",
+  "READY_FOR_PICKUP",
+  "READY_TO_SHIP",
+]);
+
 const STAT_TONE_CLASSES = {
   warning: "text-amber-600",
   info: "text-blue-600",
@@ -92,6 +104,7 @@ export default function AdminDashboardPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [trackingEntryId, setTrackingEntryId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
@@ -184,6 +197,22 @@ export default function AdminDashboardPage() {
     }
     setRejectingId(null);
     toast.success("Payment rejected");
+    await loadOrders();
+  }
+
+  async function handleCancel(orderId: string, reason: string) {
+    setActionError(null);
+    setActioningId(orderId);
+    const { error } = await supabase.functions.invoke("cancel-order", {
+      body: { orderId, reason },
+    });
+    setActioningId(null);
+    if (error) {
+      setActionError(await functionErrorMessage(error, "Couldn't cancel that order. Please try again."));
+      return;
+    }
+    setCancellingId(null);
+    toast.success("Order cancelled");
     await loadOrders();
   }
 
@@ -574,6 +603,30 @@ export default function AdminDashboardPage() {
                 >
                   {isActioningOpen ? "Preparing…" : openOrder.fulfilmentMethod === "SHIPPING" ? "Prepare for shipment" : "Prepare for pickup"}
                 </Button>
+              </div>
+            )}
+
+            {CANCELLABLE_STATUSES.has(openOrder.status) && (
+              <div className="pt-4 border-t">
+                {cancellingId === openOrder.id ? (
+                  <OrderCancelForm
+                    submitting={isActioningOpen}
+                    onSubmit={(values) => handleCancel(openOrder.id, values.reason)}
+                    onCancel={() => setCancellingId(null)}
+                  />
+                ) : (
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isActioningOpen || !(admin?.canVerifyPayments ?? false)}
+                      title={admin?.canVerifyPayments ? undefined : "Requires the Verify payments permission"}
+                      onClick={() => setCancellingId(openOrder.id)}
+                    >
+                      Cancel order
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
