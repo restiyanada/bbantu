@@ -12,12 +12,12 @@ engineer's working time including tests.
 | 2 | No CHECK constraint on `payments.amount` | **Critical** | XS | ✅ done (cf0420b) |
 | 3 | Access-token hashing duplicated 5× | Important | M | |
 | 4 | `reserved` inventory only ever increments | Important | L | ⏳ Stage 1 done (cancellation + release); Stages 2-3 open |
-| 5 | Pickup-code collision retry cannot work | Important | S | |
-| 6 | Three guest endpoints unrate-limited | Important | S | |
+| 5 | Pickup-code collision retry cannot work | Important | S | ✅ done (d0d7c42) |
+| 6 | Three guest endpoints unrate-limited | Important | S | ✅ done (d0d7c42) |
 | 7 | `resubmit-payment` / `submit-balance-payment` 65% duplicate | Important | M | |
-| 8 | `scan-pickup` picks an arbitrary payment row | Minor | XS | |
+| 8 | `scan-pickup` picks an arbitrary payment row | Minor | XS | ✅ done (d0d7c42) |
 | 9 | Status groupings duplicated, not tied to the enum | Minor | S | |
-| 10 | Audit-log dates use the browser locale | Minor | XS | |
+| 10 | Audit-log dates use the browser locale | Minor | XS | ✅ done (d0d7c42) |
 | 11 | `weightGrams` stores billable, not actual, weight | Minor | XS | |
 | 12 | `fetchWithTimeout` duplicated — **no action** | — | — | |
 
