@@ -6,20 +6,20 @@ engineer's working time including tests.
 
 **Effort key:** XS ≈ 15 min · S ≈ 1 hr · M ≈ half a day · L ≈ 1–2 days
 
-| # | Finding | Severity | Effort |
-|---|---|---|---|
-| 1 | Balance payment omits shipping cost | **Critical** | S |
-| 2 | No CHECK constraint on `payments.amount` | **Critical** | XS |
-| 3 | Access-token hashing duplicated 5× | Important | M |
-| 4 | `reserved` inventory only ever increments | Important | L |
-| 5 | Pickup-code collision retry cannot work | Important | S |
-| 6 | Three guest endpoints unrate-limited | Important | S |
-| 7 | `resubmit-payment` / `submit-balance-payment` 65% duplicate | Important | M |
-| 8 | `scan-pickup` picks an arbitrary payment row | Minor | XS |
-| 9 | Status groupings duplicated, not tied to the enum | Minor | S |
-| 10 | Audit-log dates use the browser locale | Minor | XS |
-| 11 | `weightGrams` stores billable, not actual, weight | Minor | XS |
-| 12 | `fetchWithTimeout` duplicated — **no action** | — | — |
+| # | Finding | Severity | Effort | Status |
+|---|---|---|---|---|
+| 1 | Balance payment omits shipping cost | **Critical** | S | ✅ done (cf0420b) |
+| 2 | No CHECK constraint on `payments.amount` | **Critical** | XS | ✅ done (cf0420b) |
+| 3 | Access-token hashing duplicated 5× | Important | M | |
+| 4 | `reserved` inventory only ever increments | Important | L | ⏳ Stage 1 done (cancellation + release); Stages 2-3 open |
+| 5 | Pickup-code collision retry cannot work | Important | S | |
+| 6 | Three guest endpoints unrate-limited | Important | S | |
+| 7 | `resubmit-payment` / `submit-balance-payment` 65% duplicate | Important | M | |
+| 8 | `scan-pickup` picks an arbitrary payment row | Minor | XS | |
+| 9 | Status groupings duplicated, not tied to the enum | Minor | S | |
+| 10 | Audit-log dates use the browser locale | Minor | XS | |
+| 11 | `weightGrams` stores billable, not actual, weight | Minor | XS | |
+| 12 | `fetchWithTimeout` duplicated — **no action** | — | — | |
 
 ---
 
@@ -270,3 +270,40 @@ duplication is the correct trade.
 The known object-URL leak in `useProofUpload` (a second file picked before the
 first is removed) is **pre-existing** and was deliberately preserved during the
 checkout refactor rather than changed silently. It belongs in a UI pass, not here.
+
+---
+
+## Found later, during the cancellation work (2026-09-03)
+
+### 13. Cancelling a paid order leaves no refund trail — IMPORTANT, effort M
+
+Surfaced by the final review of the cancellation feature. An admin can now
+cancel a `READY_FOR_FULFILMENT` order with money already collected, and the only
+record that a refund is owed is an audit row.
+
+`lib/order-state-machine.ts` models the rest of the flow — `CANCELLED` →
+`REFUND_REQUIRED` via `MARK_REFUND_REQUIRED`, then `REFUND_PROCESSED` — and
+**nothing fires either event** (`grep` finds them only in the machine's own
+definition). So the states exist, are reachable in principle, and are dead in
+practice, exactly as `CANCEL` itself was before this work.
+
+Cancellation Stage 1 deliberately did not scope this: it stops the inventory
+leak, which had no workaround. Refunds have one — the owner knows they owe the
+money. But the moment cancellation is used on paid orders, the shop needs
+somewhere to see "refund owed" that is not the audit log.
+
+### 14. The drawer's inline forms survive an order switch — MINOR, effort S
+
+`rejectingId`, `trackingEntryId` and `cancellingId` in
+`src/pages/AdminDashboardPage.tsx` are not reset when the drawer opens a
+different order.
+
+**Not as bad as it first looks** — my initial description of this was wrong and
+the final review corrected it. Every inline form is gated on
+`id === openOrder.id`, so switching orders *hides* the stale form; it cannot
+render against, or submit against, an order other than the one on screen. The
+real symptom is a form reappearing already-open when you return to the original
+order. Cosmetic. Pre-existing — cancellation replicated the established pattern
+rather than introducing it.
+
+Fix: clear all three in an effect keyed on the open order id.
